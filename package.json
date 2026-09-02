@@ -1,0 +1,36 @@
+{
+  "name": "@ding-ding-projects/claude-design-desktop",
+  "version": "0.1.0",
+  "description": "A standalone local design workspace for Windows.",
+  "private": true,
+  "author": "Ding-Ding Projects",
+  "license": "MIT",
+  "main": "dist/main.cjs",
+  "type": "module",
+  "scripts": {
+    "build": "node build/build.mjs",
+    "dev": "node build/build.mjs --watch",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit -p apps/desktop/tsconfig.json",
+    "test": "vitest run apps packages/contracts packages/ui-shell",
+    "test:watch": "vitest",
+    "prestart": "npm run build"
+  },
+  "dependencies": {
+    "@openai/codex": "0.152.1",
+    "electron": "42.3.3",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.21",
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "esbuild": "0.25.4",
+    "typescript": "5.8.3",
+    "vitest": "3.1.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
