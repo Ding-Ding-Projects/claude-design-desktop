@@ -1,0 +1,23 @@
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+const site = join(root, 'site');
+const docs = join(root, 'docs', 'features');
+const html = await readFile(join(site, 'index.html'), 'utf8');
+const js = await readFile(join(site, 'app.js'), 'utf8');
+const css = await readFile(join(site, 'styles.css'), 'utf8');
+const files = (await readdir(docs)).filter((file) => file.endsWith('.md') && file !== 'README.md');
+const expected = ['language-modes', 'dialog-emoji-toggle', 'school-mode', 'narration', 'scheduled-settings', 'dim-sum-surprise', 'regex-builders', 'notification-centre', 'appearance-editors', 'tabbed-navigation', 'offline-documentation', 'command-palette', 'destructive-confirmation', 'local-history', 'changelog-viewer', 'external-editor', 'exports', 'bulk-actions', 'accessibility-responsive-sizing', 'personal-vocabulary-upload', 'toy-locks-authentication', 'unlock-ladder', 'shared-link-embed', 'adhd-modes', 'browser-download-surfaces', 'app-logo-customization', 'file-converter', 'ollama-suite-manager', 'status-hub', 'front-screen-provenance'];
+const articleIds = files.map((file) => file.slice(0, -3));
+const must = (condition, message) => { if (!condition) throw new Error(message); };
+must(expected.every((id) => new RegExp(`['"]${id}['"]`).test(js)), 'canonical feature missing from site inventory');
+must(expected.every((id) => articleIds.includes(id)), 'canonical feature missing an article');
+must(articleIds.length === expected.length, 'article inventory contains an unexpected or duplicate article');
+for (const marker of ['og:title', 'og:description', 'og:url', 'og:type', 'og:site_name', 'og:image', 'og:image:width', 'og:image:height', 'og:image:alt', 'twitter:card', 'theme-color']) must(html.includes(marker), `missing metadata: ${marker}`);
+must(html.includes('width=device-width'), 'responsive viewport metadata is missing');
+must(css.includes('min-width: 320px'), 'responsive minimum is missing');
+must(!/<script[^>]+src=['"]https?:/i.test(html), 'remote script is not allowed');
+must(!/<link[^>]+href=['"]https?:/i.test(html), 'remote stylesheet is not allowed');
+console.log(`PASS: static site inventory (${expected.length} features, ${articleIds.length} articles)`);

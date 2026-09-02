@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Claude Design Desktop documentation, status, and verified download information." />
+    <meta property="og:title" content="Claude Design Desktop" />
+    <meta property="og:description" content="A local design workspace with an owned desktop shell and documented compatibility surfaces." />
+    <meta property="og:url" content="https://ding-ding-projects.github.io/claude-design-desktop/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Claude Design Desktop" />
+    <meta property="og:image" content="https://ding-ding-projects.github.io/claude-design-desktop/social-preview.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta property="og:image:alt" content="Claude Design Desktop documentation and workspace interface" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#6750a4" />
+    <title>Claude Design Desktop</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="top-bar" data-context-target="top-bar">
+        <a class="brand" href="#home" aria-label="Claude Design Desktop home">
+          <span class="brand-mark" aria-hidden="true">✦</span>
+          <span class="brand-copy"><strong>Claude Design Desktop</strong><small>Documentation and status</small></span>
+        </a>
+        <div class="top-actions">
+          <button class="icon-button" id="open-palette" type="button" aria-label="Open command palette">⌘<span class="sr-only"> Open command palette</span></button>
+          <button class="icon-button" id="toggle-theme" type="button" aria-label="Toggle light and dark theme">◐</button>
+          <button class="avatar-button" id="open-settings" type="button" aria-label="Open settings">A</button>
+        </div>
+      </header>
+      <aside class="tab-rail" aria-label="Primary navigation">
+        <div class="rail-heading"><span>Workspace</span><button id="add-tab" type="button" class="small-button" aria-label="Add tab">＋</button></div>
+        <nav id="tab-list" class="tab-list" role="tablist" aria-orientation="vertical"></nav>
+        <div class="rail-footer">
+          <button type="button" class="rail-action" data-route="settings">⚙ <span>Settings</span></button>
+          <button type="button" class="rail-action" data-route="status">● <span>Status</span></button>
+        </div>
+      </aside>
+      <main id="main-content" class="main-content" tabindex="-1"></main>
+      <div id="notifications" class="notifications" role="status" aria-live="polite"></div>
+    </div>
+
+    <dialog id="palette" class="surface-dialog" aria-labelledby="palette-title">
+      <div class="dialog-header"><div><span class="eyebrow">Navigation</span><h2 id="palette-title">Command palette</h2></div><button class="icon-button" data-close-dialog="palette" aria-label="Close command palette">×</button></div>
+      <div class="search-row"><label class="sr-only" for="palette-search">Search commands</label><input id="palette-search" type="search" placeholder="Search commands, features, and settings" autocomplete="off" /><button class="regex-button" data-regex-for="palette-search" type="button">.* Regex</button></div>
+      <div id="palette-results" class="palette-results"></div>
+    </dialog>
+
+    <dialog id="regex-dialog" class="surface-dialog regex-dialog" aria-labelledby="regex-title">
+      <div class="dialog-header"><div><span class="eyebrow">Search workbench</span><h2 id="regex-title">Advanced regex builder</h2></div><button class="icon-button" data-close-dialog="regex-dialog" aria-label="Close regex builder">×</button></div>
+      <p class="supporting">Plain text remains the default. Enable regex only when you want the JavaScript engine to evaluate the pattern locally.</p>
+      <div class="field-grid"><label>Pattern<input id="regex-pattern" type="text" spellcheck="false" /></label><label>Flags<input id="regex-flags" type="text" value="giu" spellcheck="false" /></label></div>
+      <div class="regex-capabilities"><strong>Engine</strong><span>ECMAScript regular expressions</span><strong>Capabilities</strong><span>Groups, named groups, lookaround, Unicode, dotAll, replacement preview, and bounded evaluation</span></div>
+      <p id="regex-validation" class="inline-status" role="status">Enter a pattern to inspect matches.</p>
+      <label>Sample text<textarea id="regex-sample" rows="4">Design systems become easier to search when every field has its own builder.</textarea></label>
+      <div class="regex-output"><div><span class="eyebrow">Explanation</span><code id="regex-explanation">No pattern yet</code></div><div><span class="eyebrow">Matches</span><output id="regex-matches">0</output></div></div>
+      <div class="dialog-actions"><button class="text-button" data-close-dialog="regex-dialog" type="button">Cancel</button><button class="filled-button" id="apply-regex" type="button">Apply to search</button></div>
+    </dialog>
+
+    <template id="search-template"><div class="search-row"><label class="sr-only"></label><input type="search" autocomplete="off" /><button class="regex-button" type="button">.* Regex</button></div></template>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
