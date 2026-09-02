@@ -1,0 +1,13 @@
+{
+  "name": "@ding-ding-projects/claude-design-desktop-design-reference",
+  "version": "0.1.0-reference",
+  "private": true,
+  "type": "module",
+  "main": "../../reference/main.mjs",
+  "scripts": {
+    "reference": "electron ../../reference/main.mjs"
+  },
+  "devDependencies": {
+    "electron": "42.3.3"
+  }
+}
