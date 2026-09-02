@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "package": "@openai/codex",
+  "version": "0.152.1",
+  "platform": "win32-x64",
+  "binary": "codex.exe",
+  "transport": "stdio-jsonl",
+  "requiredCommands": ["app-server", "generate-ts", "generate-json-schema"],
+  "generatedSchemaDirectoryCandidates": ["packages/contracts/generated", "schemas", "resources/codex/schemas"]
+}

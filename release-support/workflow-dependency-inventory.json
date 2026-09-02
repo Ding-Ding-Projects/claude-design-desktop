@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "workflow": ".github/workflows/release.yml",
+  "jobs": [
+    {
+      "id": "build-package-release",
+      "runner": "windows-2025",
+      "dependencies": [
+        { "name": "Node.js", "version": "22.14.0", "bootstrap": "download-dependencies.bat /s", "digest": "release-support/dependency-manifest.json" },
+        { "name": "npm packages", "version": "package-lock.json", "bootstrap": "npm ci --no-audit --no-fund", "digest": "package-lock.json" },
+        { "name": "electron-builder", "version": "26.15.3", "bootstrap": "package-lock.json", "digest": "release-support/dependency-manifest.json" },
+        { "name": "Squirrel.Windows target", "version": "26.15.3", "bootstrap": "package-lock.json", "digest": "release-support/dependency-manifest.json" }
+      ],
+      "freshEnvironmentProof": "The workflow invokes download-dependencies.bat /s before build.bat /s and build-installer.bat /s; the downloader verifies the portable Node archive and runs npm ci from package-lock.json.",
+      "safeOutputs": ["Setup.exe", "RELEASES", "*.nupkg", "line-count.md", "dim-sum-code-name.json", "release-notes.md", "run-context.txt"]
+    }
+  ]
+}
