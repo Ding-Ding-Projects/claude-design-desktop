@@ -1,0 +1,9 @@
+{
+  "name": "@claude-design/ollama-suite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}
