@@ -1,0 +1,6 @@
+{
+  "sourceCommit": "4a3c267e7e22f6636a02542554309cd49cd41e9d",
+  "prefix": "/v1/design/anthropic.omelette.api.v1alpha.OmeletteService/",
+  "methods": ["ListOrgProjects", "CreateProject", "GetProject", "ListFiles", "GetFile", "WriteFiles", "DeleteFiles", "RecordAsset", "DeleteAsset"],
+  "fieldAliases": { "projectId": ["projectId", "project_id"], "content": ["content", "contentBase64", "bodyBase64", "data", "body", "text"] }
+}
