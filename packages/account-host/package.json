@@ -1,0 +1,6 @@
+{
+  "name": "@ding-ding-projects/claude-design-desktop-account-host",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" }
+}
