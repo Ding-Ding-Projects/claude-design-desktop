@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "esbuild ExperienceShell.tsx --bundle --format=esm --external:react --outfile=dist/experience.js",
-    "test": "tsx --test navigation-controller.test.ts"
+    "test": "tsx --test navigation-controller.test.ts experience-shell.test.ts"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

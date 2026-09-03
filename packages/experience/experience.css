@@ -11,6 +11,16 @@
   font-family: system-ui, sans-serif;
 }
 
+.experience-shell.appearance-rainbow {
+  animation: experience-rainbow 14s linear infinite;
+  background-position: 0 0;
+}
+
+@keyframes experience-rainbow {
+  from { filter: hue-rotate(0deg); }
+  to { filter: hue-rotate(360deg); }
+}
+
 .experience-toolbar,
 .tab-searches,
 .bulk-close,
@@ -81,4 +91,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+  .experience-shell.appearance-rainbow { animation: none; filter: none; background: hsl(262 34% 48%) !important; }
 }

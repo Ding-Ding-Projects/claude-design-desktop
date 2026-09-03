@@ -1,4 +1,5 @@
 import type { RegexWorkbenchState } from "./types";
+import { BoundedRegexEvaluator } from "./bounded-regex";
 
 const MAX_PATTERN = 4_096;
 const MAX_SAMPLE = 32_768;
@@ -64,6 +65,16 @@ export function saveRegexSnippet(state: RegexWorkbenchState, name: string): Rege
   const trimmed = name.trim();
   if (!trimmed || !state.valid) return state;
   return { ...state, snippets: [...state.snippets, { id: `snippet-${state.snippets.length + 1}`, name: trimmed, pattern: state.pattern, flags: state.flags }] };
+}
+
+export async function evaluateWorkbenchBounded(state: RegexWorkbenchState, evaluator = new BoundedRegexEvaluator()): Promise<RegexWorkbenchState> {
+  if (state.mode !== "regex") return state;
+  try {
+    const result = await evaluator.evaluate(state.pattern, state.flags, state.sample);
+    return { ...state, valid: true, error: undefined, matches: result.matches, performance: { ...state.performance, elapsedMs: result.elapsedMs, matchCount: result.matches.length } };
+  } catch (error) {
+    return { ...state, valid: false, error: error instanceof Error ? error.message : "Regex worker failed", matches: [] };
+  }
 }
 
 function analyzeRegex(state: RegexWorkbenchState): RegexWorkbenchState {

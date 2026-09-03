@@ -40,9 +40,17 @@ export function reorderTab(state: NavigationState, tabId: string, destinationInd
   if (index < 0) return state;
   const tabs = state.tabs.slice();
   const [tab] = tabs.splice(index, 1);
-  const clamped = Math.max(0, Math.min(destinationIndex, tabs.length));
+  const pinnedCount = tabs.filter((item) => item.pinned).length;
+  const lower = tab.pinned ? 0 : pinnedCount;
+  const upper = tab.pinned ? pinnedCount : tabs.length;
+  const clamped = Math.max(lower, Math.min(destinationIndex, upper));
   tabs.splice(clamped, 0, tab);
   return { ...state, tabs: tabs.map((item, order) => ({ ...item, order })) };
+}
+
+export function focusBoundary(state: NavigationState, direction: "home" | "end"): NavigationState {
+  const ordered = state.tabs.slice().sort((a, b) => a.order - b.order);
+  return { ...state, activeTabId: ordered[direction === "home" ? 0 : ordered.length - 1]?.id };
 }
 
 export function setTabPinned(state: NavigationState, tabId: string, pinned: boolean): NavigationState {

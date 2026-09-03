@@ -133,24 +133,81 @@ export function loadAppearance(storage: Pick<Storage, "getItem">, key: string, e
 export function rainbowCss(speedLevel: 1 | 2 | 3 | 4 | 5, reducedMotion = false): string {
   if (reducedMotion) return "hsl(262 34% 48%)";
   const seconds = ({ 1: 4, 2: 8, 3: 14, 4: 22, 5: 36 } as const)[speedLevel];
-  return `linear-gradient(90deg, hsl(0 85% 55%), hsl(60 85% 55%), hsl(120 70% 45%), hsl(180 75% 48%), hsl(240 80% 60%), hsl(300 75% 58%), hsl(360 85% 55%)) / ${seconds}s linear infinite`;
+  return `linear-gradient(90deg, hsl(0 85% 55%), hsl(60 85% 55%), hsl(120 70% 45%), hsl(180 75% 48%), hsl(240 80% 60%), hsl(300 75% 58%), hsl(360 85% 55%))`;
 }
 
 export function translateHex(hex: string): ColorRepresentations {
   const normalized = hex.startsWith("#") ? hex : `#${hex}`;
-  if (!/^#[0-9a-f]{6}$/i.test(normalized)) throw new Error("Enter a six-digit hexadecimal color");
+  if (!/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(normalized)) throw new Error("Enter a six- or eight-digit hexadecimal color");
   const red = parseInt(normalized.slice(1, 3), 16);
   const green = parseInt(normalized.slice(3, 5), 16);
   const blue = parseInt(normalized.slice(5, 7), 16);
+  const alpha = normalized.length === 9 ? parseInt(normalized.slice(7, 9), 16) / 255 : 1;
   const [hue, saturation, lightness] = rgbToHsl(red, green, blue);
+  const xyz = rgbToXyz(red, green, blue);
+  const lab = xyzToLab(xyz[0], xyz[1], xyz[2]);
+  const lch = labToLch(lab);
+  const oklab = rgbToOklab(red, green, blue);
+  const oklch = labToLch(oklab);
+  const cmyk = rgbToCmyk(red, green, blue);
   return {
     hex: normalized.toUpperCase(),
-    rgba: `rgba(${red}, ${green}, ${blue}, 1)`,
+    rgba: `rgba(${red}, ${green}, ${blue}, ${round(alpha, 3)})`,
     hsl: `hsl(${Math.round(hue)}, ${Math.round(saturation)}%, ${Math.round(lightness)}%)`,
     hsv: `hsv(${Math.round(hue)}, ${Math.round(saturation)}%, ${Math.round(Math.max(red, green, blue) / 255 * 100)}%)`,
     hwb: `hwb(${Math.round(hue)} ${Math.round(Math.min(red, green, blue) / 255 * 100)}% ${Math.round((1 - Math.max(red, green, blue) / 255) * 100)}%)`,
-    lab: "lab(unknown)", lch: "lch(unknown)", oklab: "oklab(unknown)", oklch: "oklch(unknown)", cmyk: "cmyk(unknown)", gamut: "srgb"
+    lab: `lab(${round(lab[0], 2)}% ${round(lab[1], 2)} ${round(lab[2], 2)})`,
+    lch: `lch(${round(lch[0], 2)}% ${round(lch[1], 2)} ${round(lch[2], 2)})`,
+    oklab: `oklab(${round(oklab[0] * 100, 2)}% ${round(oklab[1], 4)} ${round(oklab[2], 4)})`,
+    oklch: `oklch(${round(oklch[0] * 100, 2)}% ${round(oklch[1], 4)} ${round(oklch[2], 2)})`,
+    cmyk: `cmyk(${round(cmyk[0] * 100, 2)}% ${round(cmyk[1] * 100, 2)}% ${round(cmyk[2] * 100, 2)}% ${round(cmyk[3] * 100, 2)}%)`,
+    gamut: "srgb",
+    contrastRatio: contrastRatio([red, green, blue], [255, 255, 255])
   };
+}
+
+function round(value: number, digits: number): number { const factor = 10 ** digits; return Math.round(value * factor) / factor; }
+
+function rgbToXyz(red: number, green: number, blue: number): [number, number, number] {
+  const convert = (value: number) => { const channel = value / 255; return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4; };
+  const r = convert(red), g = convert(green), b = convert(blue);
+  return [r * 0.4124 + g * 0.3576 + b * 0.1805, r * 0.2126 + g * 0.7152 + b * 0.0722, r * 0.0193 + g * 0.1192 + b * 0.9505];
+}
+
+function xyzToLab(x: number, y: number, z: number): [number, number, number] {
+  const f = (value: number) => value > 0.008856 ? value ** (1 / 3) : 7.787 * value + 16 / 116;
+  const fx = f(x / 0.95047), fy = f(y), fz = f(z / 1.08883);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+function labToLch(lab: [number, number, number]): [number, number, number] {
+  const chroma = Math.sqrt(lab[1] ** 2 + lab[2] ** 2);
+  let hue = Math.atan2(lab[2], lab[1]) * 180 / Math.PI;
+  if (hue < 0) hue += 360;
+  return [lab[0], chroma, hue];
+}
+
+function rgbToOklab(red: number, green: number, blue: number): [number, number, number] {
+  const convert = (value: number) => { const channel = value / 255; return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4; };
+  const r = convert(red), g = convert(green), b = convert(blue);
+  const l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+  const m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+  const s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+  const l3 = Math.cbrt(l), m3 = Math.cbrt(m), s3 = Math.cbrt(s);
+  return [0.2104542553 * l3 + 0.793617785 * m3 - 0.0040720468 * s3, 1.9779984951 * l3 - 2.428592205 * m3 + 0.4505937099 * s3, 0.0259040371 * l3 + 0.7827717662 * m3 - 0.808675766 * s3];
+}
+
+function rgbToCmyk(red: number, green: number, blue: number): [number, number, number, number] {
+  const r = red / 255, g = green / 255, b = blue / 255;
+  const key = 1 - Math.max(r, g, b);
+  if (key >= 1) return [0, 0, 0, 1];
+  return [(1 - r - key) / (1 - key), (1 - g - key) / (1 - key), (1 - b - key) / (1 - key), key];
+}
+
+function contrastRatio(foreground: [number, number, number], background: [number, number, number]): number {
+  const luminance = (rgb: [number, number, number]) => rgb.map((value) => { const channel = value / 255; return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4; }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+  const a = luminance(foreground), b = luminance(background);
+  return round((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05), 2);
 }
 
 function cloneAppearance(state: ElementAppearance): ElementAppearance {

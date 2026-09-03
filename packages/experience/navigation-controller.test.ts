@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { applyBulkClose, applyRegexToSearch, bulkClosePreview, createGroup, createNavigationState, moveTabToGroup, reorderTab, searchGroups, searchTabs, setDock, setTabPinned, toggleGroupCollapsed, updateSearch, validateNavigationContract, visibleTabs } from "./navigation-controller";
-import { createRegexWorkbench, setRegexInput } from "./regex-workbench";
+import { createRegexWorkbench, setRegexInput, evaluateWorkbenchBounded } from "./regex-workbench";
 import { createAppearance, deserializeAppearance, loadAppearance, rainbowCss, saveAppearance, setAppearanceProperty, setColor, translateHex, undoAppearance } from "./appearance-model";
+import { BoundedRegexEvaluator } from "./bounded-regex";
+import { createConfirmationAdapter } from "./confirmation-adapter";
 import { createContextMenu, filterContextActions } from "./context-menu";
 import { createPaletteState, filterCommands, filterCommandsBySearch, openPalette, teleportTarget } from "./command-palette";
 
@@ -18,7 +20,8 @@ test("navigation supports all dock edges, pinning, reorder and overflow", () => 
   state = setTabPinned(state, "two", true);
   assert.deepEqual(state.tabs.slice(0, 2).map((tab) => tab.id), ["one", "two"]);
   state = reorderTab(state, "three", 0);
-  assert.equal(state.tabs[0].id, "three");
+  assert.deepEqual(state.tabs.slice(0, 2).map((tab) => tab.id), ["one", "two"]);
+  assert.equal(state.tabs[2].id, "three");
   const result = visibleTabs(state, 160, 160);
   assert.equal(result.visible.length, 2);
   assert.equal(result.overflow.length, 1);
@@ -70,6 +73,28 @@ test("regex workbench reports capabilities, captures, replacement and risk", () 
   assert.equal(state.replacementPreview, "foo! foo!");
 });
 
+test("bounded regex evaluation uses a worker contract and supports cancellation", async () => {
+  let terminated = false;
+  const evaluator = new BoundedRegexEvaluator(() => ({
+    onmessage: null,
+    onerror: null,
+    postMessage(message: any) { queueMicrotask(() => this.onmessage?.({ data: { requestId: message.requestId, matches: [{ index: 0, text: "foo", groups: {} }] } })); },
+    terminate() { terminated = true; }
+  }));
+  const result = await evaluateWorkbenchBounded(setRegexInput(createRegexWorkbench("foo", "foo"), { mode: "regex" }), evaluator);
+  assert.equal(result.matches.length, 1);
+  assert.equal(terminated, true);
+});
+
+test("two-key full-slider confirmation is one-use and records local history", () => {
+  let historyCount = 0;
+  const adapter = createConfirmationAdapter(() => { historyCount += 1; });
+  adapter.setFirstKey("one"); adapter.setSecondKey("two"); adapter.setProgress(100);
+  assert.equal(adapter.confirm().ok, true);
+  assert.equal(adapter.confirm().ok, false);
+  assert.equal(historyCount, 1);
+});
+
 test("appearance model is reversible, stateful, portable and rainbow-aware", () => {
   let state = createAppearance("button");
   state = setAppearanceProperty(state, "radius", 24, "hover");
@@ -80,6 +105,13 @@ test("appearance model is reversible, stateful, portable and rainbow-aware", () 
   assert.equal(deserializeAppearance(JSON.stringify({ schemaVersion: 1, appearance: state }), "button").elementId, "button");
   assert.throws(() => deserializeAppearance(JSON.stringify({ schemaVersion: 2, appearance: state }), "button"));
   assert.equal(translateHex("6750A4").hex, "#6750A4");
+  const translated = translateHex("6750A480");
+  assert.match(translated.rgba, /0\.502/);
+  assert.match(translated.lab, /^lab\(/);
+  assert.match(translated.lch, /^lch\(/);
+  assert.match(translated.oklab, /^oklab\(/);
+  assert.match(translated.oklch, /^oklch\(/);
+  assert.match(translated.cmyk, /^cmyk\(/);
   const memory = new Map<string, string>();
   const storage = { setItem: (key: string, value: string) => memory.set(key, value), getItem: (key: string) => memory.get(key) || null };
   saveAppearance(storage, "button", state);

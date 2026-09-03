@@ -4,5 +4,6 @@ export * from "./regex-workbench";
 export * from "./appearance-model";
 export * from "./command-palette";
 export * from "./context-menu";
+export * from "./confirmation-adapter";
+export * from "./bounded-regex";
 export * from "./ExperienceShell";
-

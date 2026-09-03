@@ -1,15 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { applyBulkClose, applyRegexToSearch, bulkClosePreview, createNavigationState, moveTabToGroup, reorderTab, searchGroups, searchTabs, setDock, setTabPinned, toggleGroupCollapsed, updateSearch, createGroup, type NavigationState } from "./navigation-controller";
+import "./experience.css";
+import { applyBulkClose, applyRegexToSearch, bulkClosePreview, createNavigationState, focusBoundary, moveTabToGroup, reorderTab, searchGroups, searchTabs, setDock, setTabPinned, toggleGroupCollapsed, updateSearch, createGroup, type NavigationState } from "./navigation-controller";
 import { createAppearance, loadAppearance, rainbowCss, saveAppearance, setAppearanceProperty, setColor, setTypography, translateHex, undoAppearance, redoAppearance, serializeAppearance, deserializeAppearance } from "./appearance-model";
-import { addRegexTest, createRegexWorkbench, runRegexTests, saveRegexSnippet, setRegexInput } from "./regex-workbench";
+import { addRegexTest, createRegexWorkbench, evaluateWorkbenchBounded, runRegexTests, saveRegexSnippet, setRegexInput } from "./regex-workbench";
 import { createPaletteState, filterCommands, filterCommandsBySearch, openPalette, closePalette, setPaletteQuery, setPaletteSize, teleportTarget, type PaletteState } from "./command-palette";
 import { createContextMenu, filterContextActions } from "./context-menu";
+import { createConfirmationAdapter, type ConfirmationState } from "./confirmation-adapter";
+import { BoundedRegexEvaluator } from "./bounded-regex";
 import type { CommandDescriptor, ElementAppearance, SearchScope, SearchState, Tab, TabDock, TabGroup } from "./types";
 
 export type ExperienceShellProps = {
   initialTabs: Tab[];
   initialGroups?: TabGroup[];
   onTeleport?: (target: ReturnType<typeof teleportTarget>) => void;
+  storage?: { getItem(key: string): string | null; setItem(key: string, value: string): void };
+  onLocalHistory?: (event: { action: string; count: number }) => void;
 };
 
 const scopes: Array<{ id: SearchScope; label: string }> = [
@@ -19,8 +24,8 @@ const scopes: Array<{ id: SearchScope; label: string }> = [
   { id: "all", label: "All open tabs" }
 ];
 
-export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }: ExperienceShellProps): React.ReactElement {
-  const [navigation, setNavigation] = useState<NavigationState>(() => createNavigationState(initialTabs, initialGroups));
+export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport, storage, onLocalHistory }: ExperienceShellProps): React.ReactElement {
+  const [navigation, setNavigation] = useState<NavigationState>(() => loadJson(storage, "experience-navigation", createNavigationState(initialTabs, initialGroups)));
   const [palette, setPalette] = useState<PaletteState>(() => createPaletteState());
   const [paletteSearch, setPaletteSearch] = useState<SearchState>({ query: "", pattern: "", flags: "", mode: "text", valid: true });
   const [appearance, setAppearance] = useState<ElementAppearance>(() => createAppearance("experience-shell"));
@@ -36,6 +41,12 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
   const [bulkQuery, setBulkQuery] = useState("");
   const [includePinned, setIncludePinned] = useState(false);
   const [status, setStatus] = useState("Ready");
+  const regexEvaluator = useMemo(() => new BoundedRegexEvaluator(), []);
+  const [confirmation, setConfirmation] = useState<ConfirmationState>(() => createConfirmationAdapter().state);
+  const previewCountRef = useRef(0);
+  const [confirmationAdapter, setConfirmationAdapter] = useState(() => createConfirmationAdapter(() => onLocalHistory?.({ action: "bulk-close", count: previewCountRef.current })));
+  useEffect(() => { if (storage) storage.setItem("experience-navigation", JSON.stringify(navigation)); }, [navigation, storage]);
+  useEffect(() => { if (storage) storage.setItem("experience-palette", JSON.stringify(palette)); }, [palette, storage]);
   useEffect(() => {
     if (typeof localStorage !== "undefined") {
       const stored = loadAppearance(localStorage, "claude-design-experience-appearance", "experience-shell");
@@ -57,6 +68,7 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
   ], [navigation.tabs, navigation.activeTabId]);
 
   const preview = bulkClosePreview(navigation, bulkMode, bulkQuery, includePinned);
+  previewCountRef.current = preview.matches.length;
   const currentMenu = menuTarget ? filterContextActions(createContextMenu(menuTarget, navigation.tabs.find((tab) => tab.id === menuTarget)?.label || navigation.groups.find((group) => group.id === menuTarget)?.name || menuTarget), menuQuery) : undefined;
 
   function handlePaletteKeyDown(event: React.KeyboardEvent<HTMLInputElement>): void {
@@ -79,6 +91,13 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
       const id = target.elementId || (target.tabId ? `tab-${target.tabId}` : target.groupId ? `group-${target.groupId}` : undefined);
       if (id) document.getElementById(id)?.focus();
     }, 0);
+  }
+
+  function openBulkConfirmation(): void {
+    const adapter = createConfirmationAdapter(() => onLocalHistory?.({ action: "bulk-close", count: previewCountRef.current }));
+    setConfirmationAdapter(adapter);
+    setConfirmation({ ...adapter.state });
+    setBulkConfirmOpen(true);
   }
 
   function openRegex(scope: typeof activeRegexScope): void {
@@ -124,7 +143,10 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
 
   function handleContextAction(actionId: string, targetId: string): void {
     if (actionId === "edit-appearance") setStatus(`Editing appearance for ${targetId}`);
-    if (actionId === "lock-element") setStatus(`Lock configured for ${targetId}`);
+    if (actionId === "lock-element") {
+      setNavigation((current) => ({ ...current, tabs: current.tabs.map((tab) => tab.id === targetId ? { ...tab, locked: true } : tab) }));
+      setStatus(`Lock configured for ${targetId}`);
+    }
     if (actionId === "copy-style") setStatus(`Style copied from ${targetId}`);
     if (actionId === "reset-appearance") setAppearance(createAppearance(targetId));
     setMenuTarget(undefined);
@@ -132,6 +154,8 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
   }
 
   function navigateTab(tabId: string, direction: "previous" | "next"): void {
+    if (direction === "previous" && tabId === "__home__") { setNavigation((current) => focusBoundary(current, "home")); return; }
+    if (direction === "next" && tabId === "__end__") { setNavigation((current) => focusBoundary(current, "end")); return; }
     const ordered = navigation.tabs.slice().sort((a, b) => a.order - b.order);
     const index = ordered.findIndex((tab) => tab.id === tabId);
     if (index < 0) return;
@@ -155,7 +179,7 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
     try { return new RegExp(movePickerSearch.pattern || movePickerSearch.query, movePickerSearch.flags).test(haystack); } catch { return false; }
   });
 
-  return <main className={`experience-shell dock-${navigation.dock}`} style={appearanceStyle} onKeyDown={handleShellKeyDown} onContextMenu={(event) => { event.preventDefault(); setMenuTarget("experience-shell"); }}>
+  return <main className={`experience-shell dock-${navigation.dock} ${"sentinel" in appearance.color ? "appearance-rainbow" : ""}`} style={appearanceStyle} onKeyDown={handleShellKeyDown} onContextMenu={(event) => { event.preventDefault(); setMenuTarget("experience-shell"); }}>
     <header className="experience-toolbar">
       <button type="button" aria-label="Open command palette" onClick={() => setPalette(openPalette(palette))}>Command palette <kbd>Ctrl+Shift+F</kbd></button>
       <label>Dock tabs<select aria-label="Tab strip position" value={navigation.dock} onChange={(event) => setNavigation(setDock(navigation, event.target.value as NavigationState["dock"]))}><option value="left">Left</option><option value="right">Right</option><option value="top">Top</option><option value="bottom">Bottom</option></select></label>
@@ -164,11 +188,11 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
     </header>
 
     <nav className="tab-strip" aria-label="Browser tabs" role="tablist" aria-orientation={navigation.dock === "left" || navigation.dock === "right" ? "vertical" : "horizontal"}>
-      {navigation.groups.map((group) => <section key={group.id} className="tab-group" aria-label={group.name}>
-        <button id={`group-${group.id}`} type="button" className="group-header" aria-expanded={!group.collapsed} onContextMenu={(event) => { event.preventDefault(); setMenuTarget(group.id); }} onClick={() => setNavigation(toggleGroupCollapsed(navigation, group.id))}>{group.name} <span>{group.collapsed ? "Collapsed" : "Expanded"}</span></button>
-        {!group.collapsed && navigation.tabs.filter((tab) => tab.groupId === group.id).map((tab) => <TabButton key={tab.id} tab={tab} active={navigation.activeTabId === tab.id} dock={navigation.dock} onSelect={() => setNavigation({ ...navigation, activeTabId: tab.id })} onPin={() => setNavigation(setTabPinned(navigation, tab.id, !tab.pinned))} onMove={() => { setMovePickerTabId(tab.id); setMovePickerQuery(""); }} onDragEnd={(destination) => setNavigation(reorderTab(navigation, tab.id, destination))} onContextMenu={() => setMenuTarget(tab.id)} onNavigate={navigateTab} />)}
+    {navigation.groups.map((group) => <section key={group.id} className="tab-group" aria-label={group.name}>
+        <button id={`group-${group.id}`} type="button" className="group-header" aria-expanded={!group.collapsed} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setMenuTarget(group.id); }} onClick={() => setNavigation(toggleGroupCollapsed(navigation, group.id))}>{group.name} <span>{group.collapsed ? "Collapsed" : "Expanded"}</span></button>
+        {!group.collapsed && navigation.tabs.filter((tab) => tab.groupId === group.id).map((tab) => <TabButton key={tab.id} tab={tab} active={navigation.activeTabId === tab.id} dock={navigation.dock} onSelect={() => tab.locked ? setStatus(`Unlock ${tab.label} to select it`) : setNavigation({ ...navigation, activeTabId: tab.id })} onPin={() => setNavigation(setTabPinned(navigation, tab.id, !tab.pinned))} onMove={() => { setMovePickerTabId(tab.id); setMovePickerQuery(""); }} onDragEnd={(destination) => setNavigation(reorderTab(navigation, tab.id, destination))} onContextMenu={() => setMenuTarget(tab.id)} onNavigate={navigateTab} />)}
       </section>)}
-      {navigation.tabs.filter((tab) => !tab.groupId).map((tab) => <TabButton key={tab.id} tab={tab} active={navigation.activeTabId === tab.id} dock={navigation.dock} onSelect={() => setNavigation({ ...navigation, activeTabId: tab.id })} onPin={() => setNavigation(setTabPinned(navigation, tab.id, !tab.pinned))} onMove={() => { setMovePickerTabId(tab.id); setMovePickerQuery(""); }} onDragEnd={(destination) => setNavigation(reorderTab(navigation, tab.id, destination))} onContextMenu={() => setMenuTarget(tab.id)} onNavigate={navigateTab} />)}
+      {navigation.tabs.filter((tab) => !tab.groupId).map((tab) => <TabButton key={tab.id} tab={tab} active={navigation.activeTabId === tab.id} dock={navigation.dock} onSelect={() => tab.locked ? setStatus(`Unlock ${tab.label} to select it`) : setNavigation({ ...navigation, activeTabId: tab.id })} onPin={() => setNavigation(setTabPinned(navigation, tab.id, !tab.pinned))} onMove={() => { setMovePickerTabId(tab.id); setMovePickerQuery(""); }} onDragEnd={(destination) => setNavigation(reorderTab(navigation, tab.id, destination))} onContextMenu={() => setMenuTarget(tab.id)} onNavigate={navigateTab} />)}
       <button type="button" aria-label="Show overflow tabs" onClick={() => setStatus(`${navigation.tabs.length} tabs, ${navigation.tabs.filter((tab) => !navigation.expandedGroupIds.includes(tab.groupId || "") && tab.groupId).length} collapsed`)}>More tabs…</button>
     </nav>
 
@@ -179,15 +203,15 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
       <button type="button" onClick={() => setNavigation(createGroup(navigation, "New group"))}>Create group</button>
     </section>
 
-    <section className="bulk-close" aria-label="Bulk close tabs"><h2>Bulk close preview</h2><select aria-label="Bulk close mode" value={bulkMode} onChange={(event) => setBulkMode(event.target.value as typeof bulkMode)}><option value="contains">Close tabs containing text</option><option value="not-contains">Close tabs not containing text</option></select><input aria-label="Bulk close text" value={bulkQuery} onChange={(event) => setBulkQuery(event.target.value)} /><button type="button" onClick={() => openRegex("strip")}>Regex…</button><label><input type="checkbox" checked={includePinned} onChange={(event) => setIncludePinned(event.target.checked)} /> Include pinned tabs</label><p>{preview.matches.length} tabs will close, {preview.excluded.length} excluded.</p><button type="button" disabled={!preview.canApply} onClick={() => setBulkConfirmOpen(true)}>Review and close</button></section>
+    <section className="bulk-close" aria-label="Bulk close tabs"><h2>Bulk close preview</h2><select aria-label="Bulk close mode" value={bulkMode} onChange={(event) => setBulkMode(event.target.value as typeof bulkMode)}><option value="contains">Close tabs containing text</option><option value="not-contains">Close tabs not containing text</option></select><input aria-label="Bulk close text" value={bulkQuery} onChange={(event) => setBulkQuery(event.target.value)} /><button type="button" onClick={() => openRegex("strip")}>Regex…</button><label><input type="checkbox" checked={includePinned} onChange={(event) => setIncludePinned(event.target.checked)} /> Include pinned tabs</label><p>{preview.matches.length} tabs will close, {preview.excluded.length} excluded.</p><button type="button" disabled={!preview.canApply} onClick={openBulkConfirmation}>Review and close</button></section>
 
-    {bulkConfirmOpen && <MovablePanel className="bulk-confirm" role="dialog" aria-label="Confirm bulk close"><h2>Review tabs to close</h2><p>{preview.matches.length} tabs will close. Pinned, locked, and unsaved tabs remain excluded.</p><ul>{preview.matches.map((tab) => <li key={tab.id}>{tab.label}</li>)}</ul><button type="button" onClick={() => { setNavigation(applyBulkClose(navigation, preview, true)); setBulkConfirmOpen(false); setStatus(`Closed ${preview.matches.length} tabs`); }}>Confirm close</button><button type="button" onClick={() => setBulkConfirmOpen(false)}>Cancel</button></MovablePanel>}
+    {bulkConfirmOpen && <MovablePanel className="bulk-confirm" role="dialog" aria-label="Confirm bulk close"><h2>Review tabs to close</h2><p>{preview.matches.length} tabs will close. Pinned, locked, and unsaved tabs remain excluded.</p><ul>{preview.matches.map((tab) => <li key={tab.id}>{tab.label}</li>)}</ul><label>Confirmation key one<input type="password" value={confirmation.firstKey} onChange={(event) => setConfirmation({ ...confirmationAdapter.setFirstKey(event.target.value) })} /></label><label>Confirmation key two<input type="password" value={confirmation.secondKey} onChange={(event) => setConfirmation({ ...confirmationAdapter.setSecondKey(event.target.value) })} /></label><label>Authorization progress<input type="range" min="0" max="100" value={confirmation.progress} onChange={(event) => setConfirmation({ ...confirmationAdapter.setProgress(Number(event.target.value)) })} /></label><output>{confirmation.progress}%</output><button type="button" disabled={confirmation.progress < 100 || !confirmation.firstKey || !confirmation.secondKey || confirmation.consumed} onClick={() => { const result = confirmationAdapter.confirm(); setConfirmation({ ...result.state }); if (result.ok) { setNavigation(applyBulkClose(navigation, preview, true)); setBulkConfirmOpen(false); setStatus(`Closed ${preview.matches.length} tabs`); } else setStatus(result.reason || "Confirmation refused"); }}>Confirm close</button><button type="button" onClick={() => { setConfirmation({ ...confirmationAdapter.cancel() }); setBulkConfirmOpen(false); }}>Cancel</button></MovablePanel>}
 
     <section className="appearance-editor" aria-label="Appearance editor"><h2>Appearance editor</h2><p>Editing: {appearance.elementId}. Changes are reversible and scoped to this element.</p><button type="button" onClick={() => setAppearance(undoAppearance(appearance))}>Undo</button><button type="button" onClick={() => setAppearance(redoAppearance(appearance))}>Redo</button><button type="button" onClick={() => setAppearance(setTypography(appearance, { weight: appearance.typography.weight === 400 ? 700 : 400 }))}>Toggle weight</button><button type="button" onClick={() => setAppearance(setColor(appearance, translateHex("#6750A4")))}>Use translated color</button><button type="button" onClick={() => setAppearance(setColor(appearance, { sentinel: "rainbow", speedLevel: 3 }))}>Rainbow</button><code>{appearance.color && "sentinel" in appearance.color ? rainbowCss(appearance.color.speedLevel) : serializeAppearance(appearance).slice(0, 80)}</code><button type="button" onClick={() => { const restored = deserializeAppearance(serializeAppearance(appearance), appearance.elementId); setAppearance(restored); setStatus("Appearance export round-tripped"); }}>Export/import round trip</button></section>
 
     {movePickerTabId && <MovablePanel className="move-picker" aria-label="Move tab into group"><h2>Move tab into group</h2><p>{navigation.tabs.find((tab) => tab.id === movePickerTabId)?.label || "Tab"}</p><label>Search groups<input autoFocus value={movePickerQuery} onChange={(event) => { setMovePickerQuery(event.target.value); setMovePickerSearch((current) => ({ ...current, query: event.target.value })); }} /></label><button type="button" onClick={() => openRegex("move-picker")}>Regex…</button><ul>{pickerGroups.map((group) => <li key={group.id}><button type="button" onContextMenu={(event) => { event.preventDefault(); setMenuTarget(group.id); }} onClick={() => { setNavigation(moveTabToGroup(navigation, movePickerTabId, group.id)); setMovePickerTabId(undefined); }}>{group.name} · {navigation.tabs.filter((tab) => tab.groupId === group.id).length} tabs</button></li>)}</ul><button type="button" onClick={() => { const next = createGroup(navigation, "New group"); setNavigation(moveTabToGroup(next, movePickerTabId, next.groups.at(-1)?.id)); setMovePickerTabId(undefined); }}>Create new group</button><button type="button" onClick={() => setMovePickerTabId(undefined)}>Cancel</button></MovablePanel>}
 
-    {activeRegexScope && <MovablePanel className="regex-workbench" aria-label="Advanced regex workbench"><h2>Advanced regex workbench</h2><p>{regex.engine} · {regex.dialect} · {regex.engineVersion}</p><label>Pattern<input value={regex.pattern} onChange={(event) => updateRegexInput({ pattern: event.target.value })} /></label><label>Flags<input value={regex.flags} onChange={(event) => updateRegexInput({ flags: event.target.value })} /></label><label>Sample<textarea value={regex.sample} onChange={(event) => updateRegexInput({ sample: event.target.value })} /></label><label>Replacement<input value={regex.replacement} onChange={(event) => updateRegexInput({ replacement: event.target.value })} /></label><p role="status">{regex.valid ? regex.explanation : regex.error}</p><p>Risk: {regex.performance.risk}; {regex.performance.matchCount} matches in {regex.performance.elapsedMs}ms.</p><ul>{regex.capabilities.map((capability) => <li key={capability.name}>{capability.name}: {capability.supported ? "supported" : capability.explanation}</li>)}</ul><button type="button" onClick={() => setRegex(runRegexTests(addRegexTest(regex, regex.sample, regex.matches.length > 0)))}>Run test</button><button type="button" onClick={() => setRegex(saveRegexSnippet(regex, "Current pattern"))}>Save snippet</button><details><summary>Structured trace and captures</summary><pre>{JSON.stringify({ tokens: regex.tokens, matches: regex.matches, trace: regex.trace, replacement: regex.replacementPreview }, null, 2)}</pre></details></MovablePanel>}
+    {activeRegexScope && <MovablePanel className="regex-workbench" aria-label="Advanced regex workbench"><h2>Advanced regex workbench</h2><p>{regex.engine} · {regex.dialect} · {regex.engineVersion}</p><label>Pattern<input value={regex.pattern} onChange={(event) => updateRegexInput({ pattern: event.target.value })} /></label><label>Flags<input value={regex.flags} onChange={(event) => updateRegexInput({ flags: event.target.value })} /></label><label>Sample<textarea value={regex.sample} onChange={(event) => updateRegexInput({ sample: event.target.value })} /></label><label>Replacement<input value={regex.replacement} onChange={(event) => updateRegexInput({ replacement: event.target.value })} /></label><p role="status">{regex.valid ? regex.explanation : regex.error}</p><p>Risk: {regex.performance.risk}; {regex.performance.matchCount} matches in {regex.performance.elapsedMs}ms.</p><ul>{regex.capabilities.map((capability) => <li key={capability.name}>{capability.name}: {capability.supported ? "supported" : capability.explanation}</li>)}</ul><button type="button" onClick={() => setRegex(runRegexTests(addRegexTest(regex, regex.sample, regex.matches.length > 0)))}>Run test</button><button type="button" onClick={() => setRegex((current) => { void evaluateWorkbenchBounded(current, regexEvaluator).then(setRegex); return current; })}>Run bounded worker</button><button type="button" onClick={() => regexEvaluator.cancel()}>Cancel worker</button><button type="button" onClick={() => setRegex(saveRegexSnippet(regex, "Current pattern"))}>Save snippet</button><details><summary>Structured trace and captures</summary><pre>{JSON.stringify({ tokens: regex.tokens, matches: regex.matches, trace: regex.trace, replacement: regex.replacementPreview }, null, 2)}</pre></details></MovablePanel>}
 
     {currentMenu && <MovablePanel className="context-menu" aria-label={`Actions for ${currentMenu.accessibleName}`}><input autoFocus aria-label="Filter context actions" value={menuQuery} onChange={(event) => setMenuQuery(event.target.value)} /><p>Keyboard: {currentMenu.keyboardEquivalent}. Touch: {currentMenu.touchEquivalent}.</p>{currentMenu.actions.map((action) => <button type="button" key={action.id} onClick={() => handleContextAction(action.id, currentMenu.targetId)}>{action.label}{action.shortcut && <kbd>{action.shortcut}</kbd>}</button>)}</MovablePanel>}
 
@@ -198,11 +222,12 @@ export function ExperienceShell({ initialTabs, initialGroups = [], onTeleport }:
 function TabButton({ tab, active, dock, onSelect, onPin, onMove, onDragEnd, onContextMenu, onNavigate }: { tab: Tab; active: boolean; dock: TabDock; onSelect: () => void; onPin: () => void; onMove: () => void; onDragEnd: (index: number) => void; onContextMenu: () => void; onNavigate: (tabId: string, direction: "previous" | "next") => void }): React.ReactElement {
   const previousKey = dock === "left" || dock === "right" ? "ArrowUp" : "ArrowLeft";
   const nextKey = dock === "left" || dock === "right" ? "ArrowDown" : "ArrowRight";
-  return <div className={`tab-item ${tab.pinned ? "pinned" : ""}`} onContextMenu={(event) => { event.preventDefault(); onContextMenu(); }}><button id={`tab-${tab.id}`} type="button" role="tab" tabIndex={active ? 0 : -1} aria-selected={active} aria-controls={`tabpanel-${tab.id}`} aria-label={`${tab.label}${tab.pinned ? ", pinned" : ""}${tab.locked ? ", locked" : ""}`} onKeyDown={(event) => { if (event.key === "F10" && event.shiftKey) { event.preventDefault(); onContextMenu(); } if (event.key === previousKey) { event.preventDefault(); onNavigate(tab.id, "previous"); } if (event.key === nextKey) { event.preventDefault(); onNavigate(tab.id, "next"); } }} onClick={onSelect}>{tab.label}</button><button type="button" aria-label={`${tab.pinned ? "Unpin" : "Pin"} ${tab.label}`} onClick={onPin}>📌</button><button type="button" aria-label={`Move ${tab.label} into a group`} onClick={onMove}>Move…</button><button type="button" aria-label={`Reorder ${tab.label}`} onClick={() => onDragEnd(Math.max(0, tab.order - 1))}>↑</button></div>;
+  return <div className={`tab-item ${tab.pinned ? "pinned" : ""}`} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onContextMenu(); }}><button id={`tab-${tab.id}`} type="button" role="tab" tabIndex={active ? 0 : -1} aria-selected={active} aria-controls={`tabpanel-${tab.id}`} aria-label={`${tab.label}${tab.pinned ? ", pinned" : ""}${tab.locked ? ", locked" : ""}`} onKeyDown={(event) => { if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") { event.preventDefault(); onContextMenu(); } if (event.key === "Home") { event.preventDefault(); onNavigate("__home__", "previous"); } else if (event.key === "End") { event.preventDefault(); onNavigate("__end__", "next"); } else if (event.key === previousKey) { event.preventDefault(); onNavigate(tab.id, "previous"); } else if (event.key === nextKey) { event.preventDefault(); onNavigate(tab.id, "next"); } }} onClick={onSelect}>{tab.label}</button><button type="button" aria-label={`${tab.pinned ? "Unpin" : "Pin"} ${tab.label}`} onClick={onPin}>📌</button><button type="button" aria-label={`Move ${tab.label} into a group`} onClick={onMove}>Move…</button><button type="button" aria-label={`Reorder ${tab.label}`} onClick={() => onDragEnd(Math.max(0, tab.order - 1))}>↑</button></div>;
 }
 
 function MovablePanel({ className, role, children, "aria-label": ariaLabel }: { className: string; role?: string; children: React.ReactNode; "aria-label": string }): React.ReactElement {
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const storageKey = `experience-panel:${className}`;
+  const [offset, setOffset] = useState(() => loadJson(typeof localStorage === "undefined" ? undefined : localStorage, storageKey, { x: 0, y: 0 }));
   const drag = useRef<{ x: number; y: number }>();
   useEffect(() => {
     const move = (event: PointerEvent) => { if (drag.current) setOffset({ x: event.clientX - drag.current.x, y: event.clientY - drag.current.y }); };
@@ -211,5 +236,11 @@ function MovablePanel({ className, role, children, "aria-label": ariaLabel }: { 
     window.addEventListener("pointerup", up);
     return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
   }, []);
+  useEffect(() => { if (typeof localStorage !== "undefined") localStorage.setItem(storageKey, JSON.stringify(offset)); }, [offset, storageKey]);
   return <aside className={className} role={role} aria-label={ariaLabel} tabIndex={-1} style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }} onKeyDown={(event) => { const amount = event.shiftKey ? 24 : 8; if (event.key === "ArrowLeft") setOffset((current) => ({ ...current, x: current.x - amount })); if (event.key === "ArrowRight") setOffset((current) => ({ ...current, x: current.x + amount })); if (event.key === "ArrowUp") setOffset((current) => ({ ...current, y: current.y - amount })); if (event.key === "ArrowDown") setOffset((current) => ({ ...current, y: current.y + amount })); }}><header className="panel-drag-handle" tabIndex={0} onPointerDown={(event) => { drag.current = { x: event.clientX - offset.x, y: event.clientY - offset.y }; }} aria-label="Drag panel">Move panel · use arrow keys</header>{children}</aside>;
+}
+
+function loadJson<T>(storage: { getItem(key: string): string | null } | undefined, key: string, fallback: T): T {
+  if (!storage) return fallback;
+  try { const value = storage.getItem(key); return value ? JSON.parse(value) as T : fallback; } catch { return fallback; }
 }
