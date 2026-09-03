@@ -1,0 +1,11 @@
+{
+  "name": "@claude-design/preview-host",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test ./preview-host.test.ts"
+  }
+}

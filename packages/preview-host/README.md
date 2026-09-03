@@ -1,20 +1,22 @@
 # Preview host
 
-This package owns the main-process controller for local Claude Design previews. It accepts bounded HTML and explicitly supplied local assets, returns a small `PreviewHandle`, and emits only lifecycle state events containing that handle.
+This package owns the main-process controller for local Claude Design previews. It accepts bounded HTML and explicitly supplied local assets, returns a small `PreviewHandle`, and emits only lifecycle state or fixed-code error events containing that handle. Every operation is authorized for an account, role, project, and generation.
 
 ## Security boundary
 
 - Every handle receives a unique in-memory browser session partition.
 - The browser window is hidden until its caller chooses to show it and uses `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`, `webSecurity: true`, `devTools: false`, and no preload script.
 - Preview documents are generated as `data:` URLs. Asset references are replaced with validated, bounded `data:` resources, so the controller never resolves a filesystem path.
-- The document CSP disables scripts, network connections, frames, forms, objects, workers, and base URL changes. Only inline styles and embedded images, fonts, media, and other explicitly supplied local bytes are allowed.
+- The document CSP disables network connections, frames, forms, objects, workers, and base URL changes. Dynamic scripts are supported only when they are explicitly supplied local JavaScript assets and are loaded through `data:` URLs. Inline scripts are rejected. There is no Node integration or preload bridge.
 - Navigation, redirects, popups, downloads, permissions, DevTools, and renderer IPC messages are refused at the session or window boundary.
-- Reload increments the generation. A previous handle is stale, and a handle from another project is refused before any window operation.
-- Closing clears service workers, caches, local storage, IndexedDB, WebSQL, and cookies for that session before destroying the window.
+- Reload increments the generation. A previous handle is stale, and a handle from another project or unauthorized actor is refused before any window operation. Showing a preview is an explicit operation.
+- Closing and renderer destruction clear service workers, caches, local storage, IndexedDB, WebSQL, and cookies for that session before removing the record. Cleanup attempts all phases and is idempotent.
+- HTML attributes and CSS imports are tokenized. Unsupported or unquoted URL-bearing constructs fail closed, including every URL scheme, base tags, refresh metadata, secondary browsing contexts, missing assets, and traversal references.
+- Images are checked for signatures, dimensions, and animated frame counts. SVG is checked for safe local content and dimensions. WOFF and WOFF2 signatures are validated, and text assets require strict UTF-8.
 
 ## Integration
 
-Construct `PreviewHostController` with adapters around Electron's `session.fromPartition`, `BrowserWindow`, and their event APIs. Keep the adapter implementation in the Electron main package. The injected adapters in `preview-host.test.ts` are the contract probe and are intentionally independent of Electron so the policy tests can run in a clean Node process.
+Construct `PreviewHostController` with `createElectronPreviewAdapters`, which wraps Electron's real `session.fromPartition(partition, { cache: false })` and `BrowserWindow` APIs. Supply an authorization callback that checks the actor, role, project, operation, handle, and generation. Keep the adapter invocation in the Electron main package. The injected adapters in `preview-host.test.ts` are the contract probe and are intentionally independent of Electron so policy tests can run in a clean Node process.
 
 ## Verification
 
@@ -22,4 +24,4 @@ Construct `PreviewHostController` with adapters around Electron's `session.fromP
 node --experimental-strip-types --test packages/preview-host/preview-host.test.ts
 ```
 
-The test suite covers CSP and base-tag rejection, embedded local assets, network refusal, popup and navigation refusal, permission and download refusal, renderer IPC isolation, hardened browser preferences, per-handle session isolation, stale generations, cross-project handles, and storage cleanup.
+The test suite covers adapter construction, CSP and base-tag rejection, unquoted HTML URLs, srcset, CSS imports, every URL scheme, embedded local assets, dynamic local scripts, inline-script refusal, popup and navigation refusal, permission and download refusal, renderer IPC isolation, hardened browser preferences, per-handle session isolation, actor and role authorization, explicit show, stale generations, cross-project handles, capacity, lifecycle watchdogs, destruction, and storage cleanup.
