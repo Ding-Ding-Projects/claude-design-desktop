@@ -8,7 +8,6 @@ test("negative regression turns red for duplicate vocabulary keys", () => {
   assert.equal((brokenParser(duplicate) as { schemaVersion: number }).schemaVersion, 2);
   assert.equal(parsePersonalVocabulary(duplicate).ok, false);
 });
-
 test("negative regression keeps pinned destructive items excluded by default", () => {
   const preview = previewBulkAction({ action: "delete", scope: "all-matches", items: [{ id: "p", label: "Pinned", selected: true, pinned: true }] });
   assert.equal(preview.affectedCount, 0);
@@ -20,4 +19,3 @@ test("negative regression rejects a declared image MIME when bytes disagree", ()
   assert.equal(result.ok, false);
   assert.ok(result.errors.includes("unsupported-signature"));
 });
-

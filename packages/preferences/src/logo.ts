@@ -11,7 +11,6 @@ export interface LogoSource {
   name: string;
   claimedMime?: string;
 }
-
 export interface LogoValidation {
   ok: boolean;
   mime: LogoMime | null;
@@ -119,4 +118,3 @@ export function createLogoStore(initial: LogoSettings, onPersist: (settings: Log
     }
   };
 }
-

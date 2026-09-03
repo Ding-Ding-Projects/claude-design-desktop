@@ -31,6 +31,8 @@ test("language, independent funny levels, emoji setting, and School mode are per
   const restored = createPreferencesStore({ storage, defaults: createDefaultPreferences() });
   assert.equal(restored.getState().school.displayName, "Quiet study");
   assert.equal(restored.getState().displayName.stableDataDirectoryKey, "claude-design-desktop");
+  store.close();
+  restored.close();
 });
 
 test("personal vocabulary is bounded, local, complete, and rejects duplicate and unsafe keys", () => {

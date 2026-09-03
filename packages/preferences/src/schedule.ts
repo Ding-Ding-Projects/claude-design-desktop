@@ -10,7 +10,6 @@ export interface ScheduleContext {
   now: Date;
   timezone?: string;
 }
-
 export interface ScheduleResolution {
   values: ScheduledValues;
   ruleId: string | null;
@@ -153,4 +152,3 @@ export function createScheduleRefreshController(client: ExternalScheduleClient =
 function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
-

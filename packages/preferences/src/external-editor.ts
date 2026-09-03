@@ -5,7 +5,6 @@ export interface EditorDiscoveryInput {
   knownLocations?: Array<{ id: string; displayName: string; executablePath: string }>;
   registered?: ExternalEditorDescriptor[];
 }
-
 /** Returns descriptors only. It never runs an editor during discovery. */
 export function discoverExternalEditors(input: EditorDiscoveryInput): ExternalEditorDescriptor[] {
   const result = new Map<string, ExternalEditorDescriptor>();
@@ -28,5 +27,4 @@ export function editorLaunchArgs(editor: ExternalEditorDescriptor, targetPath: s
   if (!editor.supportsFiles && !editor.supportsFolders) throw new Error("editor-has-no-supported-target");
   return [targetPath];
 }
-
 

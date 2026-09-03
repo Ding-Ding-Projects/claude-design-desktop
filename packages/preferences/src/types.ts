@@ -232,5 +232,3 @@ export const DEFAULT_NARRATION_PREFERENCES: NarrationPreferences = {
   reducedSound: false,
   quietHours: false
 };
-
-

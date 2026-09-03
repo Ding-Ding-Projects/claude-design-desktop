@@ -14,5 +14,3 @@ This package contains framework-neutral preference contracts and accessible Reac
 - Export and bulk previews preserve complete records, redact sensitive fields, enumerate formats, and report exact exclusions.
 
 Run the focused tests with a TypeScript-aware test runner in the owning monorepo. The package has no runtime network requirement and does not include private vocabulary values or credentials.
-
-

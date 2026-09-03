@@ -7,7 +7,6 @@ export interface SpeechUtterance {
   rate: number;
   pitch: number;
 }
-
 export interface SpeechDriver {
   speak(utterance: SpeechUtterance): Promise<void>;
   cancel(): void;
@@ -153,4 +152,3 @@ export function createBrowserSpeechDriver(speech?: SpeechSynthesis): SpeechDrive
     }
   };
 }
-

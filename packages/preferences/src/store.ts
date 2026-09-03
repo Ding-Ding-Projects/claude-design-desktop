@@ -26,7 +26,6 @@ export interface StorageLike {
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
 }
-
 export interface PreferenceChange {
   key: keyof PreferencesState | "school" | "vocabulary";
   state: PreferencesState;

@@ -5,7 +5,6 @@ const formats: ExportFormat[] = ["json", "jsonl", "yaml", "toml", "xml", "csv", 
 export function supportedExportFormats(): readonly ExportFormat[] {
   return formats;
 }
-
 export function prepareExport(request: ExportRequest): string {
   if (request.includeSensitive) throw new Error("sensitive-export-requires-super-confirmation");
   const records = request.records.map((record) => redactSensitive(record));
@@ -62,5 +61,4 @@ export function previewBulkAction(input: {
   });
   return { action: input.action, scope: input.scope, selectedCount: items.filter((item) => item.selected).length, affectedCount: items.filter((item) => item.eligible).length, excludedCount: items.filter((item) => item.selected && !item.eligible).length, items };
 }
-
 
