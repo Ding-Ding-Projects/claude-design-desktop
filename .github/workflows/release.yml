@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           $started = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" --jq .run_started_at
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($started)) { throw 'The Der Machine run start timestamp could not be read from the run record.' }
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($started)) { throw 'The GitHub Actions run start timestamp could not be read from the run record.' }
           "WORKFLOW_STARTED=$started" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           New-Item -ItemType Directory -Force -Path $env:RELEASE_ROOT | Out-Null
 
