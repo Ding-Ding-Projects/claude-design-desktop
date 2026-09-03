@@ -120,6 +120,16 @@ export function deserializeAppearance(serialized: string, elementId: string): El
   return createAppearance(elementId, appearance);
 }
 
+export function saveAppearance(storage: Pick<Storage, "setItem">, key: string, state: ElementAppearance): void {
+  storage.setItem(key, serializeAppearance(state));
+}
+
+export function loadAppearance(storage: Pick<Storage, "getItem">, key: string, elementId: string): ElementAppearance | undefined {
+  const serialized = storage.getItem(key);
+  if (!serialized) return undefined;
+  try { return deserializeAppearance(serialized, elementId); } catch { return undefined; }
+}
+
 export function rainbowCss(speedLevel: 1 | 2 | 3 | 4 | 5, reducedMotion = false): string {
   if (reducedMotion) return "hsl(262 34% 48%)";
   const seconds = ({ 1: 4, 2: 8, 3: 14, 4: 22, 5: 36 } as const)[speedLevel];
@@ -169,4 +179,3 @@ function rgbToHsl(red: number, green: number, blue: number): [number, number, nu
   const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
   return [hue, saturation * 100, lightness * 100];
 }
-

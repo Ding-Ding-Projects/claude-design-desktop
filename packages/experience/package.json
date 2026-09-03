@@ -1,0 +1,19 @@
+{
+  "name": "@claude-design/experience",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild ExperienceShell.tsx --bundle --format=esm --external:react --outfile=dist/experience.js",
+    "test": "tsx --test navigation-controller.test.ts"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}

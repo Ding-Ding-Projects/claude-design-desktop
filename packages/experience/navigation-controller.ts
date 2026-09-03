@@ -113,8 +113,17 @@ function matchesTab(tab: Tab, search: SearchState): boolean {
 
 export function searchTabs(state: NavigationState, scope: SearchScope, groupId?: string): Tab[] {
   const search = state.searches[scope];
-  const source = scope === "group" ? state.tabs.filter((tab) => tab.groupId === groupId) : state.tabs;
+  const source = scope === "group" ? state.tabs.filter((tab) => tab.groupId === groupId) : scope === "groups" ? [] : state.tabs;
   return source.filter((tab) => matchesTab(tab, search));
+}
+
+export function searchGroups(state: NavigationState): TabGroup[] {
+  const search = state.searches.groups;
+  return state.groups.filter((group) => matchesTab({ id: group.id, label: group.name, title: group.name, pinned: group.pinned, page: "group", order: group.order }, search));
+}
+
+export function applyRegexToSearch(state: NavigationState, scope: SearchScope, pattern: string, flags: string, valid: boolean, error?: string): NavigationState {
+  return { ...state, searches: { ...state.searches, [scope]: { ...state.searches[scope], pattern, flags, mode: "regex", valid, error } } };
 }
 
 export function bulkClosePreview(

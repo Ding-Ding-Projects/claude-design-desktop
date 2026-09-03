@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyBulkClose, bulkClosePreview, createGroup, createNavigationState, moveTabToGroup, reorderTab, searchTabs, setDock, setTabPinned, toggleGroupCollapsed, updateSearch, validateNavigationContract, visibleTabs } from "./navigation-controller";
+import { applyBulkClose, applyRegexToSearch, bulkClosePreview, createGroup, createNavigationState, moveTabToGroup, reorderTab, searchGroups, searchTabs, setDock, setTabPinned, toggleGroupCollapsed, updateSearch, validateNavigationContract, visibleTabs } from "./navigation-controller";
 import { createRegexWorkbench, setRegexInput } from "./regex-workbench";
-import { createAppearance, deserializeAppearance, rainbowCss, setAppearanceProperty, setColor, translateHex, undoAppearance } from "./appearance-model";
+import { createAppearance, deserializeAppearance, loadAppearance, rainbowCss, saveAppearance, setAppearanceProperty, setColor, translateHex, undoAppearance } from "./appearance-model";
 import { createContextMenu, filterContextActions } from "./context-menu";
-import { createPaletteState, filterCommands, openPalette, teleportTarget } from "./command-palette";
+import { createPaletteState, filterCommands, filterCommandsBySearch, openPalette, teleportTarget } from "./command-palette";
 
 const tabs = [
   { id: "one", label: "Home", pinned: true, page: "home", order: 0 },
@@ -41,6 +41,11 @@ test("four searches remain isolated and regex matching is explicit", () => {
   assert.equal(searchTabs(state, "strip").length, 1);
   assert.equal(searchTabs(state, "all").length, 1);
   assert.equal(state.searches.group.query, "");
+  state = createGroup(state, "Writing");
+  state = updateSearch(state, "groups", { query: "Writing" });
+  assert.equal(searchGroups(state).length, 1);
+  state = applyRegexToSearch(state, "groups", "^W", "", true);
+  assert.equal(searchGroups(state).length, 1);
 });
 
 test("bulk close previews protect pinned, dirty and empty-query tabs", () => {
@@ -75,11 +80,16 @@ test("appearance model is reversible, stateful, portable and rainbow-aware", () 
   assert.equal(deserializeAppearance(JSON.stringify({ schemaVersion: 1, appearance: state }), "button").elementId, "button");
   assert.throws(() => deserializeAppearance(JSON.stringify({ schemaVersion: 2, appearance: state }), "button"));
   assert.equal(translateHex("6750A4").hex, "#6750A4");
+  const memory = new Map<string, string>();
+  const storage = { setItem: (key: string, value: string) => memory.set(key, value), getItem: (key: string) => memory.get(key) || null };
+  saveAppearance(storage, "button", state);
+  assert.equal(loadAppearance(storage, "button", "button")?.elementId, "button");
 });
 
 test("palette and context menus expose rich teleport and keyboard paths", () => {
   const commands = [{ id: "settings", label: "Open settings", kind: "destination" as const, tabId: "settings", groupId: "general", elementId: "settings-panel" }];
   assert.equal(filterCommands(commands, "settings").length, 1);
+  assert.equal(filterCommandsBySearch(commands, { query: "^Open", pattern: "^Open", flags: "", mode: "regex", valid: true }).length, 1);
   assert.deepEqual(teleportTarget(commands[0]), { tabId: "settings", groupId: "general", elementId: "settings-panel" });
   assert.equal(openPalette(createPaletteState()).open, true);
   const menu = filterContextActions(createContextMenu("button", "Save", "Ctrl+S"), "appearance");
@@ -95,6 +105,6 @@ test("negative regression inventory stays fail-closed", () => {
   assert.ok(menu.actions.some((action) => action.id === "edit-appearance"));
   assert.ok(menu.actions.some((action) => action.id === "lock-element"));
   validateNavigationContract(state);
-  const broken = { ...state, searches: { ...state.searches, all: undefined } } as typeof state;
+  const broken = { ...state, searches: { ...state.searches, all: undefined } } as unknown as typeof state;
   assert.throws(() => validateNavigationContract(broken), /all/);
 });
