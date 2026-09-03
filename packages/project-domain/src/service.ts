@@ -51,6 +51,36 @@ export class ProjectDomainService {
   private requireProject(state: DatabaseState, projectId: string, slotId: string, minimum: ProjectRole): ProjectRecord { const account = state.accounts.find((a) => a.slotId === slotId); if (!account || (account.state !== "ready" && account.state !== "offline")) throw new DomainError("ACTOR_NOT_AUTHENTICATED", "An authenticated account is required for project access."); const project = state.projects.find((p) => p.id === projectId); if (!project) throw new DomainError("PROJECT_NOT_FOUND", "The project does not exist."); const role = roleOf(state, project, slotId); if (!role || RANK[role] < RANK[minimum]) throw new DomainError("FORBIDDEN", `Account slot lacks the ${minimum} project role.`); return project; }
   private workspace(projectId: string): string { assertSafeProjectIdentifier(projectId, "project id"); return path.join(this.projectsRoot, projectId, "workspace"); }
   private async recordHistory(project: ProjectRecord, action: string, summary: string): Promise<void> { const revision = await this.history.record(project.id, this.workspace(project.id), action, summary, { projectId: project.id, version: project.version }); await this.db.transaction((state) => { state.history.push(revision); }); }
+  async importProjectBundle(input: { projectId: string; name: string; description?: string; ownerSlotId: string; files: Array<{ path: string; content: string; contentType?: string }>; receipt: MigrationReceipt }): Promise<ProjectSummary> {
+    const projectId = assertSafeProjectIdentifier(input.projectId, "project id");
+    const stage = path.join(this.dataRoot, `.migration-stage-${randomUUID()}`, projectId, "workspace");
+    const project: ProjectRecord = { id: projectId, name: bounded(input.name, "name", 200), description: bounded(input.description || "Imported project", "description", 10_000), ownerSlotId: input.ownerSlotId, createdAt: nowIso(), updatedAt: nowIso(), version: 1, archivedAt: null, settings: {} };
+    try {
+      await mkdir(stage, { recursive: true });
+      for (const file of input.files) await writeFileAtomic(await safeProjectPath(stage, file.path), file.content);
+      await this.db.transaction(async (state) => {
+        const owner = state.accounts.find((account) => account.slotId === input.ownerSlotId);
+        if (!owner || (owner.state !== "ready" && owner.state !== "offline")) throw new DomainError("ACTOR_NOT_AUTHENTICATED", "An authenticated account is required for import.");
+        if (state.projects.some((candidate) => candidate.id === projectId)) throw new DomainError("PROJECT_EXISTS", "The project id is already in use.");
+        state.projects.push(project);
+        for (const file of input.files) state.files.push({ projectId, path: file.path, content: file.content, contentType: file.contentType || "text/plain", byteLength: Buffer.byteLength(file.content), version: 1, updatedAt: nowIso(), deletedAt: null });
+        state.receipts.push(input.receipt);
+      });
+      await mkdir(this.workspace(projectId), { recursive: true });
+      for (const file of input.files) await writeFileAtomic(await safeProjectPath(this.workspace(projectId), file.path), file.content);
+      await rm(path.dirname(path.dirname(stage)), { recursive: true, force: true });
+      return { ...project, role: "owner" };
+    } catch (error) {
+      await rm(path.dirname(path.dirname(stage)), { recursive: true, force: true });
+      await this.db.transaction((state) => {
+        state.projects = state.projects.filter((candidate) => candidate.id !== projectId);
+        state.files = state.files.filter((file) => file.projectId !== projectId);
+        state.receipts = state.receipts.filter((receipt) => receipt.idempotencyKey !== input.receipt.idempotencyKey);
+      }).catch(() => undefined);
+      await rm(this.workspace(projectId), { recursive: true, force: true });
+      throw error;
+    }
+  }
 }
 function roleOf(state: DatabaseState, project: ProjectRecord, slotId: string): ProjectRole | undefined { return project.ownerSlotId === slotId ? "owner" : state.grants.find((g) => g.projectId === project.id && g.slotId === slotId)?.role; }
 function bump(state: DatabaseState, projectId: string): void { const project = state.projects.find((p) => p.id === projectId); if (project) { project.version += 1; project.updatedAt = nowIso(); } }
