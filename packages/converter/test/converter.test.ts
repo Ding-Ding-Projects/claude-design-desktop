@@ -145,21 +145,14 @@ test("restricted product runner publishes only validated child output", async ()
     executable: { adapterId: "test-adapter", executableId: "test-adapter", absolutePath: executablePath, sha256: executableHash, kind: "native-executable", allowedArguments: [], allowedEnvironmentKeys: [] },
     validateOutput: (bytes, format) => ({ valid: bytes.byteLength === 3, format, bytes: bytes.byteLength })
   });
-  const runner = new ProductOwnedIsolatedRunner(new AdapterRegistry([adapter], dirname(executablePath)), directory, (_executable, _args, _options) => {
-    queueMicrotask(async () => {
-      await writeFile(outputPath, Uint8Array.from([7, 8, 9]));
-      exitListener?.(0);
-    });
-    return fakeProcess;
-  }, {
-    killOnClose: true,
-    networkDenied: true,
-    networkPolicy: "deny-all",
-    maxProcesses: 1,
-    memoryLimitBytes: DEFAULT_RESOURCE_LIMITS.maxMemoryBytes,
-    cpuTimeMs: DEFAULT_RESOURCE_LIMITS.maxCpuMs,
-    temporaryQuotaBytes: DEFAULT_RESOURCE_LIMITS.maxTemporaryBytes,
-    attach: async () => ({ release: async () => undefined })
+  const runner = new ProductOwnedIsolatedRunner(new AdapterRegistry([adapter], dirname(executablePath)), directory, {
+    launch: async (request) => {
+      queueMicrotask(async () => {
+        await writeFile(request.outputPath, Uint8Array.from([7, 8, 9]));
+        exitListener?.(0);
+      });
+      return fakeProcess;
+    }
   });
   try {
     const result = await convertWithIsolatedRunner({ adapter, inputPath, outputPath, publishPath, temporaryDirectory, allowedRoots: [directory], targetFormat: "txt", inputBytes: 5, estimatedOutputBytes: 3, arguments: [], environment: {} }, runner);
@@ -445,7 +438,7 @@ test("cancellation coordinates atomically with a concurrent claim", async () => 
     await first.append(job());
     await Promise.all([first.cancelQueued(), new FileDurableQueueStore(directory).claimNext()]);
     const state = (await first.listPage(undefined, 10)).items[0]?.state;
-    assert.ok(state === "cancelled" || state === "processing");
+    assert.equal(state, "cancelled");
     assert.equal((await new FileDurableQueueStore(directory).loadControl()).cancelled, true);
   } finally {
     await rm(directory, { recursive: true, force: true });

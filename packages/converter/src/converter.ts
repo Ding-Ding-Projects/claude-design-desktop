@@ -1,9 +1,8 @@
-import { lstat, mkdir, opendir, open, readFile, realpath, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { lstat, mkdir, opendir, open, readFile, realpath, rename, rm, stat, statfs, utimes, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
-import { spawn } from "node:child_process";
 
 export const CONVERTER_CATEGORIES = [
   "Documents/PDF",
@@ -536,17 +535,19 @@ export type ProductProcess = {
   kill: () => boolean;
 };
 
-export type ProductProcessFactory = (executable: string, args: readonly string[], options: { cwd: string; env: Readonly<Record<string, string>> }) => ProductProcess;
+export type RestrictedLaunchRequest = {
+  executablePath: string;
+  arguments: readonly string[];
+  environment: Readonly<Record<string, string>>;
+  cwd: string;
+  temporaryDirectory: string;
+  outputPath: string;
+  limits: ResourceLimits;
+};
 
-export type RestrictedProcessBoundary = {
-  killOnClose: true;
-  networkDenied: true;
-  networkPolicy: "deny-all";
-  maxProcesses: 1;
-  memoryLimitBytes: number;
-  cpuTimeMs: number;
-  temporaryQuotaBytes: number;
-  attach: (child: ProductProcess, limits: ResourceLimits) => Promise<{ release: () => Promise<void> }>;
+/** Opaque product-owned launcher. It returns only after all restrictions are active. */
+export type RestrictedLaunchFactory = {
+  launch: (request: RestrictedLaunchRequest, signal: AbortSignal) => Promise<ProductProcess>;
 };
 
 export function validateRunnerRequest(request: RunnerRequest): void {
@@ -581,21 +582,19 @@ export function validateRunnerRequest(request: RunnerRequest): void {
 export class ProductOwnedIsolatedRunner {
   private readonly registry: AdapterRegistry;
   private readonly tempRoot: string;
-  private readonly processFactory: ProductProcessFactory;
-  private readonly processBoundary?: RestrictedProcessBoundary;
+  private readonly launchFactory?: RestrictedLaunchFactory;
 
-  constructor(registry: AdapterRegistry, tempRoot = resolve(registry.packagedRoot, ".converter-temp"), processFactory: ProductProcessFactory = (executable, args, options) => spawn(executable, [...args], { ...options, shell: false, stdio: "ignore", windowsHide: true }), processBoundary?: RestrictedProcessBoundary) {
+  constructor(registry: AdapterRegistry, tempRoot = resolve(registry.packagedRoot, ".converter-temp"), launchFactory?: RestrictedLaunchFactory) {
     this.registry = registry;
     this.tempRoot = resolve(tempRoot);
-    this.processFactory = processFactory;
-    this.processBoundary = processBoundary;
+    this.launchFactory = launchFactory;
   }
 
   async run(request: RunnerRequest, signal: AbortSignal): Promise<RunnerResult> {
     validateRunnerRequest(request);
-    const processBoundary = this.processBoundary;
-    assertRestrictedBoundary(processBoundary, request.adapter.resourceLimits);
-    const verifiedProcessBoundary = processBoundary as RestrictedProcessBoundary;
+    const launchFactory = this.launchFactory;
+    assertRestrictedLaunchFactory(launchFactory, request.adapter.resourceLimits);
+    const verifiedLaunchFactory = launchFactory as RestrictedLaunchFactory;
     const verification = await verifyPackagedAdapter(request.adapter, this.registry.packagedRoot);
     if (!verification.enabled || !verification.resolvedPath) {
       throw new Error(`Adapter is unavailable: ${verification.reason || "packaged proof verification failed"}`);
@@ -636,18 +635,18 @@ export class ProductOwnedIsolatedRunner {
       throw new Error("Conversion was cancelled before process start.");
     }
     const startedAt = Date.now();
-    const child = this.processFactory(executable.absolutePath, args, { cwd: canonicalTempDirectory, env: environment });
-    const boundaryHandle = await verifiedProcessBoundary.attach(child, request.adapter.resourceLimits).catch((error) => {
-      child.kill();
-      throw error;
-    });
+    const child = await verifiedLaunchFactory.launch({
+      executablePath: executable.absolutePath,
+      arguments: args,
+      environment,
+      cwd: canonicalTempDirectory,
+      temporaryDirectory: canonicalTempDirectory,
+      outputPath: request.outputPath,
+      limits: request.adapter.resourceLimits
+    }, signal);
     return new Promise<RunnerResult>((resolveResult, rejectResult) => {
       let settled = false;
-      let releasePromise: Promise<void> | undefined;
-      const releaseBoundary = () => {
-        releasePromise ||= boundaryHandle.release().catch(() => undefined);
-        return releasePromise;
-      };
+      const releaseBoundary = () => undefined;
       const timer = setTimeout(() => {
         child.kill();
         settleReject(new Error("Conversion exceeded the CPU-time limit."));
@@ -682,7 +681,6 @@ export class ProductOwnedIsolatedRunner {
           await writeValidatedOutput(request.publishPath, output, (bytes) => request.adapter.validateOutput(bytes, request.targetFormat));
           if (settled) return;
           settled = true;
-          await releaseBoundary();
           clearTimeout(timer);
           signal.removeEventListener("abort", cancel);
           resolveResult({ output, elapsedMs: Date.now() - startedAt });
@@ -694,11 +692,11 @@ export class ProductOwnedIsolatedRunner {
   }
 }
 
-function assertRestrictedBoundary(boundary: RestrictedProcessBoundary | undefined, limits: ResourceLimits): void {
-  if (!boundary || boundary.killOnClose !== true || boundary.networkDenied !== true || boundary.networkPolicy !== "deny-all" || boundary.maxProcesses !== 1 || typeof boundary.attach !== "function") {
+function assertRestrictedLaunchFactory(factory: RestrictedLaunchFactory | undefined, limits: ResourceLimits): void {
+  if (!factory || typeof factory.launch !== "function") {
     throw new Error("Native adapter execution is unavailable without an enforceable restricted process boundary.");
   }
-  if (!Number.isSafeInteger(boundary.memoryLimitBytes) || !Number.isSafeInteger(boundary.cpuTimeMs) || !Number.isSafeInteger(boundary.temporaryQuotaBytes) || boundary.memoryLimitBytes <= 0 || boundary.cpuTimeMs <= 0 || boundary.temporaryQuotaBytes <= 0 || boundary.memoryLimitBytes > limits.maxMemoryBytes || boundary.cpuTimeMs > limits.maxCpuMs || boundary.temporaryQuotaBytes > limits.maxTemporaryBytes) {
+  if (limits.maxMemoryBytes <= 0 || limits.maxTemporaryBytes <= 0 || limits.maxCpuMs <= 0) {
     throw new Error("Restricted process resource limits are invalid.");
   }
 }
@@ -1016,6 +1014,7 @@ export type QueuePage = { items: ConversionJob[]; nextCursor?: string };
 export type DurableQueueStore = {
   append: (job: ConversionJob) => Promise<void>;
   claimNext: () => Promise<ConversionJob | undefined>;
+  confirmClaim: (id: string, lease: QueueLease) => Promise<boolean>;
   update: (id: string, update: Partial<ConversionJob>, lease?: QueueLease) => Promise<void>;
   heartbeat: (id: string, lease: QueueLease) => Promise<void>;
   cancelQueued: () => Promise<void>;
@@ -1038,6 +1037,7 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
   }
 
   async claimNext(): Promise<ConversionJob | undefined> {
+    if (this.control.cancelled) return undefined;
     const next = [...this.jobs.values()].find((job) => job.state === "queued");
     if (!next) {
       return undefined;
@@ -1048,6 +1048,13 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
     claimed.leaseExpiresAt = new Date(Date.now() + 30_000).toISOString();
     this.jobs.set(next.id, claimed);
     return claimed;
+  }
+
+  async confirmClaim(id: string, lease: QueueLease): Promise<boolean> {
+    const job = this.jobs.get(id);
+    if (!job || this.control.cancelled) return false;
+    try { assertLease(job, lease); } catch { return false; }
+    return job.state === "processing";
   }
 
   async update(id: string, update: Partial<ConversionJob>, lease?: QueueLease): Promise<void> {
@@ -1075,8 +1082,14 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
 
   async cancelQueued(): Promise<void> {
     for (const job of this.jobs.values()) {
-      if (job.state === "queued") {
-        this.jobs.set(job.id, { ...job, state: "cancelled", updatedAt: new Date().toISOString() });
+      if (job.state === "queued" || job.state === "processing") {
+        const next = { ...job, state: "cancelled" as const, updatedAt: new Date().toISOString() };
+        if (job.state === "queued") {
+          delete next.leaseOwner;
+          delete next.leaseNonce;
+          delete next.leaseExpiresAt;
+        }
+        this.jobs.set(job.id, next);
       }
     }
     await this.saveControl({ paused: this.control.paused, cancelled: true, updatedAt: new Date().toISOString() });
@@ -1158,7 +1171,8 @@ export class FileDurableQueueStore implements DurableQueueStore {
             continue;
           }
           const job = await this.readRecord(entry.name);
-          if (!job || job.state !== "queued") {
+          const control = await this.readControlUnsafe();
+          if (control.cancelled || !job || job.state !== "queued") {
             continue;
           }
           claimed = { ...job, state: "processing", attempts: job.attempts + 1, updatedAt: new Date().toISOString(), leaseOwner: this.owner, leaseNonce: randomUUID(), leaseExpiresAt: new Date(Date.now() + this.leaseDurationMs).toISOString() };
@@ -1170,6 +1184,16 @@ export class FileDurableQueueStore implements DurableQueueStore {
       }
     });
     return claimed;
+  }
+
+  async confirmClaim(id: string, lease: QueueLease): Promise<boolean> {
+    return withFileLock(this.directory, async () => {
+      const control = await this.readControlUnsafe();
+      const job = await this.readRecord(`${id}.json`);
+      if (control.cancelled || !job) return false;
+      try { assertLease(job, lease); } catch { return false; }
+      return job.state === "processing";
+    }, this.owner);
   }
 
   async update(id: string, update: Partial<ConversionJob>, lease?: QueueLease): Promise<void> {
@@ -1216,8 +1240,14 @@ export class FileDurableQueueStore implements DurableQueueStore {
           const id = String(line).trim();
           if (!/^[0-9a-f-]{36}$/i.test(id)) continue;
           const job = await this.readRecord(`${id}.json`);
-          if (job?.state === "queued") {
-            await this.writeRecord({ ...job, state: "cancelled", updatedAt: new Date().toISOString() });
+          if (job?.state === "queued" || job?.state === "processing") {
+            const next = { ...job, state: "cancelled" as const, updatedAt: new Date().toISOString() };
+            if (job.state === "queued") {
+              delete next.leaseOwner;
+              delete next.leaseNonce;
+              delete next.leaseExpiresAt;
+            }
+            await this.writeRecord(next);
           }
         }
       } finally {
@@ -1289,6 +1319,10 @@ export class FileDurableQueueStore implements DurableQueueStore {
   }
 
   async loadControl(): Promise<QueueControl> {
+    return this.readControlUnsafe();
+  }
+
+  private async readControlUnsafe(): Promise<QueueControl> {
     try {
       const value = JSON.parse(await readFile(this.controlPath, "utf8")) as QueueControl;
       if (!isValidQueueControl(value)) throw new Error("invalid control");
@@ -1396,9 +1430,13 @@ async function withFileLock<T>(directory: string, operation: () => Promise<T>, o
   if (!handle) throw new Error("Queue lock could not be acquired.");
   const nonce = randomUUID();
   await handle.writeFile(JSON.stringify({ owner, nonce, createdAt: new Date().toISOString() }), "utf8");
+  const lockHeartbeat = setInterval(() => {
+    void utimes(lockPath, new Date(), new Date()).catch(() => undefined);
+  }, 1_000);
   try {
     return await operation();
   } finally {
+    clearInterval(lockHeartbeat);
     let owned = false;
     try {
       const record = JSON.parse(await readFile(lockPath, "utf8")) as { owner?: string; nonce?: string };
@@ -1515,6 +1553,11 @@ export class DurableConversionQueue {
         }).catch(() => undefined);
       }, 250);
       try {
+        const confirmed = lease ? await this.store.confirmClaim(job.id, lease) : false;
+        if (!confirmed) {
+          await this.store.update(job.id, { state: "cancelled" }, lease).catch(() => undefined);
+          continue;
+        }
         const freeBytes = await this.freeSpaceProbe(dirname(job.destinationPath));
         const storage = preflightDestinationStorage({
           requiredBytes: job.estimatedOutputBytes,
@@ -1568,7 +1611,10 @@ function isValidQueueJob(value: unknown): value is ConversionJob {
 }
 
 function assertLease(job: ConversionJob, lease: QueueLease | undefined): void {
-  if (job.state !== "processing") return;
+  if (job.state !== "processing") {
+    if (lease) throw new Error("Queue lease is no longer active.");
+    return;
+  }
   if (!lease || lease.owner !== job.leaseOwner || lease.nonce !== job.leaseNonce || isLeaseExpired(job)) {
     throw new Error("Queue lease is missing, expired, or owned by another process.");
   }
