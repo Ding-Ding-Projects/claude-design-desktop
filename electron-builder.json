@@ -1,0 +1,33 @@
+{
+  "appId": "com.dingdingprojects.claudedesigndesktop",
+  "productName": "Claude Design Desktop",
+  "executableName": "Claude Design Desktop",
+  "asar": true,
+  "directories": {
+    "output": "dist/squirrel-windows",
+    "buildResources": "build/resources"
+  },
+  "files": [
+    "dist/**",
+    "packages/electron/dist/**",
+    "packages/ui/dist/**",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "dist/resources/codex",
+      "to": "codex",
+      "filter": ["**/*"]
+    }
+  ],
+  "win": {
+    "target": ["squirrel"],
+    "signAndEditExecutable": false
+  },
+  "squirrelWindows": {
+    "artifactName": "Setup.${ext}",
+    "msi": false
+  },
+  "forceCodeSigning": false,
+  "signExecutable": false
+}

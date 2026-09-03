@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "runtimePackage": "@openai/codex-win32-x64",
+  "runtimeVersion": "0.152.1-win32-x64",
+  "protocolVersion": "v2",
+  "platform": "win32-x64",
+  "binaryRelativePath": "bin/codex.exe",
+  "binarySha256": "01b0fd4167393e004b9174c77ae5f8570486118e19dc4216cfc62a62a74b6ee6",
+  "generated": {
+    "typescript": {
+      "relativePath": "schemas/ts",
+      "fileCount": 701,
+      "sha256OfSortedFileHashes": "8d6fb35b0a706a828efdd5e71585efceb0893335423c60c23e470fb7b3cf0a3c"
+    },
+    "jsonSchema": {
+      "relativePath": "schemas/json",
+      "fileCount": 302,
+      "sha256OfSortedFileHashes": "ba84803aaac9399b93507227f117194f9b7688ddd1469a3b4a386e6f0c20aa75"
+    }
+  },
+  "source": "codex.exe app-server generate-ts and generate-json-schema from @openai/codex-win32-x64@0.152.1"
+}

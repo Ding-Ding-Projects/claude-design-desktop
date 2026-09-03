@@ -1,0 +1,164 @@
+name: Build and publish release
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-package-release:
+    runs-on: windows-2025
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.ORG_TOKEN || secrets.GITHUB_TOKEN }}
+      RELEASE_ROOT: ${{ runner.temp }}\claude-design-desktop-release
+      JOB_STATUS: ${{ job.status }}
+    steps:
+      - name: Check out the requested commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record workflow start
+        shell: pwsh
+        run: |
+          $started = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" --jq .run_started_at
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($started)) { throw 'The GitHub Actions run start timestamp could not be read from the run record.' }
+          "WORKFLOW_STARTED=$started" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Force -Path $env:RELEASE_ROOT | Out-Null
+
+      - name: Bootstrap locked build dependencies
+        shell: pwsh
+        run: .\download-dependencies.bat /s
+
+      - name: Select the pinned Node runtime
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw release-support/dependency-manifest.json | ConvertFrom-Json
+          $nodeHome = Join-Path $env:LOCALAPPDATA ("Ding-Ding-Projects/ClaudeDesignDesktop/toolchain/node-v{0}-win-x64" -f $manifest.node.version)
+          if (-not (Test-Path -LiteralPath (Join-Path $nodeHome 'node.exe'))) { throw "Pinned Node runtime is missing: $nodeHome" }
+          "NODE_HOME=$nodeHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$nodeHome;$env:Path" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build the runnable application
+        shell: pwsh
+        run: .\build.bat /s
+
+      - name: Build and validate unsigned Squirrel.Windows installer
+        shell: pwsh
+        run: .\build-installer.bat /s
+
+      - name: Count surviving project lines
+        shell: pwsh
+        run: |
+          & (Join-Path $env:NODE_HOME 'node.exe') scripts/line-count.mjs | Tee-Object -FilePath (Join-Path $env:RELEASE_ROOT 'line-count.md')
+
+      - name: Resolve public dim-sum release code name
+        shell: pwsh
+        run: |
+          & (Join-Path $env:NODE_HOME 'node.exe') scripts/resolve-dim-sum-code-name.mjs --output (Join-Path $env:RELEASE_ROOT 'dim-sum-code-name.json') --history release-support/release-history.json
+
+      - name: Validate updater contract
+        shell: pwsh
+        run: |
+          & (Join-Path $env:NODE_HOME 'node.exe') scripts/validate-updater-feed.mjs
+
+      - name: Validate bundled Codex runtime contract
+        shell: pwsh
+        run: |
+          & (Join-Path $env:NODE_HOME 'node.exe') scripts/validate-codex-runtime.mjs
+
+      - name: Collect safe release files
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $targets = @(
+            (Join-Path $pwd 'dist/squirrel-windows'),
+            (Join-Path $pwd 'packages/electron/dist/squirrel-windows')
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          foreach ($target in $targets) {
+            Copy-Item -LiteralPath (Join-Path $target 'Setup.exe') -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath (Join-Path $target 'RELEASES') -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -LiteralPath $target -Filter '*.nupkg' -File | Copy-Item -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
+          }
+          $status = "run=$env:GITHUB_RUN_ID`ncommit=$env:GITHUB_SHA`njob_status=$env:JOB_STATUS`n"
+          $status | Out-File -FilePath (Join-Path $env:RELEASE_ROOT 'run-context.txt') -Encoding utf8
+
+      - name: Upload safe failure and build outputs
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-output-${{ github.run_id }}
+          path: ${{ runner.temp }}\claude-design-desktop-release
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Create one unique release
+        id: publish
+        shell: pwsh
+        run: |
+          $tag = "preview-${env:GITHUB_RUN_NUMBER}-${env:GITHUB_SHA.Substring(0,12)}"
+          $codeNamePath = Join-Path $env:RELEASE_ROOT 'dim-sum-code-name.json'
+          $codeName = if (Test-Path -LiteralPath $codeNamePath) { Get-Content -Raw $codeNamePath | ConvertFrom-Json } else { $null }
+          $label = if ($codeName -and $codeName.available) { "$($codeName.name.en) · $($codeName.name.zhHant)" } else { 'No public code name resolved' }
+          $photoLink = if ($codeName -and $codeName.available -and $codeName.photoUrl) { $codeName.photoUrl } else { 'No direct public photo was resolved' }
+          $notes = @(
+            '# Claude Design Desktop preview release',
+            '',
+            "Commit: $env:GITHUB_SHA",
+            "Platform: Windows x64",
+            "Dim-sum code name: $label",
+            "Public photo source: $photoLink",
+            '',
+            '## Line count',
+            '',
+            (Get-Content -Raw (Join-Path $env:RELEASE_ROOT 'line-count.md')),
+            '',
+            '## Verification boundary',
+            '',
+            'The workflow builds and packages the unsigned Squirrel.Windows installer. It runs no tests, lint, type checks, or accessibility checks in GitHub Actions. Local verification belongs to the development task.',
+            '',
+            'Code signing is prohibited. The operating system may show an unknown-publisher warning.'
+          )
+          $assets = @((Join-Path $env:RELEASE_ROOT 'Setup.exe'), (Join-Path $env:RELEASE_ROOT 'RELEASES'))
+          $assets += @(Get-ChildItem -LiteralPath $env:RELEASE_ROOT -Filter '*.nupkg' -File | ForEach-Object FullName)
+          if ($assets.Count -lt 3) { throw 'Release asset collection did not find Setup.exe, RELEASES, and a full .nupkg.' }
+          $hashLines = @('', '## Installer hashes', '')
+          foreach ($asset in $assets) { $hashLines += "$(Split-Path $asset -Leaf): $((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant())" }
+          $notes += $hashLines
+          $notes -join "`n" | Out-File -FilePath (Join-Path $env:RELEASE_ROOT 'release-notes.md') -Encoding utf8
+          gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Claude Design Desktop $tag" --notes-file (Join-Path $env:RELEASE_ROOT 'release-notes.md') @assets
+          if ($LASTEXITCODE -ne 0) { throw "gh release create exited with code $LASTEXITCODE." }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Record verified workflow timing in release notes
+        if: ${{ success() }}
+        shell: pwsh
+        run: |
+          $completed = (Get-Date).ToUniversalTime()
+          $started = [DateTimeOffset]::Parse($env:WORKFLOW_STARTED)
+          $duration = $completed - $started
+          $timing = @(
+            '',
+            '## Workflow timing',
+            '',
+            "Workflow started: $($started.ToString('o'))",
+            "Workflow completed: $($completed.ToString('o'))",
+            "Workflow duration: $($duration.ToString('hh\:mm\:ss'))"
+          ) -join "`n"
+          Add-Content -LiteralPath (Join-Path $env:RELEASE_ROOT 'release-notes.md') -Value $timing
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --notes-file (Join-Path $env:RELEASE_ROOT 'release-notes.md')
+          if ($LASTEXITCODE -ne 0) { throw "gh release edit exited with code $LASTEXITCODE." }
+
+      - name: Verify published release target and assets
+        if: ${{ success() }}
+        shell: pwsh
+        run: |
+          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft,tagName,targetCommitish,assets | ConvertFrom-Json
+          if ($release.isDraft) { throw 'Published release is unexpectedly a draft.' }
+          if ($release.targetCommitish -ne $env:GITHUB_SHA) { throw "Release target mismatch: $($release.targetCommitish)" }
+          $assetNames = @($release.assets | ForEach-Object name)
+          foreach ($required in @('Setup.exe', 'RELEASES')) { if ($assetNames -notcontains $required) { throw "Published release is missing $required." } }

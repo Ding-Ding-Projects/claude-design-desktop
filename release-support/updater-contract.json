@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "feedProtocol": "squirrel-windows",
+  "feedTransport": "https",
+  "identity": {
+    "appId": "com.dingdingprojects.claudedesigndesktop",
+    "productName": "Claude Design Desktop"
+  },
+  "signatureRequired": false,
+  "hashRequired": true,
+  "userActions": ["Restart to install update", "Later", "Check for updates"],
+  "verificationStates": ["current", "available", "downloading", "ready", "offline", "invalid-feed", "invalid-package", "rollback"]
+}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "project": "claude-design-desktop",
+  "platform": "win32-x64",
+  "node": {
+    "version": "22.14.0",
+    "url": "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip",
+    "sha256": "55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217"
+  },
+  "npmPackages": [
+    {
+      "name": "electron",
+      "version": "42.3.3",
+      "tarball": "https://registry.npmjs.org/electron/-/electron-42.3.3.tgz",
+      "integrity": "sha512-0MwYp9wTb7TrtTalOYqeW+suqd9T/Znstr/nDLKqFGIjHdBZX339guo3mQqTPURRZ/UQmYM4uMpzKpI5wLptfQ=="
+    },
+    {
+      "name": "electron-builder",
+      "version": "26.15.3",
+      "tarball": "https://registry.npmjs.org/electron-builder/-/electron-builder-26.15.3.tgz",
+      "integrity": "sha512-a1KM5heqS3gQCZzizXEI8RjJy3QVogULPdeSknt76uLDpBIW/HDGsMg/XgP0riP6PI9COsRvFITKKGDqA8fJxA=="
+    },
+    {
+      "name": "electron-builder-squirrel-windows",
+      "version": "26.15.3",
+      "tarball": "https://registry.npmjs.org/electron-builder-squirrel-windows/-/electron-builder-squirrel-windows-26.15.3.tgz",
+      "integrity": "sha512-Jc19XPV9y9+2bAdZPkXuVNGNIEFBq9poHC61l8Kv6FdK7DRG3+Ic0rerC0DXOaeHNz8yW0fg/JnF8GQROOF5MA=="
+    },
+    {
+      "name": "@openai/codex",
+      "version": "0.152.1",
+      "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.152.1.tgz",
+      "integrity": "sha512-dSwQzl6JgsFe8L9i8xUnwRz9Vy8gn4UvXFU9xq2IJ1eC7zsSttqQ2SGq49ZZIjEyZQ0LZjCs6Bvtxort2Iyebg=="
+    },
+    {
+      "name": "@openai/codex-win32-x64",
+      "version": "0.152.1-win32-x64",
+      "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.152.1-win32-x64.tgz",
+      "integrity": "sha512-B8h0/2Kt+rKQv2+vqBhlhWkMEdhf4dsn46FNKMEBTXj3YC5hwSioOcTX2hMgJxMEMtKIMH6Ire1eNrQPvaL9og=="
+    }
+  ],
+  "requiredPackagedPaths": [
+    "resources/app.asar",
+    "resources/codex",
+    "resources/app-server"
+  ]
+}
