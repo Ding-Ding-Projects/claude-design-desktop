@@ -53,17 +53,25 @@ export function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-export function parseSemanticVersion(value: unknown): [number, number, number, string[]] {
+export function parseSemanticVersion(value: unknown): [string, string, string, string[]] {
   if (typeof value !== "string") throw new Error("Update version must be a string.");
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value);
   if (!match) throw new Error("Update version is not a semantic version.");
-  return [Number(match[1]), Number(match[2]), Number(match[3]), match[4] ? match[4].split(".") : []];
+  const prerelease = match[4] ? match[4].split(".") : [];
+  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith("0"))) {
+    throw new Error("Update version has a leading-zero numeric prerelease identifier.");
+  }
+  if ([match[1], match[2], match[3]].some((part) => part.length > 1024)) throw new Error("Update version numeric component is too large.");
+  return [match[1], match[2], match[3], prerelease];
 }
 
 export function compareSemanticVersions(left: string, right: string): number {
   const a = parseSemanticVersion(left);
   const b = parseSemanticVersion(right);
-  for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] === b[index]) continue;
+    return a[index].length === b[index].length ? (a[index] > b[index] ? 1 : -1) : (a[index].length > b[index].length ? 1 : -1);
+  }
   if (!a[3].length && b[3].length) return 1;
   if (a[3].length && !b[3].length) return -1;
   for (let index = 0; index < Math.max(a[3].length, b[3].length); index += 1) {
@@ -155,12 +163,22 @@ async function readBoundedBody(body: Body, limit: number, signal: AbortSignal): 
   return result;
 }
 
-type BoundResponse = { body: AsyncIterable<Uint8Array>; headers: Record<string, string>; status: number };
+type BoundResponse = { body: AsyncIterable<Uint8Array>; dispose: () => void; headers: Record<string, string>; status: number };
 async function requestBoundHttps(target: ResolvedTransportTarget, signal: AbortSignal, timeoutMs: number, accept: string): Promise<BoundResponse> {
   const deadline = deadlineSignal(signal, timeoutMs);
+  let request: ReturnType<typeof httpsRequest> | undefined;
+  let responseRef: IncomingMessage | undefined;
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    deadline.dispose();
+    responseRef?.destroy();
+    request?.destroy();
+  };
   return new Promise((resolve, reject) => {
     const url = new URL(target.url);
-    const request = httpsRequest({
+    request = httpsRequest({
       host: url.hostname,
       lookup: (_hostname: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) => callback(null, target.address, target.family),
       path: url.pathname + url.search,
@@ -169,6 +187,7 @@ async function requestBoundHttps(target: ResolvedTransportTarget, signal: AbortS
       signal: deadline.signal,
       headers: { accept }
     }, (response: IncomingMessage) => {
+      responseRef = response;
       const incoming = response as unknown as AsyncIterable<Uint8Array>;
       async function* body(): AsyncIterable<Uint8Array> {
         try {
@@ -176,12 +195,13 @@ async function requestBoundHttps(target: ResolvedTransportTarget, signal: AbortS
             if (deadline.signal.aborted) throw deadline.signal.reason || new Error("Update transport timed out.");
             yield chunk;
           }
-        } finally { deadline.dispose(); }
+        } finally { dispose(); }
       }
       const headers = Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : String(value || "")]));
-      resolve({ body: body(), headers, status: response.statusCode || 0 });
+      resolve({ body: body(), dispose, headers, status: response.statusCode || 0 });
     });
-    request.once("error", (error: Error) => { deadline.dispose(); reject(error); });
+    request.once("error", (error: Error) => { dispose(); reject(error); });
+    signal.addEventListener("abort", dispose, { once: true });
     request.end();
   });
 }
@@ -189,24 +209,30 @@ async function requestBoundHttps(target: ResolvedTransportTarget, signal: AbortS
 export async function fetchHttpsFeed(urlValue: string, signal: AbortSignal, security: TransportSecurity): Promise<FeedResponse> {
   const target = await resolveSafeTransportTarget(urlValue, security, "Update feed URL");
   const response = await requestBoundHttps(target, signal, security.timeoutMs, "application/json");
-  const body = await readBoundedBody(response.body, MAX_FEED_BYTES, signal);
-  return { body, headers: response.headers, status: response.status };
+  try {
+    const body = await readBoundedBody(response.body, MAX_FEED_BYTES, signal);
+    return { body, headers: response.headers, status: response.status };
+  } finally { response.dispose(); }
 }
 
 export async function downloadHttpsPackage(descriptor: PackageDescriptor, signal: AbortSignal, security: TransportSecurity): Promise<Body> {
   if (descriptor.platform !== "win32" || descriptor.architecture !== "x64") throw new Error("Only win32/x64 update packages are supported.");
   const target = await resolveSafeTransportTarget(descriptor.url, security, "Update package URL");
   const response = await requestBoundHttps(target, signal, security.timeoutMs, "application/octet-stream");
-  if (response.status < 200 || response.status >= 300) throw new Error("Update package returned HTTP " + response.status + ".");
+  if (response.status < 200 || response.status >= 300) { response.dispose(); throw new Error("Update package returned HTTP " + response.status + "."); }
   const contentLength = response.headers["content-length"];
-  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_PACKAGE_BYTES)) throw new Error("Update package Content-Length is outside the supported bound.");
+  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_PACKAGE_BYTES)) { response.dispose(); throw new Error("Update package Content-Length is outside the supported bound."); }
   let total = 0;
   async function* bounded(): AsyncIterable<Uint8Array> {
-    for await (const chunk of response.body) {
-      if (signal.aborted) throw signal.reason || new Error("Operation cancelled.");
-      total += chunk.byteLength;
-      if (total > MAX_PACKAGE_BYTES) throw new Error("Update package exceeds its bounded size.");
-      yield chunk;
+    try {
+      for await (const chunk of response.body) {
+        if (signal.aborted) throw signal.reason || new Error("Operation cancelled.");
+        total += chunk.byteLength;
+        if (total > MAX_PACKAGE_BYTES) throw new Error("Update package exceeds its bounded size.");
+        yield chunk;
+      }
+    } finally {
+      response.dispose();
     }
   }
   return bounded();

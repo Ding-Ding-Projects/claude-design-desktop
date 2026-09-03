@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -50,6 +50,8 @@ test("semantic versions are monotonic and prereleases sort before stable", () =>
   assert.equal(compareSemanticVersions("1.2.4", "1.2.3"), 1);
   assert.equal(compareSemanticVersions("1.2.3-beta.2", "1.2.3-beta.10"), -1);
   assert.equal(compareSemanticVersions("1.2.3", "1.2.3-rc.1"), 1);
+  assert.equal(compareSemanticVersions("1." + "9".repeat(1024) + ".0", "1.0.0"), 1);
+  assert.throws(() => compareSemanticVersions("1.2.3-01", "1.2.3"), /leading-zero/);
 });
 test("transport rejects credentials, unsafe address classes, non-HTTPS, and non-allowlisted hosts", async () => {
   const security = { allowedHosts: ["updates.example.test"], timeoutMs: 5_000, resolveHost: async () => ["93.184.216.34"] };
@@ -132,7 +134,7 @@ test("atomic store stages, rehydrates, binds product identity, and rejects corru
     assert.throws(() => store.save({ state: "idle", productId: "other" }), /identity/);
     const corruptBytes = Buffer.from(readFileSync(path.join(root, "updates", stageFile)));
     corruptBytes[0] ^= 1;
-    require("node:fs").writeFileSync(path.join(root, "updates", stageFile), corruptBytes);
+    writeFileSync(path.join(root, "updates", stageFile), corruptBytes);
     assert.equal((await restored.rehydrate())?.state, "corrupt-package");
     assert.equal(restored.load()?.state, "corrupt-package");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -145,7 +147,7 @@ test("A-cancel/B-stage/A-cleanup cannot remove B's stage handle", async () => {
     const first = await store.stage(metadata(), packageBytes);
     const second = await store.stage(metadata(), packageBytes);
     await store.discardStaged(first);
-    assert.equal(require("node:fs").existsSync(store.stagedPath(second.fileName as string)), true);
+    assert.equal(existsSync(store.stagedPath(second.fileName as string)), true);
     await store.discardStaged(second);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

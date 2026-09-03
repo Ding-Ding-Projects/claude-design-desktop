@@ -1,0 +1,13 @@
+{
+  "name": "@claude-design-desktop/product-status",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --experimental-strip-types --test test/product-status.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.21",
+    "typescript": "5.8.3"
+  }
+}

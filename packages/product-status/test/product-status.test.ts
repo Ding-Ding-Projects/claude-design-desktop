@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { ProductStatusProjector, createProductStatusProjection, createStatusHubProjectProjection, projectionSha256, type ProductProvenance, type StatusEvidence } from "../src/product-status.ts";
+import { ProductStatusProjector, createProductStatusProjection, createStatusHubProjectProjection, projectionSha256, type ProductProvenance, type StatusEvidence, type ProductStatusProjection } from "../src/product-status.ts";
 
 const provenance: ProductProvenance = {
   buildRecordedAt: "2026-09-02T15:00:00-04:00",
@@ -43,11 +43,12 @@ test("project projection keeps app state and default ref together", () => {
 });
 test("delivery requires a typed receipt and exact read-back", async () => {
   let published = false;
-  const projector = new ProductStatusProjector({
+  let projector: ProductStatusProjector;
+  projector = new ProductStatusProjector({
     appId: "claude-design", enrolled: true, provenance, evidence: [evidence],
     transport: {
       publish: async (projection) => { published = true; return { acceptedAt: "2026-09-02T15:01:00Z", projectionSha256: projectionSha256(projection), receiptId: "receipt-1" }; },
-      readBack: async () => projector.current
+      readBack: async (): Promise<ProductStatusProjection> => projector.current
     }
   });
   const result = await projector.publish();
@@ -56,11 +57,12 @@ test("delivery requires a typed receipt and exact read-back", async () => {
   if (result.delivery === "delivered") assert.equal(result.receipt.receiptId, "receipt-1");
 });
 test("mismatched read-back stays failed and never becomes delivered", async () => {
-  const projector = new ProductStatusProjector({
+  let projector: ProductStatusProjector;
+  projector = new ProductStatusProjector({
     appId: "claude-design", enrolled: true, provenance, evidence: [evidence],
     transport: {
       publish: async (projection) => ({ acceptedAt: "2026-09-02T15:01:00Z", projectionSha256: projectionSha256(projection), receiptId: "receipt-2" }),
-      readBack: async () => ({ ...projector.current, version: "9.9.9" })
+      readBack: async (): Promise<ProductStatusProjection> => ({ ...projector.current, version: "9.9.9" })
     }
   });
   const result = await projector.publish();
