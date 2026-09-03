@@ -32,7 +32,19 @@ test("pairing requires an explicit local reveal and code confirmation before arm
   assert.equal(await pairing.confirm("000000", 30_000), false);
   assert.equal(await pairing.confirm(code, 30_000), true);
   assert.equal(pairing.qr().networkRequired, false);
-  assert.deepEqual(pairing.pairingInput().issuer, "Example");
+  assert.deepEqual(pairing.consumeArmed().issuer, "Example");
+  assert.equal(pairing.consumeArmed(), undefined);
+});
+
+test("pairing expires, purges its secret, and serializes only status", async () => {
+  let now = 0;
+  const pairing = new toys.TotpPairingSession("Example", "alice", { now: () => now, expiresInMs: 1_000 });
+  const manual = pairing.revealManualSecret();
+  now = 1_001;
+  assert.throws(() => pairing.qr(), /expired/);
+  assert.equal(pairing.consumeArmed(), undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(pairing)), { armed: false, expired: true });
+  assert.equal(await toys.verifyTotpCode(manual.secret, "000000", { timestamp: 0 }), false);
 });
 
 test("authenticator accepts manual and URI imports, exposes countdown and next code, and redacts vault references", async () => {
@@ -55,27 +67,66 @@ test("each lock policy enforces ordered factors, independent records, duration, 
   const manager = new toys.LockManager({ vault, now: () => now });
   for (const policy of Object.keys(toys.LOCK_POLICY_FACTORS)) {
     const lock = await manager.createLock({ elementId: `element-${policy}`, policy, pin: "1234", password: "password-123", totpSecret: "JBSWY3DPEHPK3PXP", unlockDuration: { kind: "minutes", minutes: 1 }, recoveryDirectory: "C:/Users/test/AppData/Local/ClaudeDesign" });
-    const first = manager.beginUnlock(lock.id);
-    assert.equal(first.factors[0].verified, false);
+    assert.equal("credentialRefs" in lock, false);
     let ran = false;
-    assert.equal(manager.activate(lock.id, () => { ran = true; }).kind, "authentication-required");
+    const sessionId = `session-${policy.toLowerCase()}`;
+    assert.equal(manager.activate(lock.id, sessionId, () => { ran = true; }).kind, "authentication-required");
     assert.equal(ran, false);
+    const session = manager.beginUnlock(lock.id, sessionId);
+    assert.equal(session.sessionId, sessionId);
     for (const factor of toys.LOCK_POLICY_FACTORS[policy]) {
       const value = factor === "pin" ? "1234" : factor === "password" ? "password-123" : await toys.totpCode("JBSWY3DPEHPK3PXP", { timestamp: now });
-      const state = await manager.verifyNextFactor(lock.id, value, now);
+      const state = await manager.verifyNextFactor(lock.id, sessionId, value, now);
       assert.equal(state.factors.find((candidate) => candidate.factor === factor).verified, true);
     }
-    assert.equal(manager.isUnlocked(lock.id, now), true);
-    assert.equal(manager.activate(lock.id, () => { ran = true; }).kind, "activated");
+    assert.equal(manager.isUnlocked(lock.id, sessionId, now), true);
+    assert.equal(manager.activate(lock.id, sessionId, () => { ran = true; }).kind, "activated");
     assert.equal(ran, true);
     now += 61_000;
-    assert.equal(manager.isUnlocked(lock.id, now), false);
-    manager.relock(lock.id);
+    assert.equal(manager.isUnlocked(lock.id, sessionId, now), false);
+    manager.relock(lock.id, sessionId);
   }
 });
 
+test("sessions require a unique safe identifier and cannot mutate another session", async () => {
+  const manager = new toys.LockManager({ vault: new toys.MemorySecretVault() });
+  const lock = await manager.createLock({ elementId: "button", policy: "PIN", pin: "1234", recoveryDirectory: "C:/AppData" });
+  assert.throws(() => manager.beginUnlock(lock.id, "short"), /Session ID/);
+  manager.beginUnlock(lock.id, "session-01");
+  assert.throws(() => manager.beginUnlock(lock.id, "session-01"), /already in use/);
+  manager.relock(lock.id, "session-01");
+  assert.throws(() => manager.beginUnlock(lock.id, "session-01"), /already in use/);
+  await assert.rejects(() => manager.verifyNextFactor(lock.id, "session-02", "1234"), /valid unlock session/);
+});
+
+test("factor attempt budgets survive closing one prompt and reopening another", async () => {
+  const state = new toys.MemoryLockStatePersistence();
+  const manager = new toys.LockManager({ vault: new toys.MemorySecretVault(), maxAttempts: 2, state });
+  const lock = await manager.createLock({ elementId: "button", policy: "PIN", pin: "1234", recoveryDirectory: "C:/AppData" });
+  manager.beginUnlock(lock.id, "session-a");
+  await manager.verifyNextFactor(lock.id, "session-a", "wrong");
+  manager.relock(lock.id, "session-a");
+  const reopened = manager.beginUnlock(lock.id, "session-b");
+  assert.equal(reopened.factors[0].attempts, 1);
+  await manager.verifyNextFactor(lock.id, "session-b", "wrong");
+  await assert.rejects(() => manager.verifyNextFactor(lock.id, "session-b", "1234"), /Attempt budget exhausted/);
+});
+
+test("password vault records are versioned, salted, and reject tampered records", async () => {
+  const vault = new toys.MemorySecretVault();
+  await toys.storeHashedSecret(vault, "password", "correct horse battery staple");
+  const record = JSON.parse(await vault.get("password"));
+  assert.equal(record.version, 2);
+  assert.equal(record.algorithm, "memory-sha256");
+  assert.equal(typeof record.salt, "string");
+  assert.equal(await toys.verifySecret(vault, "password", "correct horse battery staple"), true);
+  assert.equal(await toys.verifySecret(vault, "password", "wrong"), false);
+  await vault.put("password", JSON.stringify({ ...record, hash: record.hash.replace(/^../, "ff") }));
+  assert.equal(await toys.verifySecret(vault, "password", "correct horse battery staple"), false);
+});
+
 test("super confirmation requires two independently verified keys and the full slider", async () => {
-  const confirmation = new toys.SuperConfirmation("Delete selected records", "2 records", async (slot, value) => value === `${slot}-key`);
+  const confirmation = new toys.SuperConfirmation("Delete selected records", "2 records", async (slot, value) => value === `${slot}-key`, { now: () => 1_000 });
   await confirmation.submitKey("first", "first-key");
   assert.throws(() => confirmation.confirm(), /Both independent keys/);
   await confirmation.submitKey("second", "second-key");
@@ -83,26 +134,49 @@ test("super confirmation requires two independently verified keys and the full s
   assert.throws(() => confirmation.confirm(), /Both independent keys/);
   confirmation.setSlider(100);
   assert.deepEqual(confirmation.confirm(), { authorized: true, action: "Delete selected records", affectedData: "2 records" });
+  assert.throws(() => confirmation.confirm(), /Both independent keys/);
+});
+
+test("super confirmation expires and cannot be replayed", async () => {
+  let now = 1_000;
+  const confirmation = new toys.SuperConfirmation("Remove item", "item-1", async () => true, { now: () => now, expiresInMs: 1_000 });
+  await confirmation.submitKey("first", "a");
+  await confirmation.submitKey("second", "b");
+  now += 1_001;
+  assert.equal(confirmation.state().expired, true);
+  confirmation.setSlider(100);
+  assert.throws(() => confirmation.confirm(), /Both independent keys/);
 });
 
 test("ladder is server-owned, nonce single-use, budgeted, and School mode starts at sums", () => {
   let now = 10_000;
   const ladder = new toys.UnlockLadderServer({ now: () => now, random: () => 0 });
   const lockout = { waitingUntil: now + 60_000, attemptsRemaining: 2, maxAttempts: 2 };
-  const school = ladder.begin("alice", lockout, true);
+  const school = ladder.begin("alice", "alice-session", lockout, true);
   assert.equal(school.rung, "sums");
-  const replay = ladder.submit("alice", school.nonce, { kind: "sums", answers: [] });
+  const replay = ladder.submit("alice", "alice-session", school.nonce, { kind: "sums", answers: [] });
   assert.equal(replay.sessionCookieIssued, false);
-  assert.equal(ladder.submit("alice", school.nonce, { kind: "sums", answers: [] }).reason, "invalid");
+  assert.equal(ladder.submit("alice", "alice-session", school.nonce, { kind: "sums", answers: [] }).reason, "invalid");
   assert.equal(ladder.remainingBudget("alice"), 2);
-  const normal = ladder.begin("bob", lockout, false);
+  const normal = ladder.begin("bob", "bob-session", lockout, false);
   assert.equal(normal.rung, "dish");
   let current = normal;
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const result = ladder.submit("bob", current.nonce, { kind: "dish", choice: 1 });
+    const result = ladder.submit("bob", "bob-session", current.nonce, { kind: "dish", choice: 1 });
     current = result.next;
   }
   assert.equal(current.rung, "sums");
+});
+
+test("ladder budget survives a fresh server instance through its authority adapter", () => {
+  let now = 10_000;
+  const authority = new toys.MemoryLadderAuthority();
+  const first = new toys.UnlockLadderServer({ now: () => now, random: () => 0, authority });
+  const lockout = { waitingUntil: now + 60_000, attemptsRemaining: 1, maxAttempts: 1 };
+  first.begin("persisted", "persisted-session", lockout);
+  const second = new toys.UnlockLadderServer({ now: () => now, random: () => 0, authority });
+  assert.equal(second.remainingBudget("persisted"), 2);
+  assert.throws(() => second.begin("persisted", "bad", lockout), /Session ID/);
 });
 
 test("support tickets and history exports are local and redacted", async () => {

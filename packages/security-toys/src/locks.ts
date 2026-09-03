@@ -1,14 +1,15 @@
 import {
   LOCK_POLICY_FACTORS,
   type FactorState,
+  type InternalLockRecord,
   type LockFactor,
   type LockPolicy,
-  type LockRecord,
+  type LockSummary,
   type UnlockDuration,
   type UnlockSession
 } from "./types";
 import { randomId, SecretVault, storeHashedSecret, verifySecret } from "./vault";
-import { verifyTotpCode } from "./totp";
+import { normalizeBase32, verifyTotpCode } from "./totp";
 
 export const LOCK_DISCLOSURE = "This lock is for fun only. It is not security, encryption, or protection from another person using this computer.";
 
@@ -16,23 +17,47 @@ export type LockManagerOptions = {
   vault: SecretVault;
   now?: () => number;
   maxAttempts?: number;
+  state?: LockStatePersistence;
 };
+
+export interface LockStatePersistence {
+  loadAttempts(lockId: string, factors: readonly LockFactor[]): Map<LockFactor, number>;
+  saveAttempt(lockId: string, factor: LockFactor, attempts: number): void;
+}
+
+export class MemoryLockStatePersistence implements LockStatePersistence {
+  private readonly attempts = new Map<string, Map<LockFactor, number>>();
+  loadAttempts(lockId: string, factors: readonly LockFactor[]): Map<LockFactor, number> {
+    const existing = this.attempts.get(lockId) ?? new Map(factors.map((factor) => [factor, 0]));
+    this.attempts.set(lockId, existing);
+    return new Map(existing);
+  }
+  saveAttempt(lockId: string, factor: LockFactor, attempts: number): void {
+    const record = this.attempts.get(lockId) ?? new Map<LockFactor, number>();
+    record.set(factor, attempts);
+    this.attempts.set(lockId, record);
+  }
+}
 
 export type ActivationResult =
   | { kind: "activated" }
   | { kind: "authentication-required"; lockId: string; elementId: string };
 
 export class LockManager {
-  private readonly locks = new Map<string, LockRecord>();
+  private readonly locks = new Map<string, InternalLockRecord>();
   private readonly sessions = new Map<string, UnlockSession>();
+  private readonly usedSessionIds = new Set<string>();
+  private readonly attemptBudgets = new Map<string, Map<LockFactor, number>>();
   private readonly vault: SecretVault;
   private readonly now: () => number;
   private readonly maxAttempts: number;
+  private readonly state: LockStatePersistence;
 
   constructor(options: LockManagerOptions) {
     this.vault = options.vault;
     this.now = options.now ?? (() => Date.now());
     this.maxAttempts = options.maxAttempts ?? 5;
+    this.state = options.state ?? new MemoryLockStatePersistence();
   }
 
   async createLock(input: {
@@ -44,7 +69,8 @@ export class LockManager {
     unlockDuration?: UnlockDuration;
     lockedOnLaunch?: boolean;
     recoveryDirectory: string;
-  }): Promise<LockRecord> {
+    totpMetadata?: { algorithm: "SHA-1" | "SHA-256" | "SHA-512"; digits: 6 | 7 | 8; period: number };
+  }): Promise<LockSummary> {
     const factors = LOCK_POLICY_FACTORS[input.policy];
     for (const factor of factors) {
       if (factor === "pin" && !input.pin) throw new Error("PIN is required by this policy");
@@ -53,9 +79,11 @@ export class LockManager {
     }
     validateDuration(input.unlockDuration ?? { kind: "session" });
     if (!input.recoveryDirectory.trim()) throw new Error("A recovery directory is required");
+    const totpMetadata = input.totpMetadata ?? { algorithm: "SHA-1" as const, digits: 6 as const, period: 30 };
+    if (!Number.isInteger(totpMetadata.period) || totpMetadata.period < 1 || totpMetadata.period > 86_400) throw new Error("TOTP metadata period is out of bounds");
 
     const id = randomId("lock");
-    const credentialRefs: LockRecord["credentialRefs"] = {};
+    const credentialRefs: InternalLockRecord["credentialRefs"] = {};
     if (factors.includes("pin") && input.pin !== undefined) {
       const ref = randomId("pin");
       await storeHashedSecret(this.vault, ref, input.pin);
@@ -68,10 +96,10 @@ export class LockManager {
     }
     if (factors.includes("totp") && input.totpSecret !== undefined) {
       const ref = randomId("totp");
-      await this.vault.put(ref, input.totpSecret);
+      await this.vault.put(ref, normalizeBase32(input.totpSecret));
       credentialRefs.totp = ref;
     }
-    const record: LockRecord = {
+    const record: InternalLockRecord = {
       id,
       elementId: input.elementId,
       policy: input.policy,
@@ -79,48 +107,58 @@ export class LockManager {
       unlockDuration: input.unlockDuration ?? { kind: "session" },
       lockedOnLaunch: input.lockedOnLaunch ?? true,
       credentialRefs,
+      totp: factors.includes("totp") ? { ...totpMetadata } : undefined,
       disclosure: LOCK_DISCLOSURE,
       recoveryDirectory: input.recoveryDirectory
     };
     this.locks.set(id, record);
-    return cloneLock(record);
+    this.attemptBudgets.set(id, this.state.loadAttempts(id, factors));
+    return summarizeLock(record);
   }
 
-  listLocks(): LockRecord[] {
-    return Array.from(this.locks.values(), cloneLock);
+  listLocks(): LockSummary[] {
+    return Array.from(this.locks.values(), summarizeLock);
   }
 
-  getLock(lockId: string): LockRecord | undefined {
+  getLock(lockId: string): LockSummary | undefined {
     const record = this.locks.get(lockId);
-    return record ? cloneLock(record) : undefined;
+    return record ? summarizeLock(record) : undefined;
   }
 
-  beginUnlock(lockId: string): UnlockSession {
+  beginUnlock(lockId: string, sessionId: string): UnlockSession {
     const lock = this.requireLock(lockId);
+    validateSessionId(sessionId);
+    if (this.usedSessionIds.has(sessionId)) throw new Error("Session ID is already in use");
     const session: UnlockSession = {
       lockId,
-      factors: LOCK_POLICY_FACTORS[lock.policy].map((factor): FactorState => ({ factor, verified: false, attempts: 0 })),
+      sessionId,
+      factors: LOCK_POLICY_FACTORS[lock.policy].map((factor): FactorState => ({ factor, verified: false, attempts: this.state.loadAttempts(lockId, LOCK_POLICY_FACTORS[lock.policy]).get(factor) ?? 0 })),
       startedAt: this.now(),
       unlockedUntil: null,
       complete: false
     };
-    this.sessions.set(lockId, session);
+    this.sessions.set(sessionId, session);
+    this.usedSessionIds.add(sessionId);
     return cloneSession(session);
   }
 
-  async verifyNextFactor(lockId: string, candidate: string, at = this.now()): Promise<UnlockSession> {
+  async verifyNextFactor(lockId: string, sessionId: string, candidate: string, at = this.now()): Promise<UnlockSession> {
     const lock = this.requireLock(lockId);
-    const session = this.sessions.get(lockId) ?? this.beginUnlock(lockId);
+    validateSessionId(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (!session || session.lockId !== lockId) throw new Error("A valid unlock session is required");
     const current = session.factors.find((factor) => !factor.verified);
     if (!current) return cloneSession(session);
     if (current.attempts >= this.maxAttempts) throw new Error("Attempt budget exhausted; use the documented recovery route");
     current.attempts += 1;
+    this.attemptBudgets.get(lockId)?.set(current.factor, current.attempts);
+    this.state.saveAttempt(lockId, current.factor, current.attempts);
     const ref = lock.credentialRefs[current.factor];
     let valid = false;
     if (ref) {
       if (current.factor === "totp") {
         const secret = await this.vault.get(ref);
-        valid = secret ? await verifyTotpCode(secret, candidate, { timestamp: at }) : false;
+        valid = secret ? await verifyTotpCode(secret, candidate, { timestamp: at, ...lock.totp }) : false;
       } else {
         valid = await verifySecret(this.vault, ref, candidate);
       }
@@ -134,14 +172,16 @@ export class LockManager {
     return cloneSession(session);
   }
 
-  isUnlocked(lockId: string, at = this.now()): boolean {
-    const session = this.sessions.get(lockId);
+  isUnlocked(lockId: string, sessionId: string, at = this.now()): boolean {
+    const session = this.sessions.get(sessionId);
+    if (session?.lockId !== lockId) return false;
     if (!session?.complete) return false;
     return session.unlockedUntil === null || session.unlockedUntil > at;
   }
 
-  relock(lockId: string): void {
-    this.sessions.delete(lockId);
+  relock(lockId: string, sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session?.lockId === lockId) this.sessions.delete(sessionId);
   }
 
   async removeLock(lockId: string): Promise<void> {
@@ -149,20 +189,24 @@ export class LockManager {
     for (const ref of Object.values(lock.credentialRefs)) {
       if (ref) await this.vault.delete(ref);
     }
-    this.sessions.delete(lockId);
+    for (const [sessionId, session] of this.sessions) {
+      if (session.lockId === lockId) this.sessions.delete(sessionId);
+    }
+    this.attemptBudgets.delete(lockId);
     this.locks.delete(lockId);
   }
 
-  activate(lockId: string, action: () => void, at = this.now()): ActivationResult {
+  activate(lockId: string, sessionId: string, action: () => void, at = this.now()): ActivationResult {
     const lock = this.requireLock(lockId);
-    if (!this.isUnlocked(lockId, at)) {
+    validateSessionId(sessionId);
+    if (!this.isUnlocked(lockId, sessionId, at)) {
       return { kind: "authentication-required", lockId, elementId: lock.elementId };
     }
     action();
     return { kind: "activated" };
   }
 
-  private requireLock(lockId: string): LockRecord {
+  private requireLock(lockId: string): InternalLockRecord {
     const lock = this.locks.get(lockId);
     if (!lock) throw new Error(`Unknown lock: ${lockId}`);
     return lock;
@@ -179,10 +223,15 @@ function unlockExpiry(duration: UnlockDuration, now: number): number | null {
   return duration.kind === "minutes" ? now + duration.minutes * 60_000 : null;
 }
 
-function cloneLock(lock: LockRecord): LockRecord {
-  return { ...lock, credentialRefs: { ...lock.credentialRefs }, unlockDuration: { ...lock.unlockDuration } };
+function summarizeLock(lock: InternalLockRecord): LockSummary {
+  const { credentialRefs: _credentialRefs, ...summary } = lock;
+  return { ...summary, unlockDuration: { ...lock.unlockDuration }, totp: lock.totp ? { ...lock.totp } : undefined };
 }
 
 function cloneSession(session: UnlockSession): UnlockSession {
   return { ...session, factors: session.factors.map((factor) => ({ ...factor })) };
+}
+
+function validateSessionId(sessionId: string): void {
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(sessionId)) throw new Error("Session ID must be 8 to 80 safe characters");
 }

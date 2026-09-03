@@ -26,34 +26,54 @@ export type LadderResult = {
 };
 
 type Lockout = { waitingUntil: number; attemptsRemaining: number; maxAttempts: number };
-type ActiveChallenge = LadderChallenge & { userId: string };
+type ActiveChallenge = LadderChallenge & { userId: string; sessionId: string };
+
+export interface LadderAuthorityAdapter {
+  readBudget(userId: string): number[];
+  writeBudget(userId: string, starts: number[]): void;
+  readChallenge(nonce: string): ActiveChallenge | undefined;
+  writeChallenge(challenge: ActiveChallenge): void;
+  deleteChallenge(nonce: string): void;
+}
+
+export class MemoryLadderAuthority implements LadderAuthorityAdapter {
+  private readonly budgets = new Map<string, number[]>();
+  private readonly challenges = new Map<string, ActiveChallenge>();
+  readBudget(userId: string): number[] { return [...(this.budgets.get(userId) ?? [])]; }
+  writeBudget(userId: string, starts: number[]): void { this.budgets.set(userId, [...starts]); }
+  readChallenge(nonce: string): ActiveChallenge | undefined { const value = this.challenges.get(nonce); return value ? structuredClone(value) : undefined; }
+  writeChallenge(challenge: ActiveChallenge): void { this.challenges.set(challenge.nonce, structuredClone(challenge)); }
+  deleteChallenge(nonce: string): void { this.challenges.delete(nonce); }
+}
 
 export class UnlockLadderServer {
-  private readonly challenges = new Map<string, ActiveChallenge>();
-  private readonly budgets = new Map<string, number[]>();
+  private readonly authority: LadderAuthorityAdapter;
   private readonly now: () => number;
   private readonly maxSkipsPerHour: number;
   private readonly random: () => number;
 
-  constructor(options: { now?: () => number; maxSkipsPerHour?: number; random?: () => number } = {}) {
+  constructor(options: { now?: () => number; maxSkipsPerHour?: number; random?: () => number; authority?: LadderAuthorityAdapter } = {}) {
     this.now = options.now ?? (() => Date.now());
     this.maxSkipsPerHour = options.maxSkipsPerHour ?? 3;
     this.random = options.random ?? Math.random;
+    this.authority = options.authority ?? new MemoryLadderAuthority();
   }
 
-  begin(userId: string, lockout: Lockout, schoolMode = false): LadderChallenge | undefined {
+  begin(userId: string, sessionId: string, lockout: Lockout, schoolMode = false): LadderChallenge | undefined {
+    validateSessionId(sessionId);
     const now = this.now();
     if (lockout.waitingUntil <= now || !this.canSkip(userId, now)) return undefined;
     const rung: LadderRung = schoolMode ? "sums" : "dish";
-    const challenge = this.issue(userId, rung, now, 0);
-    this.budgets.set(userId, [...(this.budgets.get(userId) ?? []), now]);
+    const challenge = this.issue(userId, sessionId, rung, now, 0);
+    this.authority.writeBudget(userId, [...this.authority.readBudget(userId), now]);
     return publicChallenge(challenge);
   }
 
-  submit(userId: string, nonce: string, answer: LadderAnswer): LadderResult {
-    const challenge = this.challenges.get(nonce);
-    if (!challenge || challenge.userId !== userId) return failed("clock", "invalid");
-    this.challenges.delete(nonce);
+  submit(userId: string, sessionId: string, nonce: string, answer: LadderAnswer): LadderResult {
+    validateSessionId(sessionId);
+    const challenge = this.authority.readChallenge(nonce);
+    if (!challenge || challenge.userId !== userId || challenge.sessionId !== sessionId) return failed("clock", "invalid");
+    this.authority.deleteChallenge(nonce);
     const now = this.now();
     if (challenge.expiresAt <= now) return failed(challenge.rung, "expired");
     if (!isAnswerForRung(answer, challenge.rung)) return failed(challenge.rung, "invalid");
@@ -90,20 +110,20 @@ export class UnlockLadderServer {
 
   remainingBudget(userId: string): number {
     const cutoff = this.now() - 60 * 60 * 1000;
-    const current = (this.budgets.get(userId) ?? []).filter((value) => value > cutoff);
-    this.budgets.set(userId, current);
+    const current = this.authority.readBudget(userId).filter((value) => value > cutoff);
+    this.authority.writeBudget(userId, current);
     return Math.max(0, this.maxSkipsPerHour - current.length);
   }
 
   private canSkip(userId: string, now: number): boolean {
-    const current = (this.budgets.get(userId) ?? []).filter((value) => value > now - 60 * 60 * 1000);
-    this.budgets.set(userId, current);
+    const current = this.authority.readBudget(userId).filter((value) => value > now - 60 * 60 * 1000);
+    this.authority.writeBudget(userId, current);
     return current.length < this.maxSkipsPerHour;
   }
 
-  private issue(userId: string, rung: LadderRung, now: number, wrongDishes: number): ActiveChallenge {
+  private issue(userId: string, sessionId: string, rung: LadderRung, now: number, wrongDishes: number): ActiveChallenge {
     const nonce = randomId("ladder");
-    const challenge: ActiveChallenge = { userId, nonce, rung, expiresAt: now + 120_000 };
+    const challenge: ActiveChallenge = { userId, sessionId, nonce, rung, expiresAt: now + 120_000 };
     if (rung === "dish") {
       challenge.dishChoices = ["Steamed shrimp dumpling", "Turnip cake", "Custard tart", "Rice noodle roll"];
       challenge.correctDish = Math.floor(this.random() * challenge.dishChoices.length);
@@ -120,18 +140,18 @@ export class UnlockLadderServer {
         moles: Array.from({ length: 5 }, (_, index) => ({ id: `${nonce}_mole_${index}`, cell: index, visibleAt: start + index * 1_500, hiddenAt: start + index * 1_500 + 4_000 }))
       };
     }
-    this.challenges.set(nonce, challenge);
+    this.authority.writeChallenge(challenge);
     return challenge;
   }
 
   private nextWithState(challenge: ActiveChallenge, rung: LadderRung, now: number, wrongDishes: number): LadderResult {
-    const next = this.issue(challenge.userId, rung, now, wrongDishes);
+    const next = this.issue(challenge.userId, challenge.sessionId, rung, now, wrongDishes);
     return { clearedWaiting: false, sessionCookieIssued: false, attemptsRestored: 0, rung, next: publicChallenge(next), reason: "wrong-answer" };
   }
 }
 
 function publicChallenge(challenge: LadderChallenge): LadderChallenge {
-  const { userId: _userId, correctDish: _correctDish, ...safe } = challenge as LadderChallenge & { userId?: string };
+  const { userId: _userId, sessionId: _sessionId, correctDish: _correctDish, ...safe } = challenge as LadderChallenge & { userId?: string; sessionId?: string };
   return JSON.parse(JSON.stringify(safe)) as LadderChallenge;
 }
 
@@ -145,4 +165,8 @@ function failed(rung: LadderRung, reason: LadderResult["reason"]): LadderResult 
 
 function isAnswerForRung(answer: LadderAnswer, rung: LadderRung): boolean {
   return (rung === "dish" && answer.kind === "dish") || (rung === "sums" && answer.kind === "sums") || (rung === "moles" && answer.kind === "moles");
+}
+
+function validateSessionId(sessionId: string): void {
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(sessionId)) throw new Error("Session ID must be 8 to 80 safe characters");
 }

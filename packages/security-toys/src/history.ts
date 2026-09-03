@@ -6,6 +6,18 @@ export interface AppendOnlyHistoryStore {
   list(): Promise<HistoryEntry[]>;
 }
 
+/** Adapter for a local Git repository in application data. It never receives secrets. */
+export interface LocalGitHistoryAdapter {
+  appendRedactedMetadata(entry: HistoryEntry): Promise<void>;
+  readRedactedMetadata(): Promise<HistoryEntry[]>;
+}
+
+export class GitBackedHistoryStore implements AppendOnlyHistoryStore {
+  constructor(private readonly adapter: LocalGitHistoryAdapter) {}
+  async append(entry: HistoryEntry): Promise<void> { await this.adapter.appendRedactedMetadata({ ...entry, redacted: true }); }
+  async list(): Promise<HistoryEntry[]> { return (await this.adapter.readRedactedMetadata()).map((entry) => ({ ...entry, redacted: true })); }
+}
+
 export class MemoryHistoryStore implements AppendOnlyHistoryStore {
   private readonly entries: HistoryEntry[] = [];
 

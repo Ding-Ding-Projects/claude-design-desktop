@@ -20,6 +20,7 @@ export type TotpUri = {
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 export function normalizeBase32(value: string): string {
+  if (value.length > 4096) throw new Error("TOTP secret is too large");
   const normalized = value.replace(/[\s=-]/g, "").toUpperCase();
   if (!normalized || !/^[A-Z2-7]+$/.test(normalized)) {
     throw new Error("TOTP secret must be base32 text");
@@ -66,6 +67,7 @@ export async function hotpCode(secret: string, counter: number, options: TotpOpt
   const algorithm = options.algorithm ?? "SHA-1";
   const digits = options.digits ?? 6;
   if (!Number.isInteger(counter) || counter < 0) throw new Error("HOTP counter must be a non-negative integer");
+  if (![6, 7, 8].includes(digits)) throw new Error("HOTP digits must be 6, 7, or 8");
   const key = await globalThis.crypto.subtle.importKey(
     "raw",
     decodeBase32(secret) as unknown as BufferSource,
@@ -96,7 +98,8 @@ export async function totpCode(secret: string, options: TotpOptions = {}): Promi
 }
 
 export async function verifyTotpCode(secret: string, candidate: string, options: TotpOptions = {}): Promise<boolean> {
-  if (!/^\d{6,8}$/.test(candidate)) return false;
+  const digits = options.digits ?? 6;
+  if (!new RegExp(`^\\d{${digits}}$`).test(candidate)) return false;
   const period = options.period ?? 30;
   const timestamp = options.timestamp ?? Date.now();
   const skewSteps = options.skewSteps ?? 1;
@@ -108,6 +111,7 @@ export async function verifyTotpCode(secret: string, candidate: string, options:
 }
 
 export function buildOtpAuthUri(input: TotpUri): string {
+  if (input.issuer.length > 256 || input.account.length > 256) throw new Error("Authenticator labels are too large");
   const algorithm = input.algorithm.replace("-", "");
   const label = `${encodeURIComponent(input.issuer)}:${encodeURIComponent(input.account)}`;
   const params = new URLSearchParams({
@@ -117,10 +121,13 @@ export function buildOtpAuthUri(input: TotpUri): string {
     digits: String(input.digits),
     period: String(input.period)
   });
-  return `otpauth://totp/${label}?${params.toString()}`;
+  const uri = `otpauth://totp/${label}?${params.toString()}`;
+  if (uri.length > 4096) throw new Error("Authenticator URI is too large");
+  return uri;
 }
 
 export function parseOtpAuthUri(value: string): TotpUri {
+  if (value.length > 4096) throw new Error("Authenticator URI is too large");
   let url: URL;
   try {
     url = new URL(value);
@@ -169,13 +176,20 @@ export function localQrModel(input: TotpUri): LocalQrModel {
 }
 
 export class TotpPairingSession {
-  private readonly input: TotpUri;
+  private input: TotpUri | undefined;
+  private readonly expiresAt: number;
+  private readonly now: () => number;
   private armed = false;
   private revealed = false;
 
-  constructor(issuer: string, account: string, options: Partial<Pick<TotpUri, "algorithm" | "digits" | "period">> = {}) {
+  constructor(issuer: string, account: string, options: Partial<Pick<TotpUri, "algorithm" | "digits" | "period">> & { expiresInMs?: number; now?: () => number } = {}) {
+    if (issuer.length > 256 || account.length > 256 || !issuer.trim() || !account.trim()) throw new Error("Authenticator labels are required and bounded");
     const bytes = new Uint8Array(20);
     globalThis.crypto.getRandomValues(bytes);
+    this.now = options.now ?? (() => Date.now());
+    const expiresInMs = options.expiresInMs ?? 120_000;
+    if (!Number.isInteger(expiresInMs) || expiresInMs < 1_000 || expiresInMs > 300_000) throw new Error("Pairing expiry is out of bounds");
+    this.expiresAt = this.now() + expiresInMs;
     this.input = {
       issuer,
       account,
@@ -187,16 +201,19 @@ export class TotpPairingSession {
   }
 
   qr(): LocalQrModel {
-    return localQrModel(this.input);
+    return localQrModel(this.requireLiveInput());
   }
 
   revealManualSecret(): { secret: string; algorithm: AuthenticatorAlgorithm; digits: 6 | 7 | 8; period: number } {
+    const input = this.requireLiveInput();
     this.revealed = true;
-    return { secret: this.input.secret, algorithm: this.input.algorithm, digits: this.input.digits, period: this.input.period };
+    return { secret: input.secret, algorithm: input.algorithm, digits: input.digits, period: input.period };
   }
 
   async confirm(code: string, timestamp = Date.now()): Promise<boolean> {
-    this.armed = await verifyTotpCode(this.input.secret, code, { ...this.input, timestamp, skewSteps: 0 });
+    const input = this.input;
+    if (!input || this.now() >= this.expiresAt) { this.dispose(); return false; }
+    this.armed = await verifyTotpCode(input.secret, code, { ...input, timestamp, skewSteps: 0 });
     return this.armed;
   }
 
@@ -208,7 +225,25 @@ export class TotpPairingSession {
     return this.revealed;
   }
 
-  pairingInput(): TotpUri | undefined {
-    return this.armed ? { ...this.input } : undefined;
+  consumeArmed(): TotpUri | undefined {
+    if (!this.armed || !this.input || this.now() >= this.expiresAt) { this.dispose(); return undefined; }
+    const result = { ...this.input };
+    this.dispose();
+    return result;
+  }
+
+  dispose(): void {
+    this.input = undefined;
+    this.armed = false;
+    this.revealed = false;
+  }
+
+  toJSON(): { armed: boolean; expired: boolean } {
+    return { armed: this.armed, expired: this.now() >= this.expiresAt || !this.input };
+  }
+
+  private requireLiveInput(): TotpUri {
+    if (!this.input || this.now() >= this.expiresAt) { this.dispose(); throw new Error("Pairing session expired"); }
+    return this.input;
   }
 }

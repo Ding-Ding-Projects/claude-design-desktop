@@ -22,7 +22,7 @@ export type UnlockDuration =
   | { kind: "minutes"; minutes: number }
   | { kind: "until-close" };
 
-export type LockRecord = {
+export type InternalLockRecord = {
   id: string;
   elementId: string;
   policy: LockPolicy;
@@ -30,9 +30,14 @@ export type LockRecord = {
   unlockDuration: UnlockDuration;
   lockedOnLaunch: boolean;
   credentialRefs: Partial<Record<LockFactor, string>>;
+  totp?: { algorithm: AuthenticatorAlgorithm; digits: 6 | 7 | 8; period: number };
   disclosure: string;
   recoveryDirectory: string;
 };
+
+/** Renderer summaries deliberately omit all vault references. */
+export type LockSummary = Omit<InternalLockRecord, "credentialRefs">;
+export type LockRecord = LockSummary;
 
 export type FactorState = {
   factor: LockFactor;
@@ -42,6 +47,7 @@ export type FactorState = {
 
 export type UnlockSession = {
   lockId: string;
+  sessionId: string;
   factors: FactorState[];
   startedAt: number;
   unlockedUntil: number | null;

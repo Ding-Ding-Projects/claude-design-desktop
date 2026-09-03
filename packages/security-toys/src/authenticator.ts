@@ -3,6 +3,12 @@ import type { RedactedTotpEntry, TotpEntry } from "./types";
 import { randomId, SecretVault } from "./vault";
 
 export type AuthenticatorInput = TotpUri & { source: "uri" | "qr-image" | "clipboard" | "camera" | "manual" };
+export const MAX_QR_INPUT_BYTES = 1_048_576;
+export interface LocalQrInputAdapters {
+  decodeImage(bytes: Uint8Array): string;
+  readClipboard(): string | undefined;
+  scanCamera(): string | undefined;
+}
 
 export class AuthenticatorManager {
   private readonly entries = new Map<string, TotpEntry>();
@@ -47,6 +53,23 @@ export class AuthenticatorManager {
 
   async addFromQrImage(uri: string): Promise<RedactedTotpEntry> {
     return this.importUri(uri, "qr-image");
+  }
+
+  async importFromImage(bytes: Uint8Array, decoder: (bytes: Uint8Array) => string): Promise<RedactedTotpEntry> {
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_QR_INPUT_BYTES) throw new Error("QR image input is empty or exceeds the local size limit");
+    return this.importUri(decoder(bytes), "qr-image");
+  }
+
+  async importFromClipboard(read: () => string | undefined): Promise<RedactedTotpEntry> {
+    const value = read();
+    if (!value) throw new Error("Clipboard has no authenticator URI");
+    return this.importUri(value, "clipboard");
+  }
+
+  async importFromCamera(scan: () => string | undefined): Promise<RedactedTotpEntry> {
+    const value = scan();
+    if (!value) throw new Error("Camera returned no authenticator URI");
+    return this.importUri(value, "camera");
   }
 
   async addFromCamera(uri: string): Promise<RedactedTotpEntry> {
