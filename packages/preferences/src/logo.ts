@@ -138,7 +138,6 @@ export function createBrowserLogoDecoder(): LogoDecoder {
 
 export interface LogoStore {
   get(): LogoSettings;
-  apply(source: LogoSource, settings: Pick<LogoSettings, "fit" | "crop" | "focalPoint" | "background" | "derivedSizes">): { settings: LogoSettings; validation: LogoValidation; plan: LogoConversionPlan };
   applyAsync(source: LogoSource, settings: Pick<LogoSettings, "fit" | "crop" | "focalPoint" | "background" | "derivedSizes">, decoder: LogoDecoder): Promise<{ settings: LogoSettings; validation: LogoValidation; plan: LogoConversionPlan; outputs: Array<{ size: number; bytes: Uint8Array; mime: "image/png" }> }>;
   reset(): void;
 }
@@ -148,21 +147,6 @@ export function createLogoStore(initial: LogoSettings, onPersist: (settings: Log
   const clone = () => ({ ...current, background: { ...current.background }, focalPoint: { ...current.focalPoint }, derivedSizes: [...current.derivedSizes] });
   return {
     get: clone,
-    apply(source, settings) {
-      const validation = validateLogoSource(source);
-      if (!validation.ok) throw new Error(`logo-conversion-refused:${validation.errors.join(",")}`);
-      const plan = createLogoConversionPlan(validation, settings);
-      const previous = clone();
-      try {
-        current = { ...current, presetId: null, sourceName: null, sourceMime: validation.mime, fit: plan.fit, crop: plan.crop, focalPoint: { ...plan.focalPoint }, background: { ...plan.background }, derivedSizes: plan.sizes };
-        onPersist(clone());
-      } catch (error) {
-        current = previous;
-        try { onPersist(clone()); } catch { /* Keep the in-memory prior valid logo active. */ }
-        throw error;
-      }
-      return { settings: clone(), validation, plan };
-    },
     async applyAsync(source, settings, decoder) {
       const validation = validateLogoSource(source);
       if (!validation.ok) throw new Error(`logo-conversion-refused:${validation.errors.join(",")}`);

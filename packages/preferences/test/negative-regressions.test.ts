@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { parsePersonalVocabulary, previewBulkAction, validateLogoSource } from "../src/index.js";
+import { compileBoundedSearch, createSearchRegistry, parsePersonalVocabulary, previewBulkAction, registerPreferenceSearchSurfaces, validateLogoSource } from "../src/index.js";
 
 test("negative regression turns red for duplicate vocabulary keys", () => {
   const brokenParser = (payload: string) => JSON.parse(payload);
@@ -24,4 +24,12 @@ test("negative regression rejects remote SVG CSS and imports", () => {
   const result = validateLogoSource({ name: "remote.svg", claimedMime: "image/svg+xml", bytes: new TextEncoder().encode('<svg><style>@import url("https://example.test/x.css");</style></svg>') });
   assert.equal(result.ok, false);
   assert.ok(result.errors.includes("unsafe-svg"));
+});
+
+test("negative regression requires anchored bounded regex workbenches for each preference surface", () => {
+  const registry = createSearchRegistry();
+  registerPreferenceSearchSurfaces(registry);
+  assert.deepEqual(registry.list().map((surface) => surface.id), ["settings", "voice-picker", "schedule-source-picker", "menu"]);
+  assert.equal(compileBoundedSearch("English", false)?.test("English voice"), true);
+  assert.throws(() => compileBoundedSearch("x", true, "z"), /unsupported-regex-flags/);
 });

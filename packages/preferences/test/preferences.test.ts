@@ -7,6 +7,7 @@ import {
   emptyVocabularyState,
   parseAndCachePersonalVocabulary,
   parsePersonalVocabulary,
+  PREFERENCE_HISTORY_STORAGE_KEY,
   previewBulkAction,
   prepareExport,
   createScheduleRefreshController,
@@ -30,10 +31,11 @@ test("language, independent funny levels, emoji setting, and School mode are per
   store.updateLanguage({ mode: "cantonese", englishFunnyLevel: 2, cantoneseFunnyLevel: 4, showDialogEmojis: false });
   store.updateSchool({ enabled: true, displayName: "Quiet study" });
   assert.deepEqual(store.getEffectiveLanguage(), { mode: "english", englishFunnyLevel: 1, cantoneseFunnyLevel: 1, showDialogEmojis: false });
-  assert.deepEqual(store.featureAvailability(), { cantonese: false, bilingual: false, funnyLevels: false, vocabulary: false, dimSum: false });
+  assert.deepEqual(store.featureAvailability(), { cantonese: false, bilingual: false, funnyLevels: false, vocabulary: false, dimSum: false, dialogEmojis: true });
   const restored = createPreferencesStore({ storage, defaults: createDefaultPreferences() });
   assert.equal(restored.getState().school.displayName, "Quiet study");
   assert.equal(restored.getState().displayName.stableDataDirectoryKey, "claude-design-desktop");
+  assert.ok(JSON.parse(storage.getItem(PREFERENCE_HISTORY_STORAGE_KEY) ?? "[]").length >= 2);
   store.close();
   restored.close();
 });
@@ -78,6 +80,12 @@ test("schedule transport uses the privileged boundary, vault lookup, deadline, a
   assert.equal(request?.headers.authorization, "Bearer vault-value-never-returned");
   await assert.rejects(() => controller.refresh({ kind: "api", url: "http://192.168.1.5/settings", schemaVersion: 1 }), /https-required/);
   await assert.rejects(() => controller.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /schedule-source-http/);
+  const mixed = createScheduleRefreshController({ resolveHost: async () => ["203.0.113.8", "169.254.169.254"], request: async () => ({ status: 200, text: async () => "{}" }) });
+  await assert.rejects(() => mixed.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /unsafe-resolved-address/);
+  const unbound = createScheduleRefreshController({ request: async () => ({ status: 200, text: async () => "{}" }) });
+  await assert.rejects(() => unbound.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /dns-resolution-required/);
+  const hanging = createScheduleRefreshController({ resolveHost: async () => ["203.0.113.8"], request: async () => new Promise(() => undefined) }, { getCredential: async () => null }, { deadlineMs: 250 });
+  await assert.rejects(() => hanging.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /schedule-source-timeout/);
 });
 
 test("School state strips credential keys on load and never persists them", () => {

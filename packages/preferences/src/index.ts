@@ -5,3 +5,5 @@ export * from "./schedule.js";
 export * from "./logo.js";
 export * from "./external-editor.js";
 export * from "./export-bulk.js";
+export * from "./history.js";
+export * from "./search.js";

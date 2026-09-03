@@ -45,6 +45,12 @@ export const DEFAULT_STRINGS: PreferenceStrings = {
   voiceStatus: "Voice lists can arrive after this surface opens. A missing selected voice remains selected and falls back until it is installed.", noVocabularyFile: "No file selected. Original wording is active.", vocabularyLoaded: "{count} entries loaded locally.", vocabularyInvalid: "File refused: {error}.", localExperienceLock: "This is a local experience lock. Deleting the shared application-data record resets it.", attentionAccommodations: "Attention accommodations", enabled: "Enabled", remove: "Remove"
 };
 
+export const TRANSLATED_COPY = {
+  english: { language: "Language mode", school: "School mode", vocabulary: "Personal vocabulary", narration: "Narration", settings: "Settings", search: "Search preferences", regex: "Regex workbench" },
+  cantonese: { language: "語言模式", school: "學習模式", vocabulary: "個人詞彙", narration: "旁白", settings: "設定", search: "搜尋偏好設定", regex: "正則表達式工作台" },
+  bilingual: { language: "Language mode · 語言模式", school: "School mode · 學習模式", vocabulary: "Personal vocabulary · 個人詞彙", narration: "Narration · 旁白", settings: "Settings · 設定", search: "Search preferences · 搜尋偏好設定", regex: "Regex workbench · 正則表達式工作台" }
+} as const;
+
 export function LanguageModeControl(props: { value: LanguageMode; onChange: (value: LanguageMode) => void; strings?: PreferenceStrings; schoolEnabled?: boolean }): React.ReactElement | null {
   if (props.schoolEnabled) return null;
   const strings = props.strings ?? DEFAULT_STRINGS;
@@ -68,8 +74,7 @@ export function FunnyLevelControl(props: { language: "english" | "cantonese"; va
   </label>;
 }
 
-export function DialogEmojiToggle(props: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; strings?: PreferenceStrings; schoolEnabled?: boolean }): React.ReactElement | null {
-  if (props.schoolEnabled) return null;
+export function DialogEmojiToggle(props: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; strings?: PreferenceStrings }): React.ReactElement {
   const strings = props.strings ?? DEFAULT_STRINGS;
   return <label><input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(event) => props.onChange(event.currentTarget.checked)} />{strings.showDialogEmojis}</label>;
 }

@@ -11,6 +11,7 @@ import {
   type PreferencesState,
   type SchoolModePreferences
 } from "./types.js";
+import { createPreferenceHistory } from "./history.js";
 
 export const PREFERENCES_STORAGE_KEY = "claude-design.preferences.v1";
 export const SHARED_SCHOOL_STORAGE_KEY = "claude-design.school-mode.v1";
@@ -127,12 +128,14 @@ export function createPreferencesStore(options: {
   defaults?: PreferencesState;
   storage?: StorageLike;
   broadcast?: boolean;
+  history?: ReturnType<typeof createPreferenceHistory>;
 } = {}) {
   const storage = options.storage ?? getLocalStorage();
   let state = loadPreferences(storage, options.defaults ?? createDefaultPreferences());
   state.school = readSharedSchoolMode(storage, state.school);
   state.vocabulary = loadCachedPersonalVocabulary(storage);
   const listeners = new Set<Listener>();
+  const history = options.history ?? createPreferenceHistory(storage);
   const channel = options.broadcast !== false && typeof BroadcastChannel !== "undefined"
     ? new BroadcastChannel("claude-design-preferences")
     : null;
@@ -147,6 +150,7 @@ export function createPreferencesStore(options: {
     state = cloneState(next);
     persist();
     channel?.postMessage({ state, key });
+    history?.append(`updated:${String(key)}`, [String(key)]);
     emit(key);
   };
 
@@ -178,6 +182,38 @@ export function createPreferencesStore(options: {
     updateADHD(patch: Partial<ADHDPreferences>) {
       setState({ ...state, adhd: { ...state.adhd, ...patch } }, "adhd");
     },
+    updateAppearance(patch: Partial<PreferencesState["appearance"]>) {
+      setState({ ...state, appearance: { ...state.appearance, ...patch } }, "appearance");
+    },
+    resetLanguage() {
+      setState({ ...state, language: { ...DEFAULT_LANGUAGE_PREFERENCES } }, "language");
+    },
+    resetAppearance() {
+      const defaults = (options.defaults ?? createDefaultPreferences()).appearance;
+      setState({ ...state, appearance: { ...defaults } }, "appearance");
+    },
+    updateNarration(patch: Partial<PreferencesState["narration"]>) {
+      setState({ ...state, narration: { ...state.narration, ...patch } }, "narration");
+    },
+    resetNarration() {
+      setState({ ...state, narration: { ...DEFAULT_NARRATION_PREFERENCES } }, "narration");
+    },
+    resetADHD() {
+      setState({ ...state, adhd: { ...DEFAULT_ADHD_PREFERENCES } }, "adhd");
+    },
+    replaceScheduleRules(scheduleRules: PreferencesState["scheduleRules"]) {
+      setState({ ...state, scheduleRules: scheduleRules.slice() }, "scheduleRules");
+    },
+    resetScheduleRules() {
+      setState({ ...state, scheduleRules: [] }, "scheduleRules");
+    },
+    updateLogo(patch: Partial<PreferencesState["logo"]>) {
+      setState({ ...state, logo: { ...state.logo, ...patch, sourceName: null } }, "logo");
+    },
+    resetLogo() {
+      const defaults = (options.defaults ?? createDefaultPreferences()).logo;
+      setState({ ...state, logo: { ...defaults, sourceName: null, derivedSizes: [...defaults.derivedSizes] } }, "logo");
+    },
     updateSchool(patch: Partial<SchoolModePreferences>) {
       const school = { ...state.school, ...patch, credentialKey: null };
       storage.setItem(SHARED_SCHOOL_STORAGE_KEY, JSON.stringify({ ...school, credentialKey: null }));
@@ -191,14 +227,21 @@ export function createPreferencesStore(options: {
     resetDisplayName() {
       setState({ ...state, displayName: { ...state.displayName, displayName: state.displayName.shippedName } }, "displayName");
     },
+    clearVocabulary() {
+      clearPersonalVocabulary(storage);
+      setState({ ...state, vocabulary: emptyVocabularyState() }, "vocabulary");
+    },
+    resetHistory() {
+      return history.reset();
+    },
     getEffectiveLanguage(): LanguagePreferences {
       return state.school.enabled
-        ? { ...state.language, mode: "english", englishFunnyLevel: 1, cantoneseFunnyLevel: 1, showDialogEmojis: false }
+        ? { ...state.language, mode: "english", englishFunnyLevel: 1, cantoneseFunnyLevel: 1 }
         : { ...state.language };
     },
     featureAvailability() {
       const suppressed = state.school.enabled;
-      return { cantonese: !suppressed, bilingual: !suppressed, funnyLevels: !suppressed, vocabulary: !suppressed, dimSum: !suppressed };
+      return { cantonese: !suppressed, bilingual: !suppressed, funnyLevels: !suppressed, vocabulary: !suppressed, dimSum: !suppressed, dialogEmojis: true };
     },
     close() {
       channel?.close();

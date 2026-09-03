@@ -116,7 +116,7 @@ export interface PrivilegedScheduleResponse {
 }
 
 export interface PrivilegedScheduleTransport {
-  request(input: { url: string; headers: Record<string, string>; signal: AbortSignal; redirect: "error" }): Promise<PrivilegedScheduleResponse>;
+  request(input: { url: string; headers: Record<string, string>; signal: AbortSignal; redirect: "error"; resolvedAddresses: string[] }): Promise<PrivilegedScheduleResponse>;
   resolveHost?(hostname: string): Promise<string[]>;
 }
 
@@ -146,19 +146,19 @@ export function createScheduleRefreshController(
       const errors = validateScheduleSource(source);
       if (errors.length) throw new Error(errors.join(","));
       const url = source.kind === "api" ? source.url : `${source.baseUrl.replace(/\/$/, "")}/api/states/${source.entityId}`;
-      await assertSafeResolvedUrl(url, transport);
+      const resolvedAddresses = await assertSafeResolvedUrl(url, transport);
       const headers: Record<string, string> = {};
       if (source.kind === "home-assistant") {
         const credential = await vault.getCredential(source.credentialKey);
         if (!credential) throw new Error("home-assistant-credential-unavailable");
         headers.authorization = `Bearer ${credential}`;
       }
-      const response = await requestWithDeadline(transport, { url, headers, signal: controller.signal, redirect: "error" }, deadlineMs);
+      const response = await requestWithDeadline(transport, { url, headers, signal: controller.signal, redirect: "error", resolvedAddresses }, deadlineMs);
       if (currentGeneration !== generation) throw new Error("stale-generation");
       if (response.status < 200 || response.status >= 300) throw new Error(`schedule-source-http-${response.status}`);
       const contentLength = Number(headerValue(response.headers, "content-length") ?? 0);
       if (contentLength > MAX_REMOTE_RESPONSE_BYTES) throw new Error("response-too-large");
-      const text = await readBoundedResponse(response);
+      const text = await readBoundedResponse(response, deadlineMs);
       const parsed = JSON.parse(text) as unknown;
       if (source.kind === "home-assistant") {
         if (!isRecord(parsed) || (parsed.state !== "on" && parsed.state !== "off")) throw new Error("invalid-home-assistant-state");
@@ -181,7 +181,7 @@ export function createScheduleRefreshController(
   };
 }
 
-async function requestWithDeadline(transport: PrivilegedScheduleTransport, request: { url: string; headers: Record<string, string>; signal: AbortSignal; redirect: "error" }, deadlineMs: number): Promise<PrivilegedScheduleResponse> {
+async function requestWithDeadline(transport: PrivilegedScheduleTransport, request: { url: string; headers: Record<string, string>; signal: AbortSignal; redirect: "error"; resolvedAddresses: string[] }, deadlineMs: number): Promise<PrivilegedScheduleResponse> {
   const requestController = new AbortController();
   const abortRequest = () => requestController.abort();
   if (request.signal.aborted) requestController.abort();
@@ -196,13 +196,16 @@ async function requestWithDeadline(transport: PrivilegedScheduleTransport, reque
   }
 }
 
-async function readBoundedResponse(response: PrivilegedScheduleResponse): Promise<string> {
+async function readBoundedResponse(response: PrivilegedScheduleResponse, deadlineMs: number): Promise<string> {
+  const deadlineAt = Date.now() + deadlineMs;
   if (response.body) {
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
     while (true) {
-      const next = await reader.read();
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) { await reader.cancel(); throw new Error("schedule-body-timeout"); }
+      const next = await readChunkWithDeadline(reader, remaining);
       if (next.done) break;
       total += next.value.byteLength;
       if (total > MAX_REMOTE_RESPONSE_BYTES) {
@@ -221,18 +224,30 @@ async function readBoundedResponse(response: PrivilegedScheduleResponse): Promis
   return text;
 }
 
+async function readChunkWithDeadline(reader: ReadableStreamDefaultReader<Uint8Array>, deadlineMs: number): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("schedule-body-timeout")), deadlineMs); });
+  try {
+    return await Promise.race([reader.read(), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function headerValue(headers: Record<string, string | undefined> | undefined, name: string): string | undefined {
   const wanted = name.toLowerCase();
   return Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === wanted)?.[1];
 }
 
-async function assertSafeResolvedUrl(rawUrl: string, transport: PrivilegedScheduleTransport): Promise<void> {
+async function assertSafeResolvedUrl(rawUrl: string, transport: PrivilegedScheduleTransport): Promise<string[]> {
   const url = new URL(rawUrl);
   if (url.protocol !== "https:" && !isLoopback(url.hostname)) throw new Error("https-required");
   if (url.username || url.password) throw new Error("embedded-credentials");
   if (url.port && !["443", "80"].includes(url.port)) throw new Error("unsafe-port");
-  const addresses = transport.resolveHost ? await transport.resolveHost(url.hostname) : [];
+  const addresses = transport.resolveHost ? await transport.resolveHost(url.hostname) : isLoopback(url.hostname) ? [url.hostname] : [];
+  if (addresses.length === 0) throw new Error("dns-resolution-required");
   if (addresses.some(isUnsafeAddress)) throw new Error("unsafe-resolved-address");
+  return [...addresses];
 }
 
 function isUnsafeAddress(address: string): boolean {

@@ -22,6 +22,8 @@ export interface NarrationEnvironment {
 export interface NarrationQueueOptions {
   debounceMs?: number;
   categoryCooldownMs?: number;
+  speechTimeoutMs?: number;
+  onFailure?: (error: Error) => void;
   now?: () => number;
 }
 
@@ -48,7 +50,7 @@ function clampPitch(value: number): number {
 }
 
 export function createNarrationQueue(driver: SpeechDriver, environment: NarrationEnvironment = {}, options: NarrationQueueOptions = {}): NarrationQueue {
-  let voices = driver.listVoices();
+  let voices = safeListVoices(driver, options.onFailure);
   let speaking = false;
   let disposed = false;
   let queued: SpeechUtterance[] = [];
@@ -56,9 +58,10 @@ export function createNarrationQueue(driver: SpeechDriver, environment: Narratio
   const lastAccepted = new Map<string, number>();
   const debounceMs = Math.max(0, Math.min(2_000, options.debounceMs ?? 80));
   const categoryCooldownMs = Math.max(0, Math.min(60_000, options.categoryCooldownMs ?? 1_000));
+  const speechTimeoutMs = Math.max(250, Math.min(60_000, options.speechTimeoutMs ?? 10_000));
   const now = options.now ?? (() => Date.now());
   const unsubscribe = driver.onVoicesChanged(() => {
-    voices = driver.listVoices();
+    voices = safeListVoices(driver, options.onFailure);
   });
 
   const pickVoice = (language: "en" | "yue", id: string | null): VoiceDescriptor | undefined => {
@@ -72,7 +75,7 @@ export function createNarrationQueue(driver: SpeechDriver, environment: Narratio
     if (!utterance) return;
     speaking = true;
     try {
-      await driver.speak(utterance);
+      await speakWithDeadline(driver, utterance, speechTimeoutMs, options.onFailure);
     } finally {
       speaking = false;
       void pump();
@@ -81,7 +84,7 @@ export function createNarrationQueue(driver: SpeechDriver, environment: Narratio
 
   return {
     refreshVoices() {
-      voices = driver.listVoices();
+      voices = safeListVoices(driver, options.onFailure);
       return voices.slice();
     },
     getVoices(language) {
@@ -124,6 +127,28 @@ export function createNarrationQueue(driver: SpeechDriver, environment: Narratio
       driver.cancel();
     }
   };
+}
+
+function safeListVoices(driver: SpeechDriver, onFailure?: (error: Error) => void): VoiceDescriptor[] {
+  try {
+    return driver.listVoices().slice(0, 1_000);
+  } catch (error) {
+    onFailure?.(error instanceof Error ? error : new Error("voice-enumeration-failure"));
+    return [];
+  }
+}
+
+async function speakWithDeadline(driver: SpeechDriver, utterance: SpeechUtterance, timeoutMs: number, onFailure?: (error: Error) => void): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("speech-timeout")), timeoutMs); });
+  try {
+    await Promise.race([driver.speak(utterance), deadline]);
+  } catch (error) {
+    driver.cancel();
+    onFailure?.(error instanceof Error ? error : new Error("speech-failure"));
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function createBrowserSpeechDriver(speech?: SpeechSynthesis): SpeechDriver {
