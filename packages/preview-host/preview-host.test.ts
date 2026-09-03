@@ -130,7 +130,7 @@ test("dynamic local scripts and CSS imports are allowed only through bounded ass
 });
 
 test("SVG namespace declarations are accepted while external SVG references are refused", () => {
-  const valid = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 10 10\"><path d=\"M0 0h10v10z\"></path></svg>";
+  const valid = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 10 10\"><path d=\"M0 0h10v10z\"/></svg>";
   assert.match(previewDataUrl({ html: `<img src=icon.svg>`, assets: [{ name: "icon.svg", mimeType: "image/svg+xml", bytes: text(valid) }] }), /^data:text\/html/iu);
   const unsafe = valid.replace("M0 0h10v10z", "M0 0h10v10z\" href=\"https://example.invalid/image");
   assert.throws(() => previewDataUrl({ html: `<img src=icon.svg>`, assets: [{ name: "icon.svg", mimeType: "image/svg+xml", bytes: text(unsafe) }] }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
@@ -151,6 +151,45 @@ test("image, font, CSS, and script assets require validated local bytes", () => 
   assert.throws(() => previewDataUrl({ html: "<img src=broken.png>", assets: [{ name: "broken.png", mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]) }] }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
 });
 
+test("malformed and truncated media, text, CSS, and JavaScript never produce an asset allowlist", async () => {
+  const malformedPng = png();
+  malformedPng[20] ^= 1;
+  const cases: Array<{ bytes: Uint8Array; mimeType: string; name: string }> = [
+    { name: "bad.png", mimeType: "image/png", bytes: malformedPng },
+    { name: "short.png", mimeType: "image/png", bytes: png().slice(0, 32) },
+    { name: "bad.gif", mimeType: "image/gif", bytes: Uint8Array.from([71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 0, 0, 0, 0, 0, 59]) },
+    { name: "bad.jpg", mimeType: "image/jpeg", bytes: Uint8Array.from([255, 216, 255, 224, 0, 2, 255, 217]) },
+    { name: "bad.webp", mimeType: "image/webp", bytes: Uint8Array.from([82, 73, 70, 70, 1, 0, 0, 0, 87, 69, 66, 80]) },
+    { name: "bad.svg", mimeType: "image/svg+xml", bytes: text("<svg viewBox=\"0 0 1 1\">") },
+    { name: "bad.woff", mimeType: "font/woff", bytes: text("wOFF") },
+    { name: "bad.woff2", mimeType: "font/woff2", bytes: text("wOF2") },
+    { name: "bad.json", mimeType: "application/json", bytes: text("{\"a\":1,\"a\":2}") },
+    { name: "bad.css", mimeType: "text/css", bytes: text(".x { color: red;") },
+    { name: "bad.js", mimeType: "text/javascript", bytes: text("const x = '") },
+    { name: "import.js", mimeType: "text/javascript", bytes: text("import 'https://example.invalid';") }
+  ];
+  for (const item of cases) {
+    assert.throws(() => previewDataUrl({ html: "<p>invalid</p>", assets: [item] }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
+  }
+});
+
+test("PNG chunk order, uniqueness, CRC, IEND, and trailing-byte rules fail closed", async () => {
+  const good = png();
+  const badCrc = good.slice();
+  badCrc[good.length - 5] ^= 1;
+  const badFirst = good.slice();
+  badFirst.set([73, 68, 65, 84], 12);
+  const badTrailing = Uint8Array.from([...good, 0]);
+  const duplicateHeader = Uint8Array.from([...good.slice(0, good.length - 12), ...good.slice(8, 33), ...good.slice(good.length - 12)]);
+  for (const bytes of [badCrc, badFirst, badTrailing, duplicateHeader]) {
+    assert.throws(() => previewDataUrl({ html: "<p>invalid</p>", assets: [{ name: "bad.png", mimeType: "image/png", bytes }] }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
+  }
+  const failed = harness();
+  const invalid = badCrc;
+  await assert.rejects(() => failed.controller.create(actor, "project-invalid", { html: "<img src=bad.png>", assets: [{ name: "bad.png", mimeType: "image/png", bytes: invalid }] }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
+  assert.equal(failed.sessions.length, 0);
+});
+
 test("unsupported HTML and CSS URL-bearing constructs fail closed", () => {
   const bad = [
     "<meta http-equiv=refresh content=0;url=https://example.invalid>",
@@ -165,6 +204,20 @@ test("unsupported HTML and CSS URL-bearing constructs fail closed", () => {
     "<img src=//example.invalid/a>"
   ];
   for (const html of bad) assert.throws(() => previewDataUrl({ html }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
+});
+
+test("parser adversarial cases reject duplicate attributes, preload links, modules, and CSS escapes while retaining fragments and nesting", () => {
+  const script = { name: "preview.js", mimeType: "text/javascript", bytes: text("document.body.dataset.ready = 'yes';") } as const;
+  const bad = [
+    "<img src=logo.png src=logo.png>",
+    "<link rel=preload href=logo.png>",
+    "<script type=module src=preview.js></script>",
+    "<style>/* unterminated</style>",
+    "<style>body { background: url(logo.png);</style>",
+    "<style>body { background: u\\72l(logo.png); }</style>"
+  ];
+  for (const html of bad) assert.throws(() => previewDataUrl({ html, assets: [{ name: "logo.png", mimeType: "image/png", bytes: png() }, script] }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
+  assert.match(previewDataUrl({ html: "<a href=#details>Details</a><style>@media screen { body { color: red; } }</style>" }), /^data:text\/html/iu);
 });
 
 test("actor role authorization and explicit show operation are enforced", async () => {
@@ -206,6 +259,9 @@ test("all network schemes are refused by the session policy", async () => {
   let mainFrame = { cancel: true };
   sessions[0].requestListener?.({ url: windows[0].loadedUrl }, (next) => { mainFrame = next; });
   assert.equal(mainFrame.cancel, false);
+  let normalizedMain = { cancel: false };
+  sessions[0].requestListener?.({ url: windows[0].loadedUrl.replace(/%/u, "%25") }, (next) => { normalizedMain = next; });
+  assert.equal(normalizedMain.cancel, true);
   let asset = { cancel: true };
   const generatedAsset = `data:image/png;base64,${Buffer.from(png()).toString("base64")}`;
   sessions[0].requestListener?.({ url: generatedAsset }, (next) => { asset = next; });
@@ -215,6 +271,36 @@ test("all network schemes are refused by the session policy", async () => {
     sessions[0].requestListener?.({ url }, (next) => { result = next; });
     assert.equal(result.cancel, true, url);
   }
+});
+
+test("authoritative principal matrix covers roles, account states, resolver failures, and every operation", async () => {
+  const roles = new Map([
+    ["owner", "owner"], ["editor", "editor"], ["commenter", "commenter"], ["viewer", "viewer"],
+    ["disabled", "disabled"], ["revoked", "revoked"]
+  ]);
+  const gated = new PreviewHostController({
+    createSession: (partition) => new FakeSession(partition),
+    createWindow: (options) => new FakeWindow(options)
+  }, {
+    resolvePrincipal: (caller) => {
+      if (caller.accountId === "null") return null;
+      if (caller.accountId === "throw") throw new Error("resolver failure");
+      if (caller.accountId === "mismatch") return { accountId: "owner", role: "owner" };
+      return { accountId: caller.accountId, role: roles.get(caller.accountId) ?? "viewer" };
+    },
+    authorize: (request) => ["owner", "editor"].includes(request.actor.role) && !["disabled", "revoked"].includes(request.actor.role)
+  });
+  const owner = { accountId: "owner" };
+  let handle = await gated.create(owner, "project-a", { html: "<p>one</p>" });
+  handle = await gated.reload(owner, "project-a", handle, { html: "<p>two</p>" });
+  await gated.show(owner, "project-a", handle);
+  for (const accountId of ["commenter", "viewer", "disabled", "revoked", "null", "mismatch", "throw"]) {
+    await assert.rejects(() => gated.create({ accountId }, "project-a", { html: "<p>no</p>" }), (error: unknown) => error instanceof PreviewHostError && error.code === "authorization_failed");
+    await assert.rejects(() => gated.close({ accountId }, "project-a", handle), (error: unknown) => error instanceof PreviewHostError && error.code === "authorization_failed");
+  }
+  await assert.rejects(() => gated.close(owner, "project-a", { ...handle, generation: 1 }), (error: unknown) => error instanceof PreviewHostError && error.code === "stale_handle");
+  await assert.rejects(() => gated.show(owner, "project-b", handle), (error: unknown) => error instanceof PreviewHostError && error.code === "cross_project");
+  await gated.close(owner, "project-a", handle);
 });
 
 test("create, reload, close, and destroyed failures clean up and remove records", async () => {

@@ -21,6 +21,12 @@ Construct `PreviewHostController` with `createElectronPreviewAdapters`, which wr
 
 The package pins `typescript` and `@types/node` in its local manifest and uses `tsconfig.json` with strict checking. The local install directory is ignored and never committed.
 
+## Desktop integration status
+
+The application main-process wiring is intentionally pending. A later `apps/desktop` integration lane owns construction of the controller, selection of the authoritative principal resolver, and connection of the real BrowserWindow lifecycle. This package does not claim that an installed desktop build already uses the controller.
+
+The session pool lifecycle is also pending integration. The controller currently creates one non-persistent session partition per active handle and cleans it when the handle closes or its renderer is destroyed. Pool reuse, shutdown draining, and application-wide limits must be supplied by the desktop integration lane rather than inferred here.
+
 ## Verification
 
 ```text

@@ -249,55 +249,256 @@ function hasBytes(bytes: Uint8Array, signature: readonly number[], offset = 0): 
   return signature.every((value, index) => bytes[offset + index] === value);
 }
 
-function validatePng(bytes: Uint8Array): void {
-  if (bytes.length < 24 || !hasBytes(bytes, [137, 80, 78, 71, 13, 10, 26, 10])) throw fixed("content_rejected");
-  assertPixels(readU32(bytes, 16), readU32(bytes, 20));
-  let ended = false;
-  for (let index = 8; index + 12 <= bytes.length;) {
-    const length = readU32(bytes, index);
-    if (length > bytes.length - index - 12) throw fixed("content_rejected");
-    if (hasBytes(bytes, [97, 99, 84, 76], index + 4) && readU32(bytes, index + 8) > 1) throw fixed("content_rejected");
-    if (hasBytes(bytes, [73, 69, 78, 68], index + 4)) ended = true;
-    index += 12 + length;
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
   }
-  if (!ended) throw fixed("content_rejected");
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function validatePng(bytes: Uint8Array): void {
+  if (bytes.length < 33 || !hasBytes(bytes, [137, 80, 78, 71, 13, 10, 26, 10])) throw fixed("content_rejected");
+  let index = 8;
+  let sawHeader = false;
+  let sawPalette = false;
+  let sawData = false;
+  let dataClosed = false;
+  let sawEnd = false;
+  while (index < bytes.length) {
+    if (index + 12 > bytes.length) throw fixed("content_rejected");
+    const length = readU32(bytes, index);
+    const end = index + 12 + length;
+    if (end > bytes.length) throw fixed("content_rejected");
+    const type = bytes.slice(index + 4, index + 8);
+    if (!type.every((value) => (value >= 65 && value <= 90) || (value >= 97 && value <= 122))) throw fixed("content_rejected");
+    const crcInput = new Uint8Array(4 + length);
+    crcInput.set(type, 0);
+    crcInput.set(bytes.slice(index + 8, index + 8 + length), 4);
+    if (crc32(crcInput) !== readU32(bytes, index + 8 + length)) throw fixed("content_rejected");
+    const chunkName = String.fromCharCode(...type);
+    if (!sawHeader && chunkName !== "IHDR") throw fixed("content_rejected");
+    if (chunkName === "IHDR") {
+      if (sawHeader || length !== 13) throw fixed("content_rejected");
+      assertPixels(readU32(bytes, index + 8), readU32(bytes, index + 12));
+      const bitDepth = bytes[index + 16];
+      const colorType = bytes[index + 17];
+      if (![0, 2, 3, 4, 6].includes(colorType) || bitDepth === 0) throw fixed("content_rejected");
+      sawHeader = true;
+    } else if (chunkName === "PLTE") {
+      if (sawPalette || dataClosed || length === 0 || length % 3 !== 0) throw fixed("content_rejected");
+      sawPalette = true;
+    } else if (chunkName === "IDAT") {
+      if (dataClosed) throw fixed("content_rejected");
+      sawData = true;
+    } else if (chunkName === "IEND") {
+      if (sawEnd || length !== 0 || !sawData || end !== bytes.length) throw fixed("content_rejected");
+      sawEnd = true;
+    } else if (["acTL", "fcTL", "fdAT"].includes(chunkName)) {
+      throw fixed("content_rejected");
+    } else if (sawData) {
+      dataClosed = true;
+    }
+    if (chunkName !== "IDAT" && sawData && chunkName !== "IEND") dataClosed = true;
+    index = end;
+    if (sawEnd) break;
+  }
+  if (!sawHeader || !sawData || !sawEnd || index !== bytes.length) throw fixed("content_rejected");
 }
 
 function validateGif(bytes: Uint8Array): void {
-  if (bytes.length < 10 || !(hasBytes(bytes, [71, 73, 70, 56, 55, 97]) || hasBytes(bytes, [71, 73, 70, 56, 57, 97]))) throw fixed("content_rejected");
+  if (bytes.length < 19 || !(hasBytes(bytes, [71, 73, 70, 56, 55, 97]) || hasBytes(bytes, [71, 73, 70, 56, 57, 97]))) throw fixed("content_rejected");
   assertPixels(bytes[6] | (bytes[7] << 8), bytes[8] | (bytes[9] << 8));
+  let index = 13;
+  const packed = bytes[10];
+  if (packed & 0x80) index += 3 * (1 << ((packed & 7) + 1));
+  if (index > bytes.length) throw fixed("content_rejected");
   let frames = 0;
-  for (const value of bytes) if (value === 0x2c) frames += 1;
-  if (frames !== 1 || bytes[bytes.length - 1] !== 0x3b) throw fixed("content_rejected");
+  let sawTrailer = false;
+  while (index < bytes.length) {
+    const marker = bytes[index++];
+    if (marker === 0x3b) { sawTrailer = true; break; }
+    if (marker === 0x2c) {
+      if (index + 9 > bytes.length) throw fixed("content_rejected");
+      const width = bytes[index + 4] | (bytes[index + 5] << 8);
+      const height = bytes[index + 6] | (bytes[index + 7] << 8);
+      assertPixels(width, height);
+      const localPacked = bytes[index + 8];
+      index += 9;
+      if (localPacked & 0x80) index += 3 * (1 << ((localPacked & 7) + 1));
+      if (index >= bytes.length) throw fixed("content_rejected");
+      if (bytes[index++] === 0) throw fixed("content_rejected");
+      index = skipGifSubBlocks(bytes, index);
+      frames += 1;
+      continue;
+    }
+    if (marker !== 0x21 || index >= bytes.length) throw fixed("content_rejected");
+    const label = bytes[index++];
+    if (label === 0xf9) {
+      if (index >= bytes.length || bytes[index++] !== 4 || index + 4 >= bytes.length) throw fixed("content_rejected");
+      index += 4;
+      if (bytes[index++] !== 0) throw fixed("content_rejected");
+    } else if (label === 0x01) {
+      if (index >= bytes.length || bytes[index++] !== 12 || index + 12 > bytes.length) throw fixed("content_rejected");
+      index += 12;
+      index = skipGifSubBlocks(bytes, index);
+    } else if (label === 0xff) {
+      if (index >= bytes.length || bytes[index++] !== 11 || index + 11 > bytes.length) throw fixed("content_rejected");
+      index += 11;
+      index = skipGifSubBlocks(bytes, index);
+    } else {
+      index = skipGifSubBlocks(bytes, index);
+    }
+  }
+  if (!sawTrailer || index !== bytes.length || frames !== 1) throw fixed("content_rejected");
 }
 
-function validateJpeg(bytes: Uint8Array): void {
-  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) throw fixed("content_rejected");
-  for (let index = 2; index + 9 < bytes.length;) {
-    if (bytes[index] !== 0xff) { index += 1; continue; }
-    const marker = bytes[index + 1];
-    if (marker === 0xd8 || marker === 0xd9) { index += 2; continue; }
-    const length = (bytes[index + 2] << 8) | bytes[index + 3];
-    if (length < 2 || index + length + 2 > bytes.length) throw fixed("content_rejected");
-    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
-      assertPixels((bytes[index + 7] << 8) | bytes[index + 8], (bytes[index + 5] << 8) | bytes[index + 6]);
-      return;
-    }
-    index += length + 2;
+function skipGifSubBlocks(bytes: Uint8Array, start: number): number {
+  let index = start;
+  while (index < bytes.length) {
+    const size = bytes[index++];
+    if (size === 0) return index;
+    if (index + size > bytes.length) throw fixed("content_rejected");
+    index += size;
   }
   throw fixed("content_rejected");
 }
 
+function validateJpeg(bytes: Uint8Array): void {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) throw fixed("content_rejected");
+  let index = 2;
+  let sawFrame = false;
+  while (index < bytes.length - 2) {
+    if (bytes[index] !== 0xff) throw fixed("content_rejected");
+    while (bytes[index] === 0xff) index += 1;
+    const marker = bytes[index++];
+    if (marker === 0xd9) break;
+    if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (index + 2 > bytes.length) throw fixed("content_rejected");
+    const length = (bytes[index] << 8) | bytes[index + 1];
+    if (length < 2 || index + length > bytes.length) throw fixed("content_rejected");
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      if (length < 8) throw fixed("content_rejected");
+      assertPixels((bytes[index + 5] << 8) | bytes[index + 6], (bytes[index + 3] << 8) | bytes[index + 4]);
+      sawFrame = true;
+    }
+    index += length;
+    if (marker === 0xda) {
+      while (index < bytes.length - 1) {
+        if (bytes[index] !== 0xff) { index += 1; continue; }
+        if (bytes[index + 1] === 0x00 || (bytes[index + 1] >= 0xd0 && bytes[index + 1] <= 0xd7)) { index += 2; continue; }
+        break;
+      }
+      if (index >= bytes.length - 1 || bytes[index] !== 0xff || bytes[index + 1] !== 0xd9) throw fixed("content_rejected");
+      break;
+    }
+  }
+  if (!sawFrame || index !== bytes.length - 2 || bytes[index] !== 0xff || bytes[index + 1] !== 0xd9) throw fixed("content_rejected");
+}
+
 function validateWebp(bytes: Uint8Array): void {
-  if (bytes.length < 30 || !hasBytes(bytes, [82, 73, 70, 70]) || !hasBytes(bytes, [87, 69, 66, 80], 8) || !hasBytes(bytes, [86, 80, 56, 88], 12) || readU32Le(bytes, 4) + 8 > bytes.length) throw fixed("content_rejected");
-  assertPixels(1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16), 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16));
+  if (bytes.length < 20 || !hasBytes(bytes, [82, 73, 70, 70]) || !hasBytes(bytes, [87, 69, 66, 80], 8) || readU32Le(bytes, 4) + 8 !== bytes.length) throw fixed("content_rejected");
+  let index = 12;
+  let sawExtendedHeader = false;
+  let sawImage = false;
   let frames = 0;
-  for (let index = 12; index + 4 <= bytes.length; index += 1) if (hasBytes(bytes, [65, 78, 77, 70], index)) frames += 1;
-  if (frames > 1) throw fixed("content_rejected");
+  while (index < bytes.length) {
+    if (index + 8 > bytes.length) throw fixed("content_rejected");
+    const chunkName = String.fromCharCode(...bytes.slice(index, index + 4));
+    const length = readU32Le(bytes, index + 4);
+    const end = index + 8 + length;
+    if (end > bytes.length) throw fixed("content_rejected");
+    if (chunkName === "VP8X") {
+      if (sawExtendedHeader || length !== 10) throw fixed("content_rejected");
+      assertPixels(1 + bytes[index + 12] + (bytes[index + 13] << 8) + (bytes[index + 14] << 16), 1 + bytes[index + 15] + (bytes[index + 16] << 8) + (bytes[index + 17] << 16));
+      sawExtendedHeader = true;
+    } else if (chunkName === "VP8 " || chunkName === "VP8L") {
+      if (sawImage) throw fixed("content_rejected");
+      sawImage = true;
+    } else if (chunkName === "ANMF") {
+      frames += 1;
+      sawImage = true;
+    }
+    index = end + (length & 1);
+  }
+  if (!sawExtendedHeader || !sawImage || frames > 1 || index !== bytes.length) throw fixed("content_rejected");
 }
 
 function decodeUtf8(bytes: Uint8Array): string {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw fixed("content_rejected"); }
+}
+
+function validateCssSyntax(source: string): void {
+  let index = 0;
+  let depth = 0;
+  while (index < source.length) {
+    if (source.startsWith("/*", index)) {
+      const end = source.indexOf("*/", index + 2);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 2;
+      continue;
+    }
+    if (source[index] === "\\") throw fixed("content_rejected");
+    if (source[index] === "\"" || source[index] === "'") { index = readCssString(source, index).end; continue; }
+    const urlMatch = source.slice(index).match(/^url\s*\(/iu);
+    if (urlMatch) { index = readCssUrl(source, index + urlMatch[0].length - 1).end; continue; }
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}") { depth -= 1; if (depth < 0) throw fixed("content_rejected"); }
+    if (EXTERNAL_CSS_SCHEME.test(source.slice(index)) || source.startsWith("//", index)) throw fixed("content_rejected");
+    index += 1;
+  }
+  if (depth !== 0) throw fixed("content_rejected");
+}
+
+function validateJsonNoDuplicateKeys(source: string): void {
+  let index = 0;
+  const whitespace = () => { while (/\s/u.test(source[index] ?? "")) index += 1; };
+  const stringValue = (): string => {
+    if (source[index] !== '"') throw fixed("content_rejected");
+    const start = index;
+    index += 1;
+    while (index < source.length) {
+      if (source[index] === "\\") { index += 2; continue; }
+      if (source[index] === '"') { index += 1; try { return JSON.parse(source.slice(start, index)) as string; } catch { throw fixed("content_rejected"); } }
+      if (source.charCodeAt(index) < 0x20) throw fixed("content_rejected");
+      index += 1;
+    }
+    throw fixed("content_rejected");
+  };
+  const value = (depth: number): void => {
+    if (depth > 64) throw fixed("content_rejected");
+    whitespace();
+    if (source[index] === "{") {
+      index += 1; whitespace(); const keys = new Set<string>();
+      if (source[index] === "}") { index += 1; return; }
+      while (true) {
+        const key = stringValue();
+        if (keys.has(key)) throw fixed("content_rejected");
+        keys.add(key); whitespace(); if (source[index++] !== ":") throw fixed("content_rejected");
+        value(depth + 1); whitespace();
+        if (source[index] === "}") { index += 1; return; }
+        if (source[index++] !== ",") throw fixed("content_rejected");
+        whitespace();
+      }
+    }
+    if (source[index] === "[") {
+      index += 1; whitespace();
+      if (source[index] === "]") { index += 1; return; }
+      while (true) {
+        value(depth + 1); whitespace();
+        if (source[index] === "]") { index += 1; return; }
+        if (source[index++] !== ",") throw fixed("content_rejected");
+        whitespace();
+      }
+    }
+    if (source[index] === '"') { stringValue(); return; }
+    if (/^(?:true|false|null)\b/u.test(source.slice(index))) { index += source.slice(index).match(/^(?:true|false|null)\b/u)![0].length; return; }
+    const number = source.slice(index).match(/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u);
+    if (number) { index += number[0].length; return; }
+    throw fixed("content_rejected");
+  };
+  value(0); whitespace(); if (index !== source.length) throw fixed("content_rejected");
 }
 
 function validateSvg(bytes: Uint8Array): void {
@@ -314,6 +515,59 @@ function validateSvg(bytes: Uint8Array): void {
   if (viewBox) assertPixels(Number(viewBox[1]), Number(viewBox[2]));
   else if (width && height) assertPixels(Number(width[1]), Number(height[1]));
   else throw fixed("content_rejected");
+  const stack: string[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const open = text.indexOf("<", index);
+    if (open < 0) break;
+    if (text.startsWith("<!--", open)) {
+      const end = text.indexOf("-->", open + 4);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 3;
+      continue;
+    }
+    if (text.startsWith("<?xml", open)) {
+      const end = text.indexOf("?>", open + 5);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 2;
+      continue;
+    }
+    const tag = parseTag(text, open);
+    assertNoDuplicateAttributes(tag.attributes);
+    if (tag.closing) {
+      if (stack.pop() !== tag.name) throw fixed("content_rejected");
+    } else if (!text.slice(tag.start, tag.end).trimEnd().endsWith("/>")) {
+      stack.push(tag.name);
+    }
+    index = tag.end;
+  }
+  if (stack.length || text.match(/<svg(?:\s|>)/giu)?.length !== 1 || !/<\/svg>\s*$/iu.test(text)) throw fixed("content_rejected");
+}
+
+function assertNoDuplicateAttributes(attributes: readonly ParsedAttribute[]): void {
+  const names = new Set<string>();
+  for (const attribute of attributes) {
+    if (names.has(attribute.name)) throw fixed("content_rejected");
+    names.add(attribute.name);
+  }
+}
+
+function validateJavaScript(bytes: Uint8Array): void {
+  const source = decodeUtf8(bytes);
+  if (/\b(?:import|export|require|fetch|XMLHttpRequest|WebSocket|EventSource|importScripts)\s*(?:\(|["'])/iu.test(source)) throw fixed("content_rejected");
+  let quote = "";
+  let comment = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const value = source[index];
+    const next = source[index + 1];
+    if (comment === "line") { if (value === "\n" || value === "\r") comment = ""; continue; }
+    if (comment === "block") { if (value === "*" && next === "/") { comment = ""; index += 1; } continue; }
+    if (quote) { if (value === "\\") { if (index + 1 >= source.length) throw fixed("content_rejected"); index += 1; } else if (value === quote) quote = ""; else if (value === "\n" || value === "\r") throw fixed("content_rejected"); continue; }
+    if (value === "\"" || value === "'") { quote = value; continue; }
+    if (value === "/" && next === "/") { comment = "line"; index += 1; continue; }
+    if (value === "/" && next === "*") { comment = "block"; index += 1; }
+  }
+  if (quote || comment) throw fixed("content_rejected");
 }
 
 function validateAsset(asset: PreviewAsset): PreviewAsset {
@@ -331,8 +585,10 @@ function validateAsset(asset: PreviewAsset): PreviewAsset {
   else if (mimeType === "image/svg+xml") validateSvg(bytes);
   else if (mimeType === "font/woff" && (bytes.length < 44 || !hasBytes(bytes, [119, 79, 70, 70]) || readU32(bytes, 8) > bytes.length)) throw fixed("content_rejected");
   else if (mimeType === "font/woff2" && (bytes.length < 48 || !hasBytes(bytes, [119, 79, 70, 50]) || readU32(bytes, 8) > bytes.length)) throw fixed("content_rejected");
-  else if (SCRIPT_TYPES.has(mimeType) || STYLE_TYPES.has(mimeType) || mimeType === "application/json" || mimeType === "text/plain") decodeUtf8(bytes);
-  if (mimeType === "application/json") { try { JSON.parse(decodeUtf8(bytes)); } catch { throw fixed("content_rejected"); } }
+  else if (SCRIPT_TYPES.has(mimeType)) validateJavaScript(bytes);
+  else if (STYLE_TYPES.has(mimeType)) validateCssSyntax(decodeUtf8(bytes));
+  else if (mimeType === "application/json" || mimeType === "text/plain") decodeUtf8(bytes);
+  if (mimeType === "application/json") validateJsonNoDuplicateKeys(decodeUtf8(bytes));
   return Object.freeze({ name, mimeType, bytes });
 }
 
@@ -432,6 +688,7 @@ function readCssUrl(source: string, openParen: number): { end: number; value: st
 function sanitizeCss(source: string, assets: ReadonlyMap<string, PreviewAsset>): string {
   const edits: Edit[] = [];
   let index = 0;
+  let depth = 0;
   while (index < source.length) {
     if (source.startsWith("/*", index)) {
       const end = source.indexOf("*/", index + 2);
@@ -445,6 +702,7 @@ function sanitizeCss(source: string, assets: ReadonlyMap<string, PreviewAsset>):
       index = parsed.end;
       continue;
     }
+    if (source[index] === "\\") throw fixed("content_rejected");
     const urlMatch = source.slice(index).match(/^url\s*\(/iu);
     if (urlMatch) {
       const parsed = readCssUrl(source, index + urlMatch[0].length - 1);
@@ -465,9 +723,12 @@ function sanitizeCss(source: string, assets: ReadonlyMap<string, PreviewAsset>):
       if (/^url\s*\(/iu.test(source.slice(next))) { index = next; continue; }
       throw fixed("content_rejected");
     }
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}") { depth -= 1; if (depth < 0) throw fixed("content_rejected"); }
     if (EXTERNAL_CSS_SCHEME.test(source.slice(index)) || source.startsWith("//", index)) throw fixed("content_rejected");
     index += 1;
   }
+  if (depth !== 0) throw fixed("content_rejected");
   return replaceEdits(source, edits);
 }
 
@@ -571,9 +832,12 @@ function sanitizeHtml(source: string, assets: ReadonlyMap<string, PreviewAsset>)
     const tag = parseTag(source, open);
     if (!tag.closing) {
       if (BLOCKED_TAGS.has(tag.name)) throw fixed("content_rejected");
+      assertNoDuplicateAttributes(tag.attributes);
       const attributes = new Map(tag.attributes.map((attribute) => [attribute.name, attribute]));
       if ([...attributes.keys()].some((name) => name.startsWith("on"))) throw fixed("content_rejected");
       if (tag.name === "meta" && attributes.get("http-equiv")?.value.toLowerCase() === "refresh") throw fixed("content_rejected");
+      if (tag.name === "meta" && attributes.get("content") && (SCHEME_URL.test(attributes.get("content")!.value) || /\burl\s*=/iu.test(attributes.get("content")!.value))) throw fixed("content_rejected");
+      if (tag.name === "link" && attributes.get("rel")?.value.toLowerCase().split(/\s+/u).includes("preload")) throw fixed("content_rejected");
       for (const attribute of tag.attributes) {
         if (attribute.name === "srcset") edits.push({ start: attribute.valueStart, end: attribute.valueEnd, value: srcset(attribute.value, assets) });
         else if (URL_ATTRIBUTES.has(attribute.name)) edits.push({ start: attribute.valueStart, end: attribute.valueEnd, value: validateUrlReference(attribute.value, assets) });
@@ -582,7 +846,7 @@ function sanitizeHtml(source: string, assets: ReadonlyMap<string, PreviewAsset>)
       }
       if (tag.name === "script") {
         const src = attributes.get("src");
-        if (!src) throw fixed("content_rejected");
+        if (!src || attributes.get("type")?.value.toLowerCase() === "module") throw fixed("content_rejected");
         const asset = localAssetReference(src.value, assets);
         if (!asset || !/^data:(?:application\/javascript|text\/javascript);base64,/iu.test(asset)) throw fixed("content_rejected");
         const close = findClosingTag(source, tag.end, "script");

@@ -13,6 +13,7 @@
     "typescript": "5.9.2"
   },
   "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
     "test": "node --experimental-strip-types --test ./preview-host.test.ts"
   }
 }
