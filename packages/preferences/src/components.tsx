@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { FunnyLevel, LanguageMode, NarrationPreferences, ScheduleRule, VoiceDescriptor } from "./types";
+import type { FunnyLevel, LanguageMode, NarrationPreferences, ScheduleRule, VoiceDescriptor } from "./types.js";
 
 export interface PreferenceStrings {
   language: string;
@@ -26,6 +26,14 @@ export interface PreferenceStrings {
   pitch: string;
   appDisplayName: string;
   reset: string;
+  voiceStatus: string;
+  noVocabularyFile: string;
+  vocabularyLoaded: string;
+  vocabularyInvalid: string;
+  localExperienceLock: string;
+  attentionAccommodations: string;
+  enabled: string;
+  remove: string;
 }
 
 export const DEFAULT_STRINGS: PreferenceStrings = {
@@ -33,10 +41,12 @@ export const DEFAULT_STRINGS: PreferenceStrings = {
   englishFunny: "English funny level", cantoneseFunny: "Cantonese funny level", showDialogEmojis: "Show emojis in dialogs and message boxes",
   schoolMode: "School mode", schoolModeDescription: "Uses English and suppresses playful and dim-sum features while enabled.", schoolModeName: "School mode name", unlockMethod: "Unlock method",
   vocabulary: "Personal vocabulary", chooseFile: "Choose a local JSON file", clearVocabulary: "Clear vocabulary", narration: "Narration", narrationEnabled: "Read app events aloud", narratorLanguage: "Narrated language",
-  englishVoice: "English voice", cantoneseVoice: "Cantonese voice", chooseAutomatically: "Choose automatically", rate: "Rate", pitch: "Pitch", appDisplayName: "App display name", reset: "Reset"
+  englishVoice: "English voice", cantoneseVoice: "Cantonese voice", chooseAutomatically: "Choose automatically", rate: "Rate", pitch: "Pitch", appDisplayName: "App display name", reset: "Reset",
+  voiceStatus: "Voice lists can arrive after this surface opens. A missing selected voice remains selected and falls back until it is installed.", noVocabularyFile: "No file selected. Original wording is active.", vocabularyLoaded: "{count} entries loaded locally.", vocabularyInvalid: "File refused: {error}.", localExperienceLock: "This is a local experience lock. Deleting the shared application-data record resets it.", attentionAccommodations: "Attention accommodations", enabled: "Enabled", remove: "Remove"
 };
 
-export function LanguageModeControl(props: { value: LanguageMode; onChange: (value: LanguageMode) => void; strings?: PreferenceStrings }): React.ReactElement {
+export function LanguageModeControl(props: { value: LanguageMode; onChange: (value: LanguageMode) => void; strings?: PreferenceStrings; schoolEnabled?: boolean }): React.ReactElement | null {
+  if (props.schoolEnabled) return null;
   const strings = props.strings ?? DEFAULT_STRINGS;
   return <fieldset className="preference-language-mode">
     <legend>{strings.language}</legend>
@@ -47,7 +57,8 @@ export function LanguageModeControl(props: { value: LanguageMode; onChange: (val
   </fieldset>;
 }
 
-export function FunnyLevelControl(props: { language: "english" | "cantonese"; value: FunnyLevel; disabled?: boolean; onChange: (value: FunnyLevel) => void; strings?: PreferenceStrings }): React.ReactElement {
+export function FunnyLevelControl(props: { language: "english" | "cantonese"; value: FunnyLevel; disabled?: boolean; onChange: (value: FunnyLevel) => void; strings?: PreferenceStrings; schoolEnabled?: boolean }): React.ReactElement | null {
+  if (props.schoolEnabled) return null;
   const strings = props.strings ?? DEFAULT_STRINGS;
   const label = props.language === "english" ? strings.englishFunny : strings.cantoneseFunny;
   return <label className="preference-funny-level">
@@ -57,7 +68,8 @@ export function FunnyLevelControl(props: { language: "english" | "cantonese"; va
   </label>;
 }
 
-export function DialogEmojiToggle(props: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; strings?: PreferenceStrings }): React.ReactElement {
+export function DialogEmojiToggle(props: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; strings?: PreferenceStrings; schoolEnabled?: boolean }): React.ReactElement | null {
+  if (props.schoolEnabled) return null;
   const strings = props.strings ?? DEFAULT_STRINGS;
   return <label><input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(event) => props.onChange(event.currentTarget.checked)} />{strings.showDialogEmojis}</label>;
 }
@@ -72,22 +84,23 @@ export function SchoolModeControl(props: { enabled: boolean; displayName: string
     <label>{strings.unlockMethod}<select value={props.unlockMethod} onChange={(event) => props.onUnlockMethodChange(event.currentTarget.value as "pin" | "password" | "passkey")}>
       <option value="pin">PIN</option><option value="password">Password</option><option value="passkey">Passkey</option>
     </select></label>
-    <p role="note">This is a local experience lock. Deleting the shared application-data record resets it.</p>
+    <p role="note">{strings.localExperienceLock}</p>
   </section>;
 }
 
-export function VocabularyUploadControl(props: { status: "empty" | "loaded" | "invalid"; entryCount: number; errorCode: string | null; onFile: (file: File) => void; onClear: () => void; disabled?: boolean; strings?: PreferenceStrings }): React.ReactElement {
+export function VocabularyUploadControl(props: { status: "empty" | "loaded" | "invalid"; entryCount: number; errorCode: string | null; onFile: (file: File) => void; onClear: () => void; disabled?: boolean; strings?: PreferenceStrings; schoolEnabled?: boolean }): React.ReactElement | null {
+  if (props.schoolEnabled) return null;
   const strings = props.strings ?? DEFAULT_STRINGS;
   const id = "personal-vocabulary-file";
   return <section aria-labelledby="vocabulary-heading"><h3 id="vocabulary-heading">{strings.vocabulary}</h3>
     <label htmlFor={id}>{strings.chooseFile}</label>
     <input id={id} type="file" accept="application/json,.json" disabled={props.disabled} onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) props.onFile(file); }} />
-    <p role="status" aria-live="polite">{props.status === "loaded" ? `${props.entryCount} entries loaded locally.` : props.status === "invalid" ? `File refused: ${props.errorCode ?? "invalid-file"}.` : "No file selected. Original wording is active."}</p>
+    <p role="status" aria-live="polite">{props.status === "loaded" ? strings.vocabularyLoaded.replace("{count}", String(props.entryCount)) : props.status === "invalid" ? strings.vocabularyInvalid.replace("{error}", props.errorCode ?? "invalid-file") : strings.noVocabularyFile}</p>
     <button type="button" onClick={props.onClear} disabled={props.disabled || props.status === "empty"}>{strings.clearVocabulary}</button>
   </section>;
 }
 
-function VoiceSelect(props: { id: string; label: string; voices: VoiceDescriptor[]; value: string | null; onChange: (value: string | null) => void; automaticLabel: string; disabled?: boolean }): React.ReactElement {
+function VoiceSelect(props: { id: string; label: string; voices: VoiceDescriptor[]; value: string | null; onChange: (value: string | null) => void; automaticLabel: string; disabled?: boolean | undefined }): React.ReactElement {
   return <label htmlFor={props.id}>{props.label}<select id={props.id} value={props.value ?? ""} disabled={props.disabled} onChange={(event) => props.onChange(event.currentTarget.value || null)}>
     <option value="">{props.automaticLabel}</option>
     {props.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} ({voice.language}){voice.networkBacked ? " [network]" : ""}</option>)}
@@ -104,13 +117,15 @@ export function NarrationPreferencesControl(props: { value: NarrationPreferences
     <VoiceSelect id="cantonese-voice" label={strings.cantoneseVoice} voices={props.cantoneseVoices} value={props.value.cantoneseVoiceId} onChange={(cantoneseVoiceId) => update({ cantoneseVoiceId })} automaticLabel={strings.chooseAutomatically} disabled={props.disabled} />
     <label>{strings.rate}<input type="number" min={0.1} max={10} step={0.1} value={props.value.rate} disabled={props.disabled} onChange={(event) => update({ rate: Number(event.currentTarget.value) })} /></label>
     <label>{strings.pitch}<input type="number" min={0} max={2} step={0.1} value={props.value.pitch} disabled={props.disabled} onChange={(event) => update({ pitch: Number(event.currentTarget.value) })} /></label>
-    <p role="status">Voice lists may arrive after this surface opens. A missing selected voice remains selected and falls back until it is installed.</p>
+    <p role="status">{strings.voiceStatus}</p>
   </section>;
 }
 
-export function ADHDControls(props: { values: Record<"focus" | "lowStimulation" | "timeAwareness" | "oneThingAtATime" | "momentum", boolean>; onChange: (key: keyof typeof props.values, value: boolean) => void; disabled?: boolean }): React.ReactElement {
+type ADHDKey = "focus" | "lowStimulation" | "timeAwareness" | "oneThingAtATime" | "momentum";
+export function ADHDControls(props: { values: Record<ADHDKey, boolean>; onChange: (key: ADHDKey, value: boolean) => void; disabled?: boolean; strings?: PreferenceStrings }): React.ReactElement {
+  const strings = props.strings ?? DEFAULT_STRINGS;
   const labels = { focus: "Focus", lowStimulation: "Low stimulation", timeAwareness: "Time awareness", oneThingAtATime: "One thing at a time", momentum: "Momentum" } as const;
-  return <fieldset><legend>Attention accommodations</legend>{(Object.keys(labels) as Array<keyof typeof labels>).map((key) => <label key={key}><input type="checkbox" checked={props.values[key]} disabled={props.disabled} onChange={(event) => props.onChange(key, event.currentTarget.checked)} />{labels[key]}</label>)}</fieldset>;
+  return <fieldset><legend>{strings.attentionAccommodations}</legend>{(Object.keys(labels) as ADHDKey[]).map((key) => <label key={key}><input type="checkbox" checked={props.values[key]} disabled={props.disabled} onChange={(event) => props.onChange(key, event.currentTarget.checked)} />{labels[key]}</label>)}</fieldset>;
 }
 
 export function ScheduleRuleSummary(props: { rule: ScheduleRule; onToggle: (enabled: boolean) => void; onRemove: () => void }): React.ReactElement {

@@ -1,9 +1,9 @@
-import type { NarrationPreferences, VoiceDescriptor } from "./types";
+import type { NarrationPreferences, VoiceDescriptor } from "./types.js";
 
 export interface SpeechUtterance {
   text: string;
   language: "en" | "yue";
-  voice?: VoiceDescriptor;
+  voice?: VoiceDescriptor | undefined;
   rate: number;
   pitch: number;
 }
@@ -19,11 +19,16 @@ export interface NarrationEnvironment {
   reducedSound?: () => boolean;
   quietHours?: () => boolean;
 }
+export interface NarrationQueueOptions {
+  debounceMs?: number;
+  categoryCooldownMs?: number;
+  now?: () => number;
+}
 
 export interface NarrationQueue {
   refreshVoices(): VoiceDescriptor[];
   getVoices(language: "en" | "yue"): VoiceDescriptor[];
-  enqueue(text: { english?: string; cantonese?: string }, preferences: NarrationPreferences): void;
+  enqueue(text: { english?: string; cantonese?: string }, preferences: NarrationPreferences, options?: { category?: string }): void;
   clear(): void;
   isSpeaking(): boolean;
   dispose(): void;
@@ -42,11 +47,16 @@ function clampPitch(value: number): number {
   return Number.isFinite(value) ? Math.min(2, Math.max(0, value)) : 1;
 }
 
-export function createNarrationQueue(driver: SpeechDriver, environment: NarrationEnvironment = {}): NarrationQueue {
+export function createNarrationQueue(driver: SpeechDriver, environment: NarrationEnvironment = {}, options: NarrationQueueOptions = {}): NarrationQueue {
   let voices = driver.listVoices();
   let speaking = false;
   let disposed = false;
   let queued: SpeechUtterance[] = [];
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  const lastAccepted = new Map<string, number>();
+  const debounceMs = Math.max(0, Math.min(2_000, options.debounceMs ?? 80));
+  const categoryCooldownMs = Math.max(0, Math.min(60_000, options.categoryCooldownMs ?? 1_000));
+  const now = options.now ?? (() => Date.now());
   const unsubscribe = driver.onVoicesChanged(() => {
     voices = driver.listVoices();
   });
@@ -77,8 +87,12 @@ export function createNarrationQueue(driver: SpeechDriver, environment: Narratio
     getVoices(language) {
       return voices.filter((voice) => voiceMatches(voice, language));
     },
-    enqueue(text, preferences) {
+    enqueue(text, preferences, enqueueOptions = {}) {
       if (disposed || !preferences.enabled || environment.screenReaderActive?.() || environment.reducedSound?.() || environment.quietHours?.() || preferences.reducedSound || preferences.quietHours) return;
+      const category = enqueueOptions.category ?? "default";
+      const acceptedAt = now();
+      const last = lastAccepted.get(category);
+      if (last !== undefined && acceptedAt - last < categoryCooldownMs) return;
       const rate = clampRate(preferences.rate);
       const pitch = clampPitch(preferences.pitch);
       const utterances: SpeechUtterance[] = [];
@@ -91,10 +105,13 @@ export function createNarrationQueue(driver: SpeechDriver, environment: Narratio
       if (utterances.length === 0) return;
       /* New events supersede stale queued announcements, but never interrupt speech in flight. */
       queued = utterances;
-      void pump();
+      lastAccepted.set(category, acceptedAt);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => { debounceTimer = undefined; void pump(); }, debounceMs);
     },
     clear() {
       queued = [];
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = undefined; }
     },
     isSpeaking() {
       return speaking;
@@ -102,6 +119,7 @@ export function createNarrationQueue(driver: SpeechDriver, environment: Narratio
     dispose() {
       disposed = true;
       queued = [];
+      if (debounceTimer) clearTimeout(debounceTimer);
       unsubscribe();
       driver.cancel();
     }

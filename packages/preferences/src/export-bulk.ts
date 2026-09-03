@@ -1,4 +1,4 @@
-import type { BulkActionPreview, ExportFormat, ExportRequest } from "./types";
+import type { BulkActionPreview, ExportFormat, ExportRequest } from "./types.js";
 
 const formats: ExportFormat[] = ["json", "jsonl", "yaml", "toml", "xml", "csv", "tsv", "markdown", "html", "sql", "typescript", "javascript", "python", "go", "rust", "json-schema", "protobuf"];
 
@@ -26,10 +26,19 @@ export function prepareExport(request: ExportRequest): string {
 }
 
 function redactSensitive(record: Record<string, unknown>): Record<string, unknown> {
+  return redactValue(record, new WeakSet<object>()) as Record<string, unknown>;
+}
+
+function redactValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return "[omitted-circular-value]";
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, seen));
   const output: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (/secret|password|pin|token|credential|private|sourcePath|filePath/i.test(key)) output[key] = "[omitted]";
-    else output[key] = value;
+  for (const [key, item] of Object.entries(value)) {
+    output[key] = /secret|password|pin|token|credential|private|sourcePath|filePath|path/i.test(key)
+      ? "[omitted]"
+      : redactValue(item, seen);
   }
   return output;
 }
@@ -61,4 +70,3 @@ export function previewBulkAction(input: {
   });
   return { action: input.action, scope: input.scope, selectedCount: items.filter((item) => item.selected).length, affectedCount: items.filter((item) => item.eligible).length, excludedCount: items.filter((item) => item.selected && !item.eligible).length, items };
 }
-

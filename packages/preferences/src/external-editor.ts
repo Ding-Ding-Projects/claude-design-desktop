@@ -1,4 +1,4 @@
-import type { ExternalEditorDescriptor } from "./types";
+import type { ExternalEditorDescriptor } from "./types.js";
 
 export interface EditorDiscoveryInput {
   pathExecutables?: Record<string, string | null | undefined>;
@@ -27,4 +27,3 @@ export function editorLaunchArgs(editor: ExternalEditorDescriptor, targetPath: s
   if (!editor.supportsFiles && !editor.supportsFolders) throw new Error("editor-has-no-supported-target");
   return [targetPath];
 }
-

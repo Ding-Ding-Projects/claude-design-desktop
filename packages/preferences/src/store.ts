@@ -10,7 +10,7 @@ import {
   type PersonalVocabularyState,
   type PreferencesState,
   type SchoolModePreferences
-} from "./types";
+} from "./types.js";
 
 export const PREFERENCES_STORAGE_KEY = "claude-design.preferences.v1";
 export const SHARED_SCHOOL_STORAGE_KEY = "claude-design.school-mode.v1";
@@ -49,6 +49,13 @@ export function getLocalStorage(): StorageLike {
 
 function cloneState(state: PreferencesState): PreferencesState {
   return JSON.parse(JSON.stringify(state)) as PreferencesState;
+}
+
+function persistedState(state: PreferencesState): PreferencesState {
+  const next = cloneState(state);
+  next.school.credentialKey = null;
+  next.logo.sourceName = null;
+  return next;
 }
 
 export function createDefaultPreferences(shippedName = "Claude Design", stableApplicationId = "claude-design-desktop"): PreferencesState {
@@ -104,7 +111,7 @@ export function loadPreferences(storage: StorageLike = getLocalStorage(), defaul
 function mergePreferences(defaults: PreferencesState, parsed: Partial<PreferencesState>): PreferencesState {
   const result = cloneState(defaults);
   if (parsed.language && typeof parsed.language === "object") result.language = { ...result.language, ...parsed.language };
-  if (parsed.school && typeof parsed.school === "object") result.school = { ...result.school, ...parsed.school };
+  if (parsed.school && typeof parsed.school === "object") result.school = { ...result.school, ...parsed.school, credentialKey: null };
   if (parsed.appearance && typeof parsed.appearance === "object") result.appearance = { ...result.appearance, ...parsed.appearance };
   if (parsed.adhd && typeof parsed.adhd === "object") result.adhd = { ...result.adhd, ...parsed.adhd };
   if (parsed.narration && typeof parsed.narration === "object") result.narration = { ...result.narration, ...parsed.narration };
@@ -123,6 +130,7 @@ export function createPreferencesStore(options: {
 } = {}) {
   const storage = options.storage ?? getLocalStorage();
   let state = loadPreferences(storage, options.defaults ?? createDefaultPreferences());
+  state.school = readSharedSchoolMode(storage, state.school);
   state.vocabulary = loadCachedPersonalVocabulary(storage);
   const listeners = new Set<Listener>();
   const channel = options.broadcast !== false && typeof BroadcastChannel !== "undefined"
@@ -130,11 +138,11 @@ export function createPreferencesStore(options: {
     : null;
 
   const emit = (key: PreferenceChange["key"]) => {
-    const change = { key, state: cloneState(state) };
+    const change = { key, state: persistedState(state) };
     listeners.forEach((listener) => listener(change));
   };
 
-  const persist = () => storage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(state));
+  const persist = () => storage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(persistedState(state)));
   const setState = (next: PreferencesState, key: PreferenceChange["key"]) => {
     state = cloneState(next);
     persist();
@@ -146,11 +154,20 @@ export function createPreferencesStore(options: {
     const incoming = event.data as { state?: PreferencesState; key?: PreferenceChange["key"] };
     if (!incoming?.state) return;
     state = cloneState(incoming.state);
+    state.school.credentialKey = null;
     emit(incoming.key ?? "language");
   });
 
+  const storageListener = (event: StorageEvent) => {
+    if (event.storageArea && event.storageArea !== storage) return;
+    if (event.key !== SHARED_SCHOOL_STORAGE_KEY) return;
+    state = { ...state, school: readSharedSchoolMode(storage, state.school) };
+    emit("school");
+  };
+  if (typeof globalThis.addEventListener === "function") globalThis.addEventListener("storage", storageListener);
+
   return {
-    getState: () => cloneState(state),
+    getState: () => persistedState(state),
     subscribe(listener: Listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -162,7 +179,7 @@ export function createPreferencesStore(options: {
       setState({ ...state, adhd: { ...state.adhd, ...patch } }, "adhd");
     },
     updateSchool(patch: Partial<SchoolModePreferences>) {
-      const school = { ...state.school, ...patch };
+      const school = { ...state.school, ...patch, credentialKey: null };
       storage.setItem(SHARED_SCHOOL_STORAGE_KEY, JSON.stringify({ ...school, credentialKey: null }));
       setState({ ...state, school }, "school");
     },
@@ -185,6 +202,7 @@ export function createPreferencesStore(options: {
     },
     close() {
       channel?.close();
+      if (typeof globalThis.removeEventListener === "function") globalThis.removeEventListener("storage", storageListener);
     }
   };
 }
@@ -315,7 +333,7 @@ class JsonReader {
       const char = this.source[this.index++];
       if (char === '"') return output;
       if (char !== "\\") { output += char; continue; }
-      const escaped = this.source[this.index++];
+      const escaped = this.source[this.index++] ?? "";
       const map: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
       if (escaped === "u") {
         const code = this.source.slice(this.index, this.index + 4);

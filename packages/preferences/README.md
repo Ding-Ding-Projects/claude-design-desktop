@@ -13,4 +13,10 @@ This package contains framework-neutral preference contracts and accessible Reac
 - Logo processing validates signatures and bounds before making a conversion plan. A persistence callback can roll back the previous valid logo if conversion or persistence fails.
 - Export and bulk previews preserve complete records, redact sensitive fields, enumerate formats, and report exact exclusions.
 
+External schedule refreshes require an injected privileged transport. The transport owns DNS resolution, redirect refusal, HTTPS and address policy, while the package adds a deadline, incremental response bound, schema validation, and generation cancellation. Home Assistant credentials are looked up by vault key inside the privileged boundary and are never returned by preference state.
+
+School state is read from the shared local record at startup and refreshed through storage events and `BroadcastChannel`. Its credential reference is always removed from returned and persisted state. While it is active, language, funny-level, dialog-emoji, and vocabulary controls are omitted from the React surface rather than rendered as disabled controls.
+
+Logo conversion has a decoder and encoder seam. Production code should provide the platform decoder, then use `decodeAndConvertLogo` to enforce decoded bounds and PNG output round-trip checks. Source names are transient only. Export redaction walks nested arrays and records, and narration debounces announcements while applying per-category cooldowns.
+
 Run the focused tests with a TypeScript-aware test runner in the owning monorepo. The package has no runtime network requirement and does not include private vocabulary values or credentials.

@@ -8,11 +8,14 @@ import {
   parseAndCachePersonalVocabulary,
   parsePersonalVocabulary,
   previewBulkAction,
+  prepareExport,
+  createScheduleRefreshController,
+  decodeAndConvertLogo,
   resolveSchedule,
   validateLogoSource,
   type SpeechDriver,
   type SpeechUtterance
-} from "../src/index";
+} from "../src/index.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -56,6 +59,38 @@ test("schedule precedence and cross-midnight windows are deterministic", () => {
   assert.equal(resolved.values.density, "compact");
 });
 
+test("schedule treats 24:00 as a valid end-of-day boundary", () => {
+  const rule = { id: "day-end", label: "Day end", enabled: true, priority: 1, startDate: null, endDate: null, startTime: { hour: 23, minute: 0 }, endTime: { hour: 24, minute: 0 }, weekdays: [2], everyDay: false, timezone: "UTC", values: { density: "compact" as const }, source: { kind: "local" as const } };
+  const result = resolveSchedule([rule], { now: new Date("2026-09-01T23:30:00Z") }, {});
+  assert.equal(result.ruleId, "day-end");
+  assert.equal(resolveSchedule([rule], { now: new Date("2026-09-02T00:00:00Z") }, {}).ruleId, null);
+});
+
+test("schedule transport uses the privileged boundary, vault lookup, deadline, and incremental size bound", async () => {
+  let request: { url: string; headers: Record<string, string>; redirect: "error" } | undefined;
+  const controller = createScheduleRefreshController({
+    resolveHost: async () => ["203.0.113.8"],
+    request: async (input) => { request = { url: input.url, headers: input.headers, redirect: input.redirect }; return input.url.includes("/settings") ? { status: 500, text: async () => "{}" } : { status: 200, headers: { "content-length": "16" }, text: async () => "{\"state\":\"off\"}" }; }
+  }, { getCredential: async (key) => key === "vault-ha" ? "vault-value-never-returned" : null });
+  const result = await controller.refresh({ kind: "home-assistant", baseUrl: "https://ha.example.test", entityId: "input_boolean.focus", credentialKey: "vault-ha" });
+  assert.equal(result.active, false);
+  assert.equal(request?.redirect, "error");
+  assert.equal(request?.headers.authorization, "Bearer vault-value-never-returned");
+  await assert.rejects(() => controller.refresh({ kind: "api", url: "http://192.168.1.5/settings", schemaVersion: 1 }), /https-required/);
+  await assert.rejects(() => controller.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /schedule-source-http/);
+});
+
+test("School state strips credential keys on load and never persists them", () => {
+  const storage = new MemoryStorage();
+  storage.setItem("claude-design.school-mode.v1", JSON.stringify({ enabled: true, displayName: "Quiet", unlockMethod: "password", credentialKey: "vault-secret-key" }));
+  const store = createPreferencesStore({ storage, broadcast: false });
+  assert.equal(store.getState().school.credentialKey, null);
+  store.updateSchool({ credentialKey: "attempted-secret-key" });
+  assert.equal(store.getState().school.credentialKey, null);
+  assert.equal(JSON.parse(storage.getItem("claude-design.preferences.v1") ?? "{}").school.credentialKey, null);
+  store.close();
+});
+
 test("narration enumerates voices late and serializes bilingual speech without overlap", async () => {
   const spoken: SpeechUtterance[] = [];
   let voiceListener: (() => void) | undefined;
@@ -65,15 +100,26 @@ test("narration enumerates voices late and serializes bilingual speech without o
     listVoices: () => voiceListener ? [{ id: "en-1", name: "English", language: "en-US", localService: true, networkBacked: false }, { id: "yue-1", name: "Cantonese", language: "yue-HK", localService: true, networkBacked: false }] : [],
     onVoicesChanged: (listener) => { voiceListener = listener; return () => { voiceListener = undefined; }; }
   };
-  const queue = createNarrationQueue(driver);
+  const queue = createNarrationQueue(driver, {}, { debounceMs: 1, categoryCooldownMs: 0 });
   assert.equal(queue.getVoices("en").length, 0);
   voiceListener?.();
   assert.equal(queue.getVoices("yue").length, 1);
-  queue.enqueue({ english: "One", cantonese: "Two" }, { enabled: true, language: "both", englishVoiceId: "en-1", cantoneseVoiceId: "yue-1", rate: 1, pitch: 1, reducedSound: false, quietHours: false });
-  queue.enqueue({ english: "Latest" }, { enabled: true, language: "en", englishVoiceId: "en-1", cantoneseVoiceId: null, rate: 1, pitch: 1, reducedSound: false, quietHours: false });
+  queue.enqueue({ english: "One", cantonese: "Two" }, { enabled: true, language: "both", englishVoiceId: "en-1", cantoneseVoiceId: "yue-1", rate: 1, pitch: 1, reducedSound: false, quietHours: false }, { category: "first" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(spoken.map((item) => item.text), ["One", "Two"]);
+  assert.equal(spoken[0]?.voice?.id, "en-1");
+  queue.dispose();
+});
+
+
+test("narration applies debounce and per-category cooldown", async () => {
+  const spoken: string[] = [];
+  const queue = createNarrationQueue({ speak: async (item) => { spoken.push(item.text); }, cancel: () => undefined, listVoices: () => [], onVoicesChanged: () => () => undefined }, {}, { debounceMs: 3, categoryCooldownMs: 100 });
+  const preferences = { enabled: true, language: "en" as const, englishVoiceId: null, cantoneseVoiceId: null, rate: 1, pitch: 1, reducedSound: false, quietHours: false };
+  queue.enqueue({ english: "first" }, preferences, { category: "status" });
+  queue.enqueue({ english: "suppressed" }, preferences, { category: "status" });
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(spoken.map((item) => item.text), ["One", "Latest"]);
-  assert.equal(spoken[0].voice?.id, "en-1");
+  assert.deepEqual(spoken, ["first"]);
   queue.dispose();
 });
 
@@ -83,10 +129,27 @@ test("logo validation rejects spoofed, animated, and oversized input", () => {
   assert.equal(validateLogoSource({ name: "x.svg", claimedMime: "image/svg+xml", bytes: svg }).ok, false);
 });
 
+test("logo conversion decodes, converts, round-trips, and does not retain source names", async () => {
+  const source = { name: "private-source.png", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 32, 0, 0, 0, 32]) };
+  const decoder = {
+    decode: async (bytes: Uint8Array) => ({ width: bytes.length === source.bytes.length ? 32 : 64, height: bytes.length === source.bytes.length ? 32 : 64, image: {} }),
+    encode: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 64, 0, 0, 0, 64, 1])
+  };
+  const result = await decodeAndConvertLogo(source, { mime: "image/png", sizes: [64], fit: "contain", crop: null, focalPoint: { x: 0.5, y: 0.5 }, background: { kind: "transparent", color: "#fff" } }, decoder);
+  assert.equal(result.outputs[0]?.size, 64);
+});
+
+test("nested export redaction removes sensitive descendants", () => {
+  const output = prepareExport({ format: "json", includeSensitive: false, note: "redacted", records: [{ id: "1", nested: { token: "hidden", visible: "kept" }, values: [{ password: "hidden" }] }] });
+  assert.match(output, /\[omitted\]/);
+  assert.doesNotMatch(output, /hidden/);
+  assert.match(output, /kept/);
+});
+
 test("bulk preview reports exact selected, affected, and excluded counts", () => {
   const preview = previewBulkAction({ action: "delete", scope: "page", items: [{ id: "a", label: "A", selected: true }, { id: "b", label: "B", selected: true, pinned: true }, { id: "c", label: "C", selected: false }] });
   assert.equal(preview.selectedCount, 2);
   assert.equal(preview.affectedCount, 1);
   assert.equal(preview.excludedCount, 1);
-  assert.equal(preview.items[1].reason, "pinned");
+  assert.equal(preview.items[1]?.reason, "pinned");
 });

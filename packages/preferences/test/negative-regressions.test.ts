@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { parsePersonalVocabulary, previewBulkAction, validateLogoSource } from "../src/index";
+import { parsePersonalVocabulary, previewBulkAction, validateLogoSource } from "../src/index.js";
 
 test("negative regression turns red for duplicate vocabulary keys", () => {
   const brokenParser = (payload: string) => JSON.parse(payload);
@@ -18,4 +18,10 @@ test("negative regression rejects a declared image MIME when bytes disagree", ()
   const result = validateLogoSource({ name: "not-an-image", claimedMime: "image/png", bytes: new TextEncoder().encode("plain text") });
   assert.equal(result.ok, false);
   assert.ok(result.errors.includes("unsupported-signature"));
+});
+
+test("negative regression rejects remote SVG CSS and imports", () => {
+  const result = validateLogoSource({ name: "remote.svg", claimedMime: "image/svg+xml", bytes: new TextEncoder().encode('<svg><style>@import url("https://example.test/x.css");</style></svg>') });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.includes("unsafe-svg"));
 });
