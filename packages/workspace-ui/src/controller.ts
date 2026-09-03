@@ -39,7 +39,7 @@ export type WorkspaceState = {
   previewOperation: OperationState;
   error?: string;
   notice?: string;
-  deviceCode?: { slotId: string; userCode: string; verificationUri: string };
+  deviceCode?: { slotId: string; userCode: string; verificationUri: string; expiresAt?: string };
 };
 
 type Listener = (state: WorkspaceState) => void;
@@ -47,10 +47,15 @@ type Listener = (state: WorkspaceState) => void;
 const initialState: WorkspaceState = {
   auth: "signed-out",
   accounts: [],
+  activeAccount: undefined,
   projects: [],
   designSystems: [],
+  activeProject: undefined,
   files: [],
+  activeFile: undefined,
   fileContent: "",
+  fileLanguage: undefined,
+  preview: undefined,
   chat: [],
   comments: [],
   settings: {},
@@ -58,7 +63,10 @@ const initialState: WorkspaceState = {
   fileOperation: "idle",
   chatOperation: "idle",
   commentOperation: "idle",
-  previewOperation: "idle"
+  previewOperation: "idle",
+  error: undefined,
+  notice: undefined,
+  deviceCode: undefined
 };
 
 function message(role: ChatMessage["role"], text: string): ChatMessage {
@@ -70,8 +78,13 @@ export class WorkspaceController {
   private readonly listeners = new Set<Listener>();
   private chatAbort?: AbortController;
   private authAbort?: AbortController;
+  private deviceExpiryTimer?: ReturnType<typeof setTimeout>;
   private workspaceGeneration = 0;
+  private accountGeneration = 0;
+  private operationGeneration = 0;
   private chatOperationId = 0;
+  private disposed = false;
+  private pendingLoginSlotId?: string;
   private readonly accountEventsUnsubscribe: () => void;
 
   constructor(private readonly bridge: DesignerBridge) {
@@ -89,6 +102,7 @@ export class WorkspaceController {
   }
 
   private patch(patch: Partial<WorkspaceState>): void {
+    if (this.disposed) return;
     this.state = { ...this.state, ...patch };
     this.listeners.forEach((listener) => listener(this.state));
   }
@@ -109,7 +123,7 @@ export class WorkspaceController {
         ? this.state.accounts.map((account) => account.slotId === event.slot.slotId ? event.slot : account)
         : [...this.state.accounts, event.slot];
       const activeAccount = this.state.activeAccount?.slotId === event.slot.slotId ? event.slot : this.state.activeAccount;
-      this.patch({ accounts, activeAccount, auth: event.type === "login-completed" && event.slot.state === "ready" ? "ready" : this.state.auth });
+      this.patch({ accounts, activeAccount });
       return;
     }
     if (event.type === "rate-limit-updated") {
@@ -127,16 +141,26 @@ export class WorkspaceController {
   private clearWorkspace(accounts = this.state.accounts, notice?: string): void {
     this.authAbort?.abort();
     this.chatAbort?.abort();
+    if (this.deviceExpiryTimer) clearTimeout(this.deviceExpiryTimer);
+    this.deviceExpiryTimer = undefined;
+    this.pendingLoginSlotId = undefined;
+    this.accountGeneration += 1;
     this.workspaceGeneration += 1;
+    this.operationGeneration += 1;
     this.patch({ ...initialState, accounts, auth: "signed-out", notice, error: undefined });
   }
 
   async bootstrap(): Promise<void> {
+    const accountGeneration = ++this.accountGeneration;
     try {
       const session = await this.bridge.getSession();
+      if (accountGeneration !== this.accountGeneration || this.disposed) return;
       const accounts = await this.bridge.listAccounts();
-      const activeAccount = accounts.find((account) => account.slotId === session.accountId && account.state === "ready");
-      this.patch({ accounts, activeAccount, auth: activeAccount && session.authenticated === true ? "ready" : "signed-out", settings: await this.bridge.getSettings() });
+      if (accountGeneration !== this.accountGeneration || this.disposed) return;
+      const activeAccount = accounts.find((account) => account.slotId === session.activeSlotId && account.state === "ready");
+      const settings = await this.bridge.getSettings();
+      if (accountGeneration !== this.accountGeneration || this.disposed) return;
+      this.patch({ accounts, activeAccount, auth: activeAccount && session.authenticated === true ? "ready" : "signed-out", settings });
       if (activeAccount && session.authenticated === true) await this.loadWorkspace();
     } catch (error) {
       this.fail(error);
@@ -147,6 +171,7 @@ export class WorkspaceController {
     this.patch({ auth: "browser-pending", error: undefined });
     try {
       const login = await this.bridge.beginBrowserLogin();
+      this.pendingLoginSlotId = login.slotId;
       this.authAbort?.abort();
       this.authAbort = new AbortController();
       const account = await this.bridge.waitForAccountUpdate(login.slotId, this.authAbort.signal);
@@ -160,16 +185,78 @@ export class WorkspaceController {
   async beginDeviceLogin(): Promise<void> {
     this.patch({ auth: "device-pending", error: undefined });
     try {
-      this.patch({ deviceCode: await this.bridge.beginDeviceLogin() });
+      const deviceCode = await this.bridge.beginDeviceLogin();
+      this.pendingLoginSlotId = deviceCode.slotId;
+      this.patch({ deviceCode });
+      if (this.deviceExpiryTimer) clearTimeout(this.deviceExpiryTimer);
+      if (deviceCode.expiresAt) {
+        const delay = Math.min(2_147_483_647, Math.max(0, Date.parse(deviceCode.expiresAt) - Date.now()));
+        this.deviceExpiryTimer = setTimeout(() => this.expireDeviceCode(deviceCode.slotId), delay);
+      }
     } catch (error) {
       this.fail(error);
     }
   }
 
-  async selectAccount(accountId: string): Promise<void> {
+  async cancelDeviceLogin(): Promise<void> {
+    const slotId = this.state.deviceCode?.slotId ?? this.pendingLoginSlotId;
+    if (!slotId) return;
     try {
+      await this.bridge.cancelLogin(slotId);
+      this.clearWorkspace(this.state.accounts, "Device sign-in cancelled.");
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  async retryDeviceLogin(): Promise<void> {
+    await this.cancelDeviceLogin();
+    await this.beginDeviceLogin();
+  }
+
+  async copyDeviceCode(): Promise<void> {
+    const code = this.state.deviceCode?.userCode;
+    if (!code || typeof navigator === "undefined" || !navigator.clipboard) {
+      this.patch({ error: "Device-code copy is unavailable in this host." });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(code);
+      this.patch({ notice: "Device code copied." });
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  async openDeviceVerification(): Promise<void> {
+    const url = this.state.deviceCode?.verificationUri;
+    if (!url) return;
+    try {
+      await this.bridge.openExternal(url);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private expireDeviceCode(slotId: string): void {
+    if (this.state.deviceCode?.slotId !== slotId) return;
+    this.deviceExpiryTimer = undefined;
+    this.pendingLoginSlotId = undefined;
+    this.patch({ deviceCode: undefined, auth: "signed-out", notice: "Device code expired. Start a new sign-in." });
+  }
+
+  async selectAccount(accountId: string): Promise<void> {
+    const accountGeneration = ++this.accountGeneration;
+    try {
+      const before = await this.bridge.getSession();
+      if (accountGeneration !== this.accountGeneration || this.disposed) return;
+      if (before.authenticated !== true) throw new Error("The host session is not authenticated.");
+      const knownSlot = this.state.accounts.find((account) => account.slotId === accountId);
+      if ((!knownSlot || knownSlot.state !== "ready") && this.pendingLoginSlotId !== accountId) throw new Error("This account slot is not ready for project access.");
       const activeAccount = await this.bridge.selectAccount(accountId);
-      if (activeAccount.state !== "ready") throw new Error("This account is not ready for project access.");
+      const after = await this.bridge.getSession();
+      if (accountGeneration !== this.accountGeneration || this.disposed) return;
+      if (after.authenticated !== true || after.activeSlotId !== accountId || activeAccount.state !== "ready") throw new Error("Account selection did not produce an authenticated ready slot.");
       this.patch({ activeAccount, auth: "ready", error: undefined, notice: `Active account: ${activeAccount.label}` });
       await this.loadWorkspace();
     } catch (error) {
@@ -179,11 +266,12 @@ export class WorkspaceController {
 
   async loadWorkspace(): Promise<void> {
     if (!this.state.activeAccount || this.state.auth !== "ready" || this.state.activeAccount.state !== "ready") throw new Error("A ready authenticated account is required before loading projects.");
+    const accountGeneration = this.accountGeneration;
     const generation = ++this.workspaceGeneration;
     this.patch({ projectOperation: "loading", error: undefined });
     try {
       const [projects, designSystems] = await Promise.all([this.bridge.listProjects(), this.bridge.listDesignSystems()]);
-      if (generation !== this.workspaceGeneration || this.state.auth !== "ready") return;
+      if (generation !== this.workspaceGeneration || accountGeneration !== this.accountGeneration || this.state.auth !== "ready") return;
       this.patch({ projects, designSystems, projectOperation: "success" });
     } catch (error) {
       this.fail(error, "projectOperation");
@@ -192,9 +280,12 @@ export class WorkspaceController {
 
   async createProject(name: string, description: string): Promise<Project> {
     if (!this.has("project:create")) throw new Error("Your active account cannot create projects.");
+    const accountGeneration = this.accountGeneration;
+    const operationGeneration = ++this.operationGeneration;
     this.patch({ projectOperation: "loading", error: undefined });
     try {
       const project = await this.bridge.createProject({ name, description });
+      if (accountGeneration !== this.accountGeneration || operationGeneration !== this.operationGeneration || this.state.auth !== "ready") return project;
       this.patch({ projects: [project, ...this.state.projects], projectOperation: "success", notice: `Created ${project.name}` });
       return project;
     } catch (error) {
@@ -204,14 +295,19 @@ export class WorkspaceController {
 
   async openProject(projectId: string): Promise<void> {
     if (!this.has("project:open")) throw new Error("A ready authenticated account is required before opening a project.");
+    if (!this.state.projects.some((project) => project.id === projectId)) throw new Error("That project is not in the current account's project list.");
+    const accountGeneration = this.accountGeneration;
+    const operationGeneration = ++this.operationGeneration;
     this.patch({ projectOperation: "loading", error: undefined });
     const generation = ++this.workspaceGeneration;
     try {
       const result = await this.bridge.openProject(projectId);
-      if (generation !== this.workspaceGeneration || this.state.auth !== "ready") return;
+      if (generation !== this.workspaceGeneration || accountGeneration !== this.accountGeneration || operationGeneration !== this.operationGeneration || this.state.auth !== "ready") return;
       const project = this.state.projects.find((item) => item.id === projectId) ?? result.project;
       this.patch({ activeProject: project, files: result.files, activeFile: undefined, fileContent: "", comments: [], projectOperation: "success", notice: `Opened ${project.name}` });
-      this.patch({ comments: await this.bridge.listComments(projectId) });
+      const comments = await this.bridge.listComments(projectId);
+      if (generation !== this.workspaceGeneration || accountGeneration !== this.accountGeneration || operationGeneration !== this.operationGeneration || this.state.auth !== "ready" || this.state.activeProject?.id !== projectId) return;
+      this.patch({ comments });
     } catch (error) {
       this.fail(error, "projectOperation");
     }
@@ -219,9 +315,15 @@ export class WorkspaceController {
 
   async openFile(filePath: string): Promise<void> {
     if (!this.state.activeProject || !this.has("file:read")) throw new Error("Open a project with file access first.");
+    if (!this.state.files.some((file) => file.kind === "file" && file.path === filePath)) throw new Error("That file is not in the active project.");
+    const accountGeneration = this.accountGeneration;
+    const workspaceGeneration = this.workspaceGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    const projectId = this.state.activeProject.id;
     this.patch({ fileOperation: "loading", error: undefined });
     try {
-      const file = await this.bridge.readFile(this.state.activeProject.id, filePath);
+      const file = await this.bridge.readFile(projectId, filePath);
+      if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId || this.state.auth !== "ready") return;
       this.patch({ activeFile: filePath, fileContent: file.content, fileLanguage: file.language, fileOperation: "success" });
     } catch (error) {
       this.fail(error, "fileOperation");
@@ -230,9 +332,17 @@ export class WorkspaceController {
 
   async openPreview(): Promise<void> {
     if (!this.state.activeProject || !this.has("file:read")) throw new Error("Open a project with preview access first.");
+    const accountGeneration = this.accountGeneration;
+    const workspaceGeneration = this.workspaceGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    const projectId = this.state.activeProject.id;
     this.patch({ previewOperation: "loading", error: undefined });
     try {
-      const preview = await this.bridge.openPreview(this.state.activeProject.id, this.state.activeFile);
+      const preview = await this.bridge.openPreview(projectId, this.state.activeFile);
+      if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId || this.state.auth !== "ready") {
+        await preview.close();
+        return;
+      }
       this.patch({ preview, previewOperation: "success" });
     } catch (error) {
       this.fail(error, "previewOperation");
@@ -242,16 +352,29 @@ export class WorkspaceController {
   async closePreview(): Promise<void> {
     if (!this.state.preview) return;
     const preview = this.state.preview;
-    await preview.close();
-    this.patch({ preview: undefined, notice: "Preview closed." });
+    const operationGeneration = ++this.operationGeneration;
+    try {
+      await preview.close();
+      if (operationGeneration !== this.operationGeneration || this.state.preview?.id !== preview.id) return;
+      this.patch({ preview: undefined, notice: "Preview closed." });
+    } catch (error) {
+      this.fail(error, "previewOperation");
+    }
   }
 
   async saveFile(content: string): Promise<void> {
     if (!this.state.activeProject || !this.state.activeFile || !this.has("file:write")) throw new Error("Your active account cannot edit this file.");
+    if (!this.state.files.some((file) => file.kind === "file" && file.path === this.state.activeFile)) throw new Error("That file is not in the active project.");
+    const accountGeneration = this.accountGeneration;
+    const workspaceGeneration = this.workspaceGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    const projectId = this.state.activeProject.id;
+    const filePath = this.state.activeFile;
     this.patch({ fileOperation: "saving", error: undefined });
     try {
-      await this.bridge.writeFile(this.state.activeProject.id, this.state.activeFile, content);
-      this.patch({ fileContent: content, fileOperation: "success", notice: `Saved ${this.state.activeFile}` });
+      await this.bridge.writeFile(projectId, filePath, content);
+      if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId || this.state.activeFile !== filePath || this.state.auth !== "ready") return;
+      this.patch({ fileContent: content, fileOperation: "success", notice: `Saved ${filePath}` });
     } catch (error) {
       this.fail(error, "fileOperation");
     }
@@ -262,13 +385,16 @@ export class WorkspaceController {
     const userMessage = message("user", prompt);
     const assistant = message("assistant", "");
     const operationId = `chat-${++this.chatOperationId}`;
+    const accountGeneration = this.accountGeneration;
+    const workspaceGeneration = this.workspaceGeneration;
+    const operationGeneration = ++this.operationGeneration;
     this.chatAbort?.abort();
     const abort = new AbortController();
     this.chatAbort = abort;
     this.patch({ chat: [...this.state.chat, userMessage, assistant], chatOperation: "streaming", error: undefined });
     try {
       await this.bridge.streamChat(this.state.activeProject.id, prompt, operationId, (event: ChatStreamEvent) => {
-        if (event.operationId !== operationId || abort.signal.aborted || this.chatOperationId.toString() !== operationId.slice("chat-".length)) return;
+        if (event.operationId !== operationId || abort.signal.aborted || this.chatOperationId.toString() !== operationId.slice("chat-".length) || accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration) return;
         if (event.type === "error") {
           this.patch({ error: event.message ?? "Chat stream failed.", chatOperation: "error" });
           return;
@@ -276,9 +402,11 @@ export class WorkspaceController {
         const chat = this.state.chat.map((item) => item.id === assistant.id ? { ...item, text: item.text + (event.chunk ?? ""), streaming: true } : item);
         this.patch({ chat });
       }, abort.signal);
+      if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration || abort.signal.aborted) return;
       this.patch({ chat: this.state.chat.map((item) => item.id === assistant.id ? { ...item, streaming: false } : item), chatOperation: "success" });
     } catch (error) {
-      if (abort.signal.aborted) {
+      if (abort.signal.aborted || accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration) {
+        if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration) return;
         this.patch({ chatOperation: "cancelled", notice: "Chat generation cancelled." });
         return;
       }
@@ -286,17 +414,27 @@ export class WorkspaceController {
     }
   }
 
-  cancelChat(): void {
+  async cancelChat(): Promise<void> {
     const operationId = `chat-${this.chatOperationId}`;
     this.chatAbort?.abort();
-    void this.bridge.interruptChat(operationId).catch(() => undefined);
+    try {
+      await this.bridge.interruptChat(operationId);
+    } catch (error) {
+      this.patch({ chatOperation: "error", error: error instanceof Error ? `Chat interrupt was refused: ${error.message}` : "Chat interrupt was refused." });
+      throw error;
+    }
   }
 
   async addComment(body: string): Promise<void> {
     if (!this.state.activeProject || !this.has("comment")) throw new Error("Your active account cannot comment here.");
+    const accountGeneration = this.accountGeneration;
+    const workspaceGeneration = this.workspaceGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    const projectId = this.state.activeProject.id;
     this.patch({ commentOperation: "loading", error: undefined });
     try {
-      const comment = await this.bridge.addComment(this.state.activeProject.id, body);
+      const comment = await this.bridge.addComment(projectId, body);
+      if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId || this.state.auth !== "ready") return;
       this.patch({ comments: [...this.state.comments, comment], commentOperation: "success" });
     } catch (error) {
       this.fail(error, "commentOperation");
@@ -305,9 +443,15 @@ export class WorkspaceController {
 
   async replyComment(commentId: string, body: string): Promise<void> {
     if (!this.state.activeProject || !this.has("comment")) throw new Error("Your active account cannot reply here.");
+    if (!this.state.comments.some((comment) => comment.id === commentId)) throw new Error("That comment is not in the active project.");
+    const accountGeneration = this.accountGeneration;
+    const workspaceGeneration = this.workspaceGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    const projectId = this.state.activeProject.id;
     this.patch({ commentOperation: "loading", error: undefined });
     try {
-      const updated = await this.bridge.replyToComment(this.state.activeProject.id, commentId, body);
+      const updated = await this.bridge.replyToComment(projectId, commentId, body);
+      if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId || this.state.auth !== "ready") return;
       this.patch({ comments: this.state.comments.map((comment) => comment.id === commentId ? { ...comment, replies: [...comment.replies, updated] } : comment), commentOperation: "success" });
     } catch (error) {
       this.fail(error, "commentOperation");
@@ -316,8 +460,14 @@ export class WorkspaceController {
 
   async share(recipient: string, role: ShareRole): Promise<void> {
     if (!this.state.activeProject || !this.has("share")) throw new Error("Your active account cannot share this project.");
+    if (!this.state.accounts.some((account) => account.slotId === recipient && account.state === "ready" && account.slotId !== this.state.activeAccount?.slotId)) throw new Error("Choose a different ready saved account slot.");
+    const accountGeneration = this.accountGeneration;
+    const workspaceGeneration = this.workspaceGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    const projectId = this.state.activeProject.id;
     try {
-      await this.bridge.shareProject(this.state.activeProject.id, recipient, role);
+      await this.bridge.shareProject(projectId, recipient, role);
+      if (accountGeneration !== this.accountGeneration || workspaceGeneration !== this.workspaceGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId) return;
       this.patch({ notice: `Shared with ${recipient}` });
     } catch (error) {
       this.fail(error);
@@ -326,20 +476,33 @@ export class WorkspaceController {
 
   async revokeShare(recipientSlotId: string): Promise<void> {
     if (!this.state.activeProject || !this.has("share")) throw new Error("Only a project owner can change sharing.");
-    await this.bridge.revokeShare(this.state.activeProject.id, recipientSlotId);
+    if (!this.state.accounts.some((account) => account.slotId === recipientSlotId && account.state === "ready" && account.slotId !== this.state.activeAccount?.slotId)) throw new Error("Choose a different ready saved account slot.");
+    const projectId = this.state.activeProject.id;
+    const accountGeneration = this.accountGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    await this.bridge.revokeShare(projectId, recipientSlotId);
+    if (accountGeneration !== this.accountGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId) return;
     this.patch({ notice: "Project access revoked." });
   }
 
   async transferProject(recipientSlotId: string): Promise<void> {
     if (!this.state.activeProject || !this.has("transfer")) throw new Error("Only a project owner can transfer this project.");
-    await this.bridge.transferProject(this.state.activeProject.id, recipientSlotId);
+    if (!this.state.accounts.some((account) => account.slotId === recipientSlotId && account.state === "ready" && account.slotId !== this.state.activeAccount?.slotId)) throw new Error("Choose a different ready saved account slot.");
+    const projectId = this.state.activeProject.id;
+    const accountGeneration = this.accountGeneration;
+    const operationGeneration = ++this.operationGeneration;
+    await this.bridge.transferProject(projectId, recipientSlotId);
+    if (accountGeneration !== this.accountGeneration || operationGeneration !== this.operationGeneration || this.state.activeProject?.id !== projectId) return;
     this.patch({ notice: "Project ownership transfer requested." });
   }
 
   async saveSettings(settings: Record<string, unknown>): Promise<void> {
     if (!this.has("settings")) throw new Error("Your active account cannot change settings.");
+    const accountGeneration = this.accountGeneration;
+    const operationGeneration = ++this.operationGeneration;
     try {
       await this.bridge.saveSettings(settings);
+      if (accountGeneration !== this.accountGeneration || operationGeneration !== this.operationGeneration || this.state.auth !== "ready") return;
       this.patch({ settings: { ...this.state.settings, ...settings }, notice: "Settings saved." });
     } catch (error) {
       this.fail(error);
@@ -348,7 +511,10 @@ export class WorkspaceController {
 
   signOut(): void {
     const slotId = this.state.activeAccount?.slotId;
-    if (slotId) void this.bridge.logoutAccount(slotId).catch((error) => this.patch({ error: error instanceof Error ? error.message : "Sign-out failed." }));
+    const accountGeneration = this.accountGeneration;
+    if (slotId) void this.bridge.logoutAccount(slotId).catch((error) => {
+      if (accountGeneration === this.accountGeneration && !this.disposed) this.patch({ error: error instanceof Error ? error.message : "Sign-out failed." });
+    });
     this.clearWorkspace(this.state.accounts, "Signed out.");
   }
 

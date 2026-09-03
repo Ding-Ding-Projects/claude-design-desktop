@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AccountLifecycleEvent, AccountSlot, DesignerBridge, Project, WorkspaceComment } from "./bridge";
 import { createWorkspaceController } from "./controller";
-import { BridgeSchemaError, parseAccountSlot, parseProject } from "./schema";
+import { BridgeSchemaError, createDesignerBridge, parseAccountSlot, parsePreviewHandle, parseProject } from "./schema";
 
 const owner: AccountSlot = { slotId: "owner-1", label: "Owner", email: "owner@example.test", loginId: "login-owner", state: "ready", isOwner: true };
 const viewer: AccountSlot = { slotId: "viewer-1", label: "Viewer", email: "viewer@example.test", loginId: "login-viewer", state: "ready", isOwner: false };
@@ -10,9 +10,9 @@ const project: Project = { id: "project-1", name: "Canvas", description: "A real
 function fakeBridge(overrides: Partial<DesignerBridge> = {}): DesignerBridge {
   const comments: WorkspaceComment[] = [];
   return {
-    getSession: vi.fn(async () => ({ authenticated: true, accountId: owner.slotId })),
+    getSession: vi.fn(async () => ({ authenticated: true, activeSlotId: owner.slotId })),
     beginBrowserLogin: vi.fn(async () => ({ slotId: owner.slotId })),
-    beginDeviceLogin: vi.fn(async () => ({ slotId: owner.slotId, userCode: "ABCD-EFGH", verificationUri: "https://example.test/device" })),
+    beginDeviceLogin: vi.fn(async () => ({ slotId: owner.slotId, userCode: "ABCD-EFGH", verificationUri: "https://example.test/device", expiresAt: "2099-01-01T00:00:00.000Z" })),
     listAccounts: vi.fn(async () => [owner, viewer]),
     selectAccount: vi.fn(async (accountId: string) => accountId === owner.slotId ? owner : viewer),
     waitForAccountUpdate: vi.fn(async () => owner),
@@ -31,6 +31,7 @@ function fakeBridge(overrides: Partial<DesignerBridge> = {}): DesignerBridge {
       return { messageId: "message-1" };
     }),
     interruptChat: vi.fn(async () => undefined),
+    openExternal: vi.fn(async () => undefined),
     listComments: vi.fn(async () => comments),
     addComment: vi.fn(async (_id, body) => ({ id: "comment-1", author: "Owner", body, createdAt: "now", replies: [] })),
     replyToComment: vi.fn(async (_id, commentId, body) => ({ id: "reply-1", author: "Owner", body: `${commentId}:${body}`, createdAt: "now", replies: [] })),
@@ -55,7 +56,7 @@ describe("WorkspaceController", () => {
   });
 
   it("enforces role capabilities before create and write operations", async () => {
-    const bridge = fakeBridge({ getSession: vi.fn(async () => ({ authenticated: true, accountId: viewer.slotId })) });
+    const bridge = fakeBridge({ getSession: vi.fn(async () => ({ authenticated: true, activeSlotId: viewer.slotId })) });
     const controller = createWorkspaceController(bridge);
     await controller.bootstrap();
     expect(controller.has("project:create")).toBe(false);
@@ -182,5 +183,67 @@ describe("WorkspaceController", () => {
   it("validates the closed adapter schemas", () => {
     expect(() => parseAccountSlot({ state: "ready" })).toThrow(BridgeSchemaError);
     expect(() => parseProject({ id: "p", name: "P", description: "", updatedAt: "now", role: "admin", shared: false })).toThrow(BridgeSchemaError);
+  });
+
+  it("does not unlock for an unrelated login completion event", () => {
+    let emit: ((event: AccountLifecycleEvent) => void) | undefined;
+    const bridge = fakeBridge({ subscribeAccountEvents: vi.fn((listener) => { emit = listener; return () => undefined; }) });
+    const controller = createWorkspaceController(bridge);
+    emit?.({ type: "login-completed", slot: viewer });
+    expect(controller.getState().auth).toBe("signed-out");
+    expect(controller.getState().activeAccount).toBeUndefined();
+  });
+
+  it("rechecks the authoritative session after account selection", async () => {
+    const getSession = vi.fn()
+      .mockResolvedValueOnce({ authenticated: true, activeSlotId: owner.slotId })
+      .mockResolvedValueOnce({ authenticated: true, activeSlotId: owner.slotId })
+      .mockResolvedValueOnce({ authenticated: true, activeSlotId: viewer.slotId });
+    const bridge = fakeBridge({ getSession, selectAccount: vi.fn(async () => owner) });
+    const controller = createWorkspaceController(bridge);
+    await controller.bootstrap();
+    await expect(controller.selectAccount(owner.slotId)).rejects.toThrow("authenticated ready slot");
+    expect(controller.getState().auth).toBe("ready");
+    expect(bridge.listProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces an interrupt refusal instead of hiding it", async () => {
+    const bridge = fakeBridge({ interruptChat: vi.fn(async () => { throw new Error("host refused interrupt"); }) });
+    const controller = createWorkspaceController(bridge);
+    await expect(controller.cancelChat()).rejects.toThrow("host refused interrupt");
+    expect(controller.getState().chatOperation).toBe("error");
+    expect(controller.getState().error).toContain("refused");
+  });
+
+  it("purges device-code state on cancellation and routes verification through the host", async () => {
+    const bridge = fakeBridge();
+    const controller = createWorkspaceController(bridge);
+    await controller.beginDeviceLogin();
+    await controller.openDeviceVerification();
+    await controller.cancelDeviceLogin();
+    expect(bridge.openExternal).toHaveBeenCalledWith("https://example.test/device");
+    expect(bridge.cancelLogin).toHaveBeenCalledWith(owner.slotId);
+    expect(controller.getState().deviceCode).toBeUndefined();
+  });
+
+  it("keeps callbacks and abort signals out of host request payloads", async () => {
+    const invoke = vi.fn(async (method: string, _payload?: unknown) => {
+      if (method === "session.get") return { authenticated: true, activeSlotId: owner.slotId };
+      if (method === "accounts.list") return [owner];
+      if (method === "settings.get") return {};
+      if (method === "projects.list" || method === "designSystems.list") return [];
+      if (method === "chat.start") return { messageId: "m" };
+      return {};
+    });
+    const host = { invoke, subscribeAccountEvents: vi.fn(() => () => undefined), subscribeChat: vi.fn(() => () => undefined) };
+    const bridge = createDesignerBridge(host);
+    await bridge.streamChat(owner.slotId, "hello", "chat-1", () => undefined, new AbortController().signal);
+    const start = invoke.mock.calls.find(([method]) => method === "chat.start");
+    expect(start?.[1]).toEqual({ projectId: owner.slotId, prompt: "hello", operationId: "chat-1" });
+    expect(JSON.stringify(start?.[1])).not.toContain("AbortSignal");
+  });
+
+  it("rejects preview handles outside approved origins", () => {
+    expect(() => parsePreviewHandle({ id: "p", title: "P", url: "file:///secret" }, async () => undefined)).toThrow(BridgeSchemaError);
   });
 });

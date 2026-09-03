@@ -52,6 +52,9 @@ export type PreviewHandle = {
   close(): Promise<void>;
 };
 
+export const PREVIEW_PROTOCOLS = new Set(["https:", "http:"]);
+export const PREVIEW_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -86,9 +89,9 @@ export type AccountLifecycleEvent =
   | { type: "rate-limit-updated"; slotId: string; rateLimits: AccountRateLimits };
 
 export type DesignerBridge = {
-  getSession(): Promise<{ authenticated: boolean; accountId?: string }>;
+  getSession(): Promise<{ authenticated: boolean; activeSlotId?: string }>;
   beginBrowserLogin(): Promise<{ slotId: string }>;
-  beginDeviceLogin(): Promise<{ slotId: string; userCode: string; verificationUri: string }>;
+  beginDeviceLogin(): Promise<{ slotId: string; userCode: string; verificationUri: string; expiresAt?: string }>;
   listAccounts(): Promise<AccountSlot[]>;
   selectAccount(slotId: string): Promise<AccountSlot>;
   waitForAccountUpdate(slotId: string, signal: AbortSignal): Promise<AccountSlot>;
@@ -117,6 +120,7 @@ export type DesignerBridge = {
   shareProject(projectId: string, recipientSlotId: string, role: ShareRole): Promise<void>;
   revokeShare(projectId: string, recipientSlotId: string): Promise<void>;
   transferProject(projectId: string, recipientSlotId: string): Promise<void>;
+  openExternal(url: string): Promise<void>;
   saveSettings(settings: Record<string, unknown>): Promise<void>;
   getSettings(): Promise<Record<string, unknown>>;
 };
