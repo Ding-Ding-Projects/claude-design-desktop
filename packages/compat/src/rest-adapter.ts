@@ -36,6 +36,7 @@ function validateRestBody(request: HttpRequest, method: string, path: string): v
     const body = request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {};
     for (const key of Object.keys(body)) if (!REST_FIELDS.has(key)) throw new DomainError(`Unsupported REST field: ${key}.`, 400, "unknown_field");
   }
+  if (/^\/v1\/design\/projects\/[^/]+$/.test(path) && (method === "PATCH" || method === "PUT" || method === "DELETE") && !header(request, "if-match")) throw new DomainError("if-match is required for every versioned project mutation.", 428, "if_match_required");
   if (path.includes("/files") && method === "POST" && request.body && typeof request.body === "object") {
     const files = Array.isArray((request.body as any).files) ? (request.body as any).files : [request.body];
     for (const file of files) if (file && typeof file === "object" && !file.if_match && !file.ifMatch) throw new DomainError("if-match is required for every versioned file mutation.", 428, "if_match_required");
