@@ -147,21 +147,26 @@ export function createScheduleRefreshController(
       if (errors.length) throw new Error(errors.join(","));
       const url = source.kind === "api" ? source.url : `${source.baseUrl.replace(/\/$/, "")}/api/states/${source.entityId}`;
       const resolvedAddresses = await assertSafeResolvedUrl(url, transport);
+      const deadlineAt = Date.now() + deadlineMs;
       const headers: Record<string, string> = {};
       if (source.kind === "home-assistant") {
         const credential = await vault.getCredential(source.credentialKey);
         if (!credential) throw new Error("home-assistant-credential-unavailable");
         headers.authorization = `Bearer ${credential}`;
       }
-      const response = await requestWithDeadline(transport, { url, headers, signal: controller.signal, redirect: "error", resolvedAddresses }, deadlineMs);
+      const response = await requestWithDeadline(transport, { url, headers, signal: controller.signal, redirect: "error", resolvedAddresses }, deadlineAt);
       if (currentGeneration !== generation) throw new Error("stale-generation");
       if (response.status < 200 || response.status >= 300) throw new Error(`schedule-source-http-${response.status}`);
-      const contentLength = Number(headerValue(response.headers, "content-length") ?? 0);
+      const contentLengthHeader = headerValue(response.headers, "content-length");
+      const contentLength = contentLengthHeader === undefined ? 0 : Number(contentLengthHeader);
+      if (!Number.isFinite(contentLength) || contentLength < 0) throw new Error("invalid-content-length");
       if (contentLength > MAX_REMOTE_RESPONSE_BYTES) throw new Error("response-too-large");
-      const text = await readBoundedResponse(response, deadlineMs);
+      const text = await readBoundedResponse(response, deadlineAt);
+      if (currentGeneration !== generation) throw new Error("stale-generation");
       const parsed = JSON.parse(text) as unknown;
       if (source.kind === "home-assistant") {
         if (!isRecord(parsed) || (parsed.state !== "on" && parsed.state !== "off")) throw new Error("invalid-home-assistant-state");
+        if (currentGeneration !== generation) throw new Error("stale-generation");
         return { values: {}, active: parsed.state === "on", source: "home-assistant" as const };
       }
       if (!isRecord(parsed) || parsed.schemaVersion !== source.schemaVersion || !isRecord(parsed.values)) throw new Error("invalid-schedule-payload");
@@ -171,6 +176,7 @@ export function createScheduleRefreshController(
         if (typeof value !== "string" && typeof value !== "number") throw new Error("invalid-schedule-value");
         values[key as keyof ScheduledValues] = value as never;
       }
+      if (currentGeneration !== generation) throw new Error("stale-generation");
       return { values, active: true, source: "api" as const };
     },
     cancel() {
@@ -181,13 +187,14 @@ export function createScheduleRefreshController(
   };
 }
 
-async function requestWithDeadline(transport: PrivilegedScheduleTransport, request: { url: string; headers: Record<string, string>; signal: AbortSignal; redirect: "error"; resolvedAddresses: string[] }, deadlineMs: number): Promise<PrivilegedScheduleResponse> {
+async function requestWithDeadline(transport: PrivilegedScheduleTransport, request: { url: string; headers: Record<string, string>; signal: AbortSignal; redirect: "error"; resolvedAddresses: string[] }, deadlineAt: number): Promise<PrivilegedScheduleResponse> {
   const requestController = new AbortController();
   const abortRequest = () => requestController.abort();
   if (request.signal.aborted) requestController.abort();
   else request.signal.addEventListener("abort", abortRequest, { once: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { requestController.abort(); reject(new Error("schedule-source-timeout")); }, deadlineMs); });
+  const remaining = Math.max(1, deadlineAt - Date.now());
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { requestController.abort(); reject(new Error("schedule-source-timeout")); }, remaining); });
   try {
     return await Promise.race([transport.request({ ...request, signal: requestController.signal }), deadline]);
   } finally {
@@ -196,8 +203,7 @@ async function requestWithDeadline(transport: PrivilegedScheduleTransport, reque
   }
 }
 
-async function readBoundedResponse(response: PrivilegedScheduleResponse, deadlineMs: number): Promise<string> {
-  const deadlineAt = Date.now() + deadlineMs;
+async function readBoundedResponse(response: PrivilegedScheduleResponse, deadlineAt: number): Promise<string> {
   if (response.body) {
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
@@ -219,9 +225,17 @@ async function readBoundedResponse(response: PrivilegedScheduleResponse, deadlin
     for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
     return new TextDecoder("utf-8", { fatal: true }).decode(merged);
   }
-  const text = await (response.text?.() ?? Promise.resolve(""));
+  const text = await readTextWithDeadline(response.text?.() ?? Promise.resolve(""), deadlineAt);
   if (new TextEncoder().encode(text).byteLength > MAX_REMOTE_RESPONSE_BYTES) throw new Error("response-too-large");
   return text;
+}
+
+async function readTextWithDeadline(textPromise: Promise<string>, deadlineAt: number): Promise<string> {
+  const remaining = Math.max(1, deadlineAt - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("schedule-body-timeout")), remaining); });
+  try { return await Promise.race([textPromise, deadline]); }
+  finally { if (timer) clearTimeout(timer); }
 }
 
 async function readChunkWithDeadline(reader: ReadableStreamDefaultReader<Uint8Array>, deadlineMs: number): Promise<ReadableStreamReadResult<Uint8Array>> {

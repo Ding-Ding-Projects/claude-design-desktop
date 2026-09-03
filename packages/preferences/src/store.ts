@@ -12,8 +12,10 @@ import {
   type SchoolModePreferences
 } from "./types.js";
 import type { createPreferenceHistory } from "./history.js";
+import { validateScheduleRule } from "./schedule.js";
 
 export const PREFERENCES_STORAGE_KEY = "claude-design.preferences.v1";
+export const PREFERENCES_SCHEMA_VERSION = 1;
 export const SHARED_SCHOOL_STORAGE_KEY = "claude-design.school-mode.v1";
 export const PERSONAL_VOCABULARY_STORAGE_KEY = "claude-design.personal-vocabulary.v1";
 export const MAX_VOCABULARY_BYTES = 256 * 1024;
@@ -56,7 +58,7 @@ function persistedState(state: PreferencesState): PreferencesState {
   const next = cloneState(state);
   next.school.credentialKey = null;
   next.logo.sourceName = null;
-  return next;
+  return { ...next, schemaVersion: PREFERENCES_SCHEMA_VERSION } as PreferencesState;
 }
 
 export function createDefaultPreferences(shippedName = "Claude Design", stableApplicationId = "claude-design-desktop"): PreferencesState {
@@ -102,11 +104,29 @@ export function loadPreferences(storage: StorageLike = getLocalStorage(), defaul
   const raw = storage.getItem(PREFERENCES_STORAGE_KEY);
   if (!raw) return cloneState(defaults);
   try {
-    const parsed = JSON.parse(raw) as Partial<PreferencesState>;
+    const parsed = JSON.parse(raw) as Partial<PreferencesState> & { schemaVersion?: unknown };
+    if (parsed.schemaVersion !== undefined && parsed.schemaVersion !== PREFERENCES_SCHEMA_VERSION) return cloneState(defaults);
+    if (!validPersistedPreferences(parsed, defaults)) return cloneState(defaults);
     return mergePreferences(defaults, parsed);
   } catch {
     return cloneState(defaults);
   }
+}
+
+function validPersistedPreferences(value: Partial<PreferencesState>, defaults: PreferencesState): boolean {
+  if (value.language && (value.language.mode !== "english" && value.language.mode !== "cantonese" && value.language.mode !== "bilingual" || !isFunnyLevel(value.language.englishFunnyLevel) || !isFunnyLevel(value.language.cantoneseFunnyLevel) || typeof value.language.showDialogEmojis !== "boolean")) return false;
+  if (value.school && (typeof value.school.enabled !== "boolean" || typeof value.school.displayName !== "string" || value.school.displayName.length > 120 || !["pin", "password", "passkey"].includes(value.school.unlockMethod ?? "") || value.school.credentialKey !== null)) return false;
+  if (value.appearance && (value.appearance.theme !== "light" && value.appearance.theme !== "dark" || value.appearance.density !== "comfortable" && value.appearance.density !== "compact" && value.appearance.density !== "spacious" || typeof value.appearance.seedColor !== "string" || !Number.isFinite(value.appearance.fontSizeScale) || value.appearance.fontSizeScale < 0.5 || value.appearance.fontSizeScale > 3 || !Number.isInteger(value.appearance.fontWeight) || value.appearance.fontWeight < 100 || value.appearance.fontWeight > 900)) return false;
+  if (value.adhd && Object.values(value.adhd).some((item) => typeof item !== "boolean")) return false;
+  if (value.narration && (typeof value.narration.enabled !== "boolean" || !["en", "yue", "both"].includes(value.narration.language) || !Number.isFinite(value.narration.rate) || value.narration.rate < 0.1 || value.narration.rate > 10 || !Number.isFinite(value.narration.pitch) || value.narration.pitch < 0 || value.narration.pitch > 2)) return false;
+  if (value.scheduleRules && (!Array.isArray(value.scheduleRules) || value.scheduleRules.length > 100 || value.scheduleRules.some((rule) => validateScheduleRule(rule).length > 0))) return false;
+  if (value.logo && (value.logo.sourceName !== null || !Array.isArray(value.logo.derivedSizes) || value.logo.derivedSizes.some((size) => !Number.isInteger(size) || size < 16 || size > 2048))) return false;
+  if (value.displayName && (typeof value.displayName.displayName !== "string" || value.displayName.displayName.length > 120 || value.displayName.stableApplicationId !== defaults.displayName.stableApplicationId || value.displayName.stableDataDirectoryKey !== defaults.displayName.stableDataDirectoryKey)) return false;
+  return true;
+}
+
+function isFunnyLevel(value: unknown): value is 1 | 2 | 3 | 4 | 5 {
+  return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 5;
 }
 
 function mergePreferences(defaults: PreferencesState, parsed: Partial<PreferencesState>): PreferencesState {
@@ -147,6 +167,7 @@ export function createPreferencesStore(options: {
 
   const persist = () => storage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(persistedState(state)));
   const setState = (next: PreferencesState, key: PreferenceChange["key"]) => {
+    if (!validPersistedPreferences(next, options.defaults ?? createDefaultPreferences())) throw new Error("invalid-preferences-state");
     state = cloneState(next);
     persist();
     channel?.postMessage({ state, key });

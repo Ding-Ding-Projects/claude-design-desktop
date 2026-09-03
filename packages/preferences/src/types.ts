@@ -143,6 +143,7 @@ export interface LogoSettings {
   crop: LogoCrop | null;
   focalPoint: { x: number; y: number };
   background: LogoBackground;
+  safeArea?: LogoCrop;
   derivedSizes: number[];
 }
 

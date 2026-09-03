@@ -8,7 +8,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/*.test.ts",
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=browser --external:node:* --outfile=dist/preferences.js"
   },
   "dependencies": {
     "react": "19.1.0"
@@ -16,6 +17,7 @@
   "devDependencies": {
     "@types/node": "24.0.0",
     "@types/react": "19.1.0",
+    "esbuild": "0.25.12",
     "tsx": "4.20.3",
     "typescript": "5.9.2"
   }

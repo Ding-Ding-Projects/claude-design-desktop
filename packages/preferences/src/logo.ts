@@ -27,6 +27,7 @@ export interface LogoConversionPlan {
   crop: LogoCrop | null;
   focalPoint: { x: number; y: number };
   background: LogoBackground;
+  safeArea: LogoCrop;
 }
 
 export interface DecodedLogo {
@@ -37,7 +38,19 @@ export interface DecodedLogo {
 
 export interface LogoDecoder {
   decode(bytes: Uint8Array, mime: LogoMime): Promise<DecodedLogo>;
-  encode(image: unknown, size: number, background: LogoBackground): Promise<Uint8Array>;
+  encode(image: unknown, size: number, background: LogoBackground, transform: LogoRenderTransform): Promise<Uint8Array>;
+}
+
+export interface LogoRenderTransform {
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  destinationX: number;
+  destinationY: number;
+  destinationWidth: number;
+  destinationHeight: number;
+  safeArea: LogoCrop;
 }
 
 export function validateLogoSource(source: LogoSource): LogoValidation {
@@ -89,12 +102,13 @@ function readU32(bytes: Uint8Array, offset: number): number {
   return (bytes[offset] ?? 0) * 2 ** 24 + (bytes[offset + 1] ?? 0) * 2 ** 16 + (bytes[offset + 2] ?? 0) * 256 + (bytes[offset + 3] ?? 0);
 }
 
-export function createLogoConversionPlan(validation: LogoValidation, settings: Pick<LogoSettings, "fit" | "crop" | "focalPoint" | "background" | "derivedSizes">): LogoConversionPlan {
+export function createLogoConversionPlan(validation: LogoValidation, settings: Pick<LogoSettings, "fit" | "crop" | "focalPoint" | "background" | "safeArea" | "derivedSizes">): LogoConversionPlan {
   if (!validation.ok || !validation.mime) throw new Error(`logo-source-invalid:${validation.errors.join(",")}`);
   const sizes = [...new Set<number>(settings.derivedSizes.filter((size): size is number => Number.isInteger(size) && size >= 16 && size <= 2048))].sort((a, b) => a - b);
   if (!sizes.length) throw new Error("logo-size-list-empty");
   if (settings.focalPoint.x < 0 || settings.focalPoint.x > 1 || settings.focalPoint.y < 0 || settings.focalPoint.y > 1) throw new Error("focal-point-out-of-range");
-  return { mime: validation.mime, sizes, fit: settings.fit, crop: settings.crop, focalPoint: settings.focalPoint, background: settings.background };
+  const safeArea = settings.safeArea ?? { x: 0, y: 0, width: 1, height: 1 };
+  return { mime: validation.mime, sizes, fit: settings.fit, crop: settings.crop, focalPoint: settings.focalPoint, background: settings.background, safeArea };
 }
 
 export async function decodeAndConvertLogo(source: LogoSource, plan: LogoConversionPlan, decoder: LogoDecoder): Promise<{ outputs: Array<{ size: number; bytes: Uint8Array; mime: "image/png" }>; decoded: DecodedLogo }> {
@@ -104,7 +118,7 @@ export async function decodeAndConvertLogo(source: LogoSource, plan: LogoConvers
   if (!Number.isInteger(decoded.width) || !Number.isInteger(decoded.height) || decoded.width < 1 || decoded.height < 1 || decoded.width > MAX_LOGO_DIMENSION || decoded.height > MAX_LOGO_DIMENSION || decoded.width * decoded.height > MAX_LOGO_PIXELS) throw new Error("decoded-logo-out-of-bounds");
   const outputs: Array<{ size: number; bytes: Uint8Array; mime: "image/png" }> = [];
   for (const size of plan.sizes) {
-    const bytes = await decoder.encode(decoded.image, size, plan.background);
+    const bytes = await decoder.encode(decoded.image, size, plan.background, logoRenderTransform(decoded.width, decoded.height, size, plan));
     if (bytes.byteLength === 0 || bytes.byteLength > MAX_LOGO_BYTES) throw new Error("encoded-logo-out-of-bounds");
     const outputValidation = validateLogoSource({ bytes, name: `logo-${size}.png`, claimedMime: "image/png" });
     if (!outputValidation.ok || outputValidation.mime !== "image/png") throw new Error(`encoded-logo-invalid:${size}`);
@@ -123,22 +137,38 @@ export function createBrowserLogoDecoder(): LogoDecoder {
       const image = await globalThis.createImageBitmap(blob);
       return { width: image.width, height: image.height, image };
     },
-    async encode(image, size, background) {
+    async encode(image, size, background, transform) {
       if (typeof OffscreenCanvas === "undefined") throw new Error("image-encoder-unavailable");
       const canvas = new OffscreenCanvas(size, size);
       const context = canvas.getContext("2d");
       if (!context) throw new Error("image-context-unavailable");
       if (background.kind === "solid") { context.fillStyle = background.color; context.fillRect(0, 0, size, size); }
-      context.drawImage(image as CanvasImageSource, 0, 0, size, size);
+      context.drawImage(image as CanvasImageSource, transform.sourceX, transform.sourceY, transform.sourceWidth, transform.sourceHeight, transform.destinationX, transform.destinationY, transform.destinationWidth, transform.destinationHeight);
       const blob = await canvas.convertToBlob({ type: "image/png" });
       return new Uint8Array(await blob.arrayBuffer());
     }
   };
 }
 
+export function logoRenderTransform(sourceWidth: number, sourceHeight: number, size: number, plan: Pick<LogoConversionPlan, "fit" | "crop" | "focalPoint" | "safeArea">): LogoRenderTransform {
+  const crop = plan.crop ?? { x: 0, y: 0, width: sourceWidth, height: sourceHeight };
+  const cropPixels = plan.crop ? { x: crop.x * sourceWidth, y: crop.y * sourceHeight, width: crop.width * sourceWidth, height: crop.height * sourceHeight } : crop;
+  const safeArea = plan.safeArea;
+  const targetWidth = size * safeArea.width;
+  const targetHeight = size * safeArea.height;
+  const scale = plan.fit === "contain" ? Math.min(targetWidth / cropPixels.width, targetHeight / cropPixels.height) : Math.max(targetWidth / cropPixels.width, targetHeight / cropPixels.height);
+  const renderedWidth = cropPixels.width * scale;
+  const renderedHeight = cropPixels.height * scale;
+  const focalX = cropPixels.x + cropPixels.width * plan.focalPoint.x;
+  const focalY = cropPixels.y + cropPixels.height * plan.focalPoint.y;
+  const destinationX = size * safeArea.x + (targetWidth - renderedWidth) / 2 + (plan.fit === "cover" ? (size / 2 - (size * safeArea.x + renderedWidth * (focalX / sourceWidth))) : 0);
+  const destinationY = size * safeArea.y + (targetHeight - renderedHeight) / 2 + (plan.fit === "cover" ? (size / 2 - (size * safeArea.y + renderedHeight * (focalY / sourceHeight))) : 0);
+  return { sourceX: cropPixels.x, sourceY: cropPixels.y, sourceWidth: cropPixels.width, sourceHeight: cropPixels.height, destinationX, destinationY, destinationWidth: renderedWidth, destinationHeight: renderedHeight, safeArea };
+}
+
 export interface LogoStore {
   get(): LogoSettings;
-  applyAsync(source: LogoSource, settings: Pick<LogoSettings, "fit" | "crop" | "focalPoint" | "background" | "derivedSizes">, decoder: LogoDecoder): Promise<{ settings: LogoSettings; validation: LogoValidation; plan: LogoConversionPlan; outputs: Array<{ size: number; bytes: Uint8Array; mime: "image/png" }> }>;
+  applyAsync(source: LogoSource, settings: Pick<LogoSettings, "fit" | "crop" | "focalPoint" | "background" | "safeArea" | "derivedSizes">, decoder: LogoDecoder): Promise<{ settings: LogoSettings; validation: LogoValidation; plan: LogoConversionPlan; outputs: Array<{ size: number; bytes: Uint8Array; mime: "image/png" }> }>;
   reset(): void;
 }
 

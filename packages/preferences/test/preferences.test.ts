@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   createDefaultPreferences,
   createNarrationQueue,
@@ -19,6 +24,8 @@ import {
   type SpeechUtterance
 } from "../src/index.js";
 
+const execFileAsync = promisify(execFile);
+
 class MemoryStorage {
   private readonly values = new Map<string, string>();
   getItem(key: string) { return this.values.get(key) ?? null; }
@@ -26,10 +33,10 @@ class MemoryStorage {
   removeItem(key: string) { this.values.delete(key); }
 }
 
-test("language, independent funny levels, emoji setting, and School mode are persisted with immediate suppression", () => {
+test("language, independent funny levels, emoji setting, and School mode are persisted with immediate suppression", async () => {
   const storage = new MemoryStorage();
   const historyCommits: unknown[] = [];
-  const history = createPreferenceHistory({ executionContext: "main", writeSnapshot: async () => undefined, commit: async (input) => { historyCommits.push(input.metadata); return { revision: String(historyCommits.length) }; }, list: async () => [], diff: async () => "", restore: async () => undefined });
+  const history = createPreferenceHistory(createMainProcessGitHistoryAdapter({ writeSnapshot: async () => undefined, runGit: async (args) => { historyCommits.push(args); return String(historyCommits.length); } }));
   const store = createPreferencesStore({ storage, defaults: createDefaultPreferences(), history });
   store.updateLanguage({ mode: "cantonese", englishFunnyLevel: 2, cantoneseFunnyLevel: 4, showDialogEmojis: false });
   store.updateSchool({ enabled: true, displayName: "Quiet study" });
@@ -38,6 +45,7 @@ test("language, independent funny levels, emoji setting, and School mode are per
   const restored = createPreferencesStore({ storage, defaults: createDefaultPreferences() });
   assert.equal(restored.getState().school.displayName, "Quiet study");
   assert.equal(restored.getState().displayName.stableDataDirectoryKey, "claude-design-desktop");
+  await new Promise((resolve) => setTimeout(resolve, 5));
   assert.ok(historyCommits.length >= 2);
   store.close();
   restored.close();
@@ -116,16 +124,43 @@ test("School state strips credential keys on load and never persists them", () =
 
 test("preference history uses a main-process Git adapter and fails non-fatally", async () => {
   const calls: string[][] = [];
-  const adapter = createMainProcessGitHistoryAdapter({ executionContext: "main", writeSnapshot: async () => undefined, runGit: async (args) => { calls.push(args); return "abc123"; } });
+  const adapter = createMainProcessGitHistoryAdapter({ writeSnapshot: async () => undefined, runGit: async (args) => { calls.push(args); return "abc123"; } });
   const history = createPreferenceHistory(adapter);
   const appended = await history.append("updated-theme", ["appearance.theme"]);
   assert.equal(appended.persisted, true);
-  assert.equal(calls[0]?.[0], "commit");
+  assert.equal(calls.some((args) => args[0] === "add"), true);
+  assert.equal(calls.some((args) => args[0] === "commit"), true);
   let failure: Error | undefined;
-  const failing = createPreferenceHistory({ executionContext: "main", writeSnapshot: async () => undefined, commit: async () => { throw new Error("disk-unavailable"); }, list: async () => [], diff: async () => "", restore: async () => undefined }, { onWriteFailure: (error) => { failure = error; } });
+  const failing = createPreferenceHistory(createMainProcessGitHistoryAdapter({ writeSnapshot: async () => { throw new Error("disk-unavailable"); }, runGit: async () => "unused" }), { onWriteFailure: (error) => { failure = error; } });
   const result = await failing.append("updated-density", ["appearance.density"]);
   assert.equal(result.persisted, false);
   assert.equal(failure?.message, "disk-unavailable");
+});
+
+test("temporary Git history proves A, B, restore A, final tree, and restore B", async () => {
+  const root = await mkdtemp(join(tmpdir(), "claude-preferences-history-"));
+  const runGit = async (args: string[]) => (await execFileAsync("git", args, { cwd: root, windowsHide: true })).stdout;
+  try {
+    await runGit(["init", "-q"]);
+    await runGit(["config", "user.name", "Claude Fable 5.1"]);
+    await runGit(["config", "user.email", "noreply@anthropic.com"]);
+    const adapter = createMainProcessGitHistoryAdapter({ writeSnapshot: async (snapshot) => writeFile(join(root, "preferences.snapshot"), snapshot, "utf8"), runGit });
+    const history = createPreferenceHistory(adapter);
+    const a = await history.append("snapshot-a", ["appearance.theme"], "A");
+    const b = await history.append("snapshot-b", ["appearance.theme"], "B");
+    assert.equal(await readFile(join(root, "preferences.snapshot"), "utf8"), "B");
+    const restoredA = await history.restore(a.revision ?? "");
+    assert.equal(restoredA.persisted, true);
+    assert.equal(await readFile(join(root, "preferences.snapshot"), "utf8"), "A");
+    const restoredB = await history.restore(b.revision ?? "");
+    assert.equal(restoredB.persisted, true);
+    assert.equal(await readFile(join(root, "preferences.snapshot"), "utf8"), "B");
+    const log = await runGit(["log", "--format=%s"]);
+    assert.match(log, /Preference restore/);
+    assert.equal((await runGit(["status", "--porcelain"])).trim(), "");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("narration enumerates voices late and serializes bilingual speech without overlap", async () => {
@@ -172,7 +207,7 @@ test("logo conversion decodes, converts, round-trips, and does not retain source
     decode: async (bytes: Uint8Array) => ({ width: bytes.length === source.bytes.length ? 32 : 64, height: bytes.length === source.bytes.length ? 32 : 64, image: {} }),
     encode: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 64, 0, 0, 0, 64, 1])
   };
-  const result = await decodeAndConvertLogo(source, { mime: "image/png", sizes: [64], fit: "contain", crop: null, focalPoint: { x: 0.5, y: 0.5 }, background: { kind: "transparent", color: "#fff" } }, decoder);
+  const result = await decodeAndConvertLogo(source, { mime: "image/png", sizes: [64], fit: "contain", crop: null, focalPoint: { x: 0.5, y: 0.5 }, background: { kind: "transparent", color: "#fff" }, safeArea: { x: 0, y: 0, width: 1, height: 1 } }, decoder);
   assert.equal(result.outputs[0]?.size, 64);
 });
 
