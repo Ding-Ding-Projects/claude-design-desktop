@@ -59,7 +59,7 @@ function validate(candidateInventory, candidateData, candidateTuples) {
   const main = text("design/reference/main.mjs");
   const preload = text("design/reference/preload.cjs");
   const renderer = text("design/reference/app.js");
-  for (const required of ["protocol.handle(\"design-reference\"", "setWindowOpenHandler", "setPermissionRequestHandler", "will-navigate", "will-redirect", "setZoomFactor", "frame: false", "contextIsolation: true", "sandbox: true", "nodeIntegration: false", "clampWindowBounds", "getNormalBounds", "workArea", "fallbackRoute"]) if (!main.includes(required)) throw new Error(`runtime security or window behavior is missing: ${required}`);
+  for (const required of ["protocol.handle(\"design-reference\"", "setWindowOpenHandler", "setPermissionRequestHandler", "will-navigate", "will-redirect", "setZoomFactor", "frame: false", "contextIsolation: true", "sandbox: true", "nodeIntegration: false", "clampWindowBounds", "getNormalBounds", "workArea", "knownScreens"]) if (!main.includes(required)) throw new Error(`runtime security or window behavior is missing: ${required}`);
   for (const required of ["ipcRenderer.invoke(\"reference:data\")", "window:state", "contextBridge.exposeInMainWorld"]) if (!preload.includes(required)) throw new Error(`preload contract is missing: ${required}`);
   if (renderer.includes("fetch(")) throw new Error("renderer must not fetch reference data when network is disabled");
   for (const required of ["aria-controls", "role=\"tabpanel\"", "data-action=\"primary\"", "data-action=\"secondary\"", "data-action=\"regex\"", "dblclick", "onState"]) if (!renderer.includes(required)) throw new Error(`renderer interaction contract is missing: ${required}`);
