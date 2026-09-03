@@ -164,7 +164,7 @@ async function createWindow() {
   const display = screen.getDisplayNearestPoint({ x: savedBounds.x, y: savedBounds.y });
   const bounds = clampBounds(savedBounds, display.workArea);
   lastNormalBounds = bounds;
-  mainWindow = new BrowserWindow({ ...bounds, minWidth: Math.min(MIN_BOUNDS.width, bounds.width), minHeight: Math.min(MIN_BOUNDS.height, bounds.height), frame: false, title: PRODUCT_NAME, backgroundColor: "#0f1115", webPreferences: { preload: join(__dirname, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: true } });
+  mainWindow = new BrowserWindow({ ...bounds, minWidth: Math.min(MIN_BOUNDS.width, bounds.width), minHeight: Math.min(MIN_BOUNDS.height, bounds.height), frame: false, title: PRODUCT_NAME, icon: join(__dirname, "assets", "branding", "logo-64.png"), backgroundColor: "#0f1115", webPreferences: { preload: join(__dirname, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: true } });
   if (state.maximized) mainWindow.maximize();
   mainWindow.on("move", rememberNormalBounds);
   mainWindow.on("resize", rememberNormalBounds);

@@ -92,6 +92,26 @@ if (-not (Test-Path -LiteralPath $packageJson) -or -not (Test-Path -LiteralPath 
 
 Write-Phase 'Installing locked npm packages from package-lock.json'
 Invoke-Checked $npmCmd @('ci', '--no-audit', '--no-fund')
+Write-Phase 'Verifying the pinned Electron runtime binary'
+$rootPackage = Get-Content -Raw $packageJson | ConvertFrom-Json
+$electronRoot = Join-Path $root 'node_modules/electron'
+$electronPackagePath = Join-Path $electronRoot 'package.json'
+$electronInstall = Join-Path $electronRoot 'install.js'
+$electronExe = Join-Path $electronRoot 'dist/electron.exe'
+if (-not (Test-Path -LiteralPath $electronPackagePath) -or -not (Test-Path -LiteralPath $electronInstall)) {
+  throw "The locked Electron package is incomplete under $electronRoot."
+}
+$electronPackage = Get-Content -Raw $electronPackagePath | ConvertFrom-Json
+if ($electronPackage.version -ne $rootPackage.devDependencies.electron) {
+  throw "Electron package version $($electronPackage.version) does not match the pinned manifest version $($rootPackage.devDependencies.electron)."
+}
+if (-not (Test-Path -LiteralPath $electronExe)) {
+  Invoke-Checked $nodeExe @($electronInstall)
+}
+if (-not (Test-Path -LiteralPath $electronExe)) {
+  throw "Electron install completed without materializing the runtime executable: $electronExe"
+}
+Write-Phase ("Found Electron {0} runtime at {1}" -f $electronPackage.version, $electronExe)
 Write-Phase 'Verifying declared release tooling'
 $builder = Join-Path $root 'node_modules/.bin/electron-builder.cmd'
 if (-not (Test-Path -LiteralPath $builder)) { throw "electron-builder is absent after npm ci: $builder" }

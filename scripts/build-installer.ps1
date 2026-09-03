@@ -32,4 +32,9 @@ if ($LASTEXITCODE -ne 0) { throw "npm run dist -- --win squirrel exited with cod
 $validator = Join-Path $root 'scripts/validate-squirrel-package.ps1'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $validator $(if ($Silent) { '-Silent' })
 if ($LASTEXITCODE -ne 0) { throw "Squirrel.Windows validation exited with code $LASTEXITCODE." }
+$iconVerifier = Join-Path $root 'scripts/verify-windows-branding.mjs'
+$packagedExecutable = Join-Path $root 'dist/squirrel-windows/win-unpacked/Claude Design Desktop.exe'
+$committedIcon = Join-Path $root 'assets/branding/app-icon.ico'
+& $nodeExe $iconVerifier $packagedExecutable $committedIcon
+if ($LASTEXITCODE -ne 0) { throw "Packaged executable icon validation exited with code $LASTEXITCODE." }
 if (-not $Silent) { Write-Host '[installer] Unsigned Squirrel.Windows installer verified.' }

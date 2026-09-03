@@ -11,6 +11,7 @@
     "build": "node build/build.mjs",
     "start": "npm run build && electron .",
     "dist": "electron-builder --config electron-builder.json",
+    "test:branding": "node scripts/verify-windows-branding.mjs --self-test",
     "test:release": "node scripts/test-release-tooling.mjs",
     "typecheck": "tsc --noEmit -p apps/desktop/tsconfig.json",
     "test": "vitest run apps packages/contracts packages/ui-shell",
@@ -29,6 +30,7 @@
     "electron-builder": "26.15.3",
     "electron-builder-squirrel-windows": "26.15.3",
     "esbuild": "0.25.4",
+    "resedit": "1.7.2",
     "typescript": "5.8.3",
     "vitest": "3.2.7"
   },

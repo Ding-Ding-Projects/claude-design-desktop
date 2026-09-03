@@ -25,9 +25,13 @@ let mutationFailed = false;
 try { assertInventory(brokenInventory); } catch { mutationFailed = true; }
 must(mutationFailed, 'inventory mutation probe stayed green');
 assertInventory(js);
-for (const marker of ['og:title', 'og:description', 'og:url', 'og:type', 'og:site_name', 'twitter:card', 'theme-color']) must(html.includes(marker), `missing metadata: ${marker}`);
-must(!html.includes('property="og:image"'), 'an OG image URL cannot be emitted before a verified image exists');
-must(!html.includes('social-preview.png'), 'a placeholder social preview URL must not be emitted');
+for (const marker of ['og:title', 'og:description', 'og:url', 'og:type', 'og:site_name', 'og:image', 'og:image:width', 'og:image:height', 'og:image:alt', 'twitter:card', 'twitter:image', 'theme-color']) must(html.includes(marker), `missing metadata: ${marker}`);
+must(html.includes('content="https://ding-ding-projects.github.io/claude-design-desktop/social-preview.png"'), 'OG image must use the absolute deployed HTTPS URL');
+must(html.includes('content="1774"') && html.includes('content="887"'), 'OG image dimensions must match the verified image');
+const rootSocialPreview = await readFile(join(root, 'social-preview.png'));
+const siteSocialPreview = await readFile(join(site, 'social-preview.png'));
+must(rootSocialPreview.equals(siteSocialPreview), 'served social preview must be byte-identical to the root source');
+must(rootSocialPreview.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), 'social preview must be a PNG');
 must(html.includes('width=device-width'), 'responsive viewport metadata is missing');
 must(css.includes('min-width: 320px'), 'responsive minimum is missing');
 must(html.includes('Content-Security-Policy'), 'strict static CSP is missing');

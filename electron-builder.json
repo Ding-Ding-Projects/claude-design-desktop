@@ -3,6 +3,7 @@
   "productName": "Claude Design Desktop",
   "executableName": "Claude Design Desktop",
   "asar": true,
+  "afterPack": "build/after-pack.cjs",
   "directories": {
     "output": "dist/squirrel-windows",
     "buildResources": "build/resources"
@@ -26,11 +27,13 @@
   ],
   "win": {
     "target": ["squirrel"],
+    "icon": "assets/branding/app-icon.ico",
     "signAndEditExecutable": false,
     "signExecutable": false
   },
   "squirrelWindows": {
     "artifactName": "Setup.${ext}",
+    "iconUrl": "https://raw.githubusercontent.com/Ding-Ding-Projects/claude-design-desktop/main/assets/branding/app-icon.ico",
     "msi": false,
     "useAppIdAsId": true
   },

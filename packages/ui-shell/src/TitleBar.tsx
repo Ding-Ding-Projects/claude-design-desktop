@@ -12,7 +12,7 @@ export function TitleBar({ title, children }: { title: string; children?: ReactN
     <header className="titlebar">
       <div className="titlebar-drag-region" onDoubleClick={(event) => { if (isTitlebarDragDoubleClickTarget(event.target)) void window.designer.window.toggleMaximize(); }}>
         <button className="titlebar-icon no-drag" aria-label="Show window menu" title="Show window menu" onClick={() => void window.designer.window.showSystemMenu()}>
-          <span aria-hidden="true">✦</span>
+          <img src="./assets/branding/logo-48.png" alt="" aria-hidden="true" />
         </button>
         <div className="titlebar-title" aria-label={title}>{title}</div>
       </div>
