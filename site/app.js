@@ -1,4 +1,5 @@
 import { openVersionedStore } from './storage.js';
+import { createVisitorController, interceptLockedActivation, styleFunnyCopy } from './controllers.mjs';
 
 export const FEATURE_IDS = [
   'language-modes', 'dialog-emoji-toggle', 'school-mode', 'narration', 'scheduled-settings',
@@ -65,31 +66,25 @@ const state = {
   funnyCantonese: Number(localStorage.getItem('cdd.funnyCantonese') || 5),
   route: location.hash.slice(1) || 'home',
   logo: localStorage.getItem('cdd.logo') || 'star',
-  customLogo: localStorage.getItem('cdd.customLogo') || '',
-  tabs: [],
-  tabGroups: [],
-  locks: {}
+  customLogo: localStorage.getItem('cdd.customLogo') || ''
 };
 
 export const visitorStore = openVersionedStore('claude-design-desktop-site', 1);
-const DEFAULT_TABS = routes => routes.map(([id, , label]) => ({ id, label, pinned: false, groupId: null }));
-const saveLargeState = () => visitorStore.set('workspace', { tabs: state.tabs, tabGroups: state.tabGroups, locks: state.locks, updatedAt: new Date().toISOString() });
-export function isLocked(target) { return Boolean(target?.closest?.('[data-locked="true"]')); }
-export function interceptLockedActivation(target, event) { const locked = target?.closest?.('[data-locked="true"]'); if (!locked || event?.type === 'contextmenu') return false; event?.preventDefault?.(); event?.stopImmediatePropagation?.(); return true; }
-export function toggleTabPin(tabId) { const tab = state.tabs.find((entry) => entry.id === tabId); if (!tab) return false; tab.pinned = !tab.pinned; saveLargeState(); return tab.pinned; }
-export function createTabGroup(label = 'New group') { const group = { id: `group-${Date.now()}-${Math.random().toString(16).slice(2)}`, label, collapsed: false }; state.tabGroups.push(group); saveLargeState(); return group; }
-export function addTab(label = 'New tab') { const id = `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`; state.tabs.push({ id, label, pinned: false, groupId: null }); saveLargeState(); return id; }
-async function hydrateLargeState() { const saved = await visitorStore.get('workspace'); state.tabs = saved?.tabs?.length ? saved.tabs : DEFAULT_TABS(routes); state.tabGroups = Array.isArray(saved?.tabGroups) ? saved.tabGroups : []; state.locks = saved?.locks && typeof saved.locks === 'object' ? saved.locks : {}; renderTabs(); }
 
 const routes = [
   ['home', '⌂', 'Home'], ['features', '✦', 'Features'], ['documentation', '▤', 'Documentation'],
   ['status', '●', 'Status'], ['settings', '⚙', 'Settings'], ['downloads', '⇩', 'Downloads'], ['changelog', '◷', 'Changelog']
 ];
 
+const DEFAULT_TABS = routes => routes.map(([id, , label]) => ({ id, label, pinned: false, groupId: null }));
+export const visitorController = createVisitorController(visitorStore, { tabs: DEFAULT_TABS(routes) });
+async function hydrateLargeState() { const saved = await visitorStore.get('workspace'); if (saved?.tabs?.length) visitorController.state.tabs = saved.tabs; if (Array.isArray(saved?.tabGroups)) visitorController.state.groups = saved.tabGroups; if (saved?.locks && typeof saved.locks === 'object') visitorController.state.locks = saved.locks; renderTabs(); syncDomLocks(); }
+function syncDomLocks() { document.querySelectorAll('[data-context-target]').forEach((element) => { const lock = visitorController.state.locks[element.dataset.contextTarget]; if (lock?.locked) { element.dataset.locked = 'true'; element.setAttribute('aria-disabled', 'true'); } else { delete element.dataset.locked; element.removeAttribute('aria-disabled'); } }); }
+
 const save = (key, value) => localStorage.setItem(`cdd.${key}`, String(value));
 const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const bilingual = (en, zh) => state.language === 'bilingual' ? `${en}<span class="secondary-copy">${zh}</span>` : state.language === 'zh' ? zh : en;
-const funny = (en, zh) => bilingual(en, zh);
+const funny = (en, zh) => styleFunnyCopy(en, zh, { english: state.funnyEnglish, cantonese: state.funnyCantonese }, state.language === 'zh' ? 'zh' : state.language === 'bilingual' ? 'bilingual' : 'en');
 
 function searchControl(id, label, placeholder = 'Search this surface') {
   return `<div class="search-row" data-search-surface="${id}"><label class="sr-only" for="${id}">${escapeHtml(label)}</label><input id="${id}" type="search" placeholder="${escapeHtml(placeholder)}" autocomplete="off" /><button class="regex-button" data-regex-for="${id}" type="button">.* Regex</button></div>`;
@@ -126,7 +121,7 @@ function renderStatus() {
 }
 
 function renderSettings() {
-  return shell(`<div class="card"><h2>Visitor settings</h2>${searchControl('settings-search', 'Search settings', 'Search settings on this surface')}<div class="setting-list"><div class="setting"><div class="setting-header"><label for="language">Language mode</label><select id="language"><option value="en">English</option><option value="zh">Hong Kong Cantonese</option><option value="bilingual">Bilingual</option></select></div><p class="supporting">The selection applies locally to this public landing site and is persisted in browser storage.</p></div><div class="setting"><div class="setting-header"><label for="emoji-toggle">Show emojis in dialogs and message boxes</label><button id="emoji-toggle" class="toggle" type="button" aria-pressed="${state.emojis}" aria-label="Show emojis in dialogs and message boxes"></button></div><p class="supporting">Emoji decoration never replaces button labels, field labels, or accessible names.</p></div><div class="setting"><label for="funny-en">English funny level: <output id="funny-en-value">${state.funnyEnglish}</output>/5</label><input id="funny-en" type="range" min="1" max="5" step="1" value="${state.funnyEnglish}" /><p class="supporting">Styles surrounding copy only. Facts, warnings, and options stay exact.</p></div><div class="setting"><label for="funny-zh">Cantonese funny level: <output id="funny-zh-value">${state.funnyCantonese}</output>/5</label><input id="funny-zh" type="range" min="1" max="5" step="1" value="${state.funnyCantonese}" /><p class="supporting">Styles Cantonese copy independently and persists it locally.</p></div><div class="setting"><div class="setting-header"><label for="logo-upload">App-logo customization</label><span class="logo-preview" id="logo-preview" aria-label="Current local logo preview">✦</span></div><div class="button-row"><button class="outlined-button logo-choice" data-logo="star" type="button">Star preset</button><button class="outlined-button logo-choice" data-logo="orbit" type="button">Orbit preset</button><button class="outlined-button logo-choice" data-logo="grid" type="button">Grid preset</button></div><label for="logo-upload">Choose a local custom image<input id="logo-upload" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" /></label><p id="logo-status" class="supporting">No custom logo selected. Presets change presentation only and never change installed identity.</p><button id="reset-settings" class="text-button" type="button">Reset visitor settings</button></div></div></div><div class="card"><h2>Surface tabs</h2><p>Tab order and the left-side default are part of the documented contract. This public source keeps the narrow layout responsive by turning the rail into a horizontal strip below 720px.</p><div class="button-row"><button class="outlined-button" id="pin-current-tab" type="button">Pin current tab</button><button class="outlined-button" id="manage-tabs" type="button">Manage tab groups</button></div></div>`, 'Settings', 'Controls are local, persisted, and explicit about their boundaries.');
+  return shell(`<div class="card"><h2>${bilingual('Visitor settings', '訪客設定')}</h2>${searchControl('settings-search', 'Search settings', 'Search settings on this surface')}<div class="setting-list"><div class="setting"><div class="setting-header"><label for="language">${bilingual('Language mode', '語言模式')}</label><select id="language"><option value="en">English</option><option value="zh">Hong Kong Cantonese</option><option value="bilingual">Bilingual</option></select></div><p id="language-note" class="supporting">${bilingual('The selection applies locally to this public landing site and is persisted in browser storage.', '選擇只會儲存喺呢個公開頁面嘅瀏覽器資料。')}</p></div><div class="setting"><div class="setting-header"><label for="emoji-toggle">${bilingual('Show emojis in dialogs and message boxes', '喺對話框同訊息盒顯示表情符號')}</label><button id="emoji-toggle" class="toggle" type="button" aria-pressed="${state.emojis}" aria-label="Show emojis in dialogs and message boxes"></button></div><p id="emoji-note" class="supporting">${bilingual('Emoji decoration never replaces button labels, field labels, or accessible names.', '表情符號只係裝飾，唔會取代按鈕、欄位或者輔助科技名稱。')}</p></div><div class="setting"><label for="funny-en">English funny level: <output id="funny-en-value">${state.funnyEnglish}</output>/5</label><input id="funny-en" type="range" min="1" max="5" step="1" value="${state.funnyEnglish}" /><p class="supporting">Styles surrounding copy only. Facts, warnings, and options stay exact.</p></div><div class="setting"><label for="funny-zh">Cantonese funny level: <output id="funny-zh-value">${state.funnyCantonese}</output>/5</label><input id="funny-zh" type="range" min="1" max="5" step="1" value="${state.funnyCantonese}" /><p class="supporting">Styles Cantonese copy independently and persists it locally.</p></div><div class="setting"><div class="setting"><h3>${bilingual('Live copy preview', '即時文字預覽')}</h3><p id="funny-preview">${funny('Status updates stay precise.', '狀態更新保持準確。')}</p><p class="supporting">Both language controls change this preview independently.</p></div><div class="setting"><div class="setting-header"><label for="logo-upload">App-logo customization</label><span class="logo-preview" id="logo-preview" aria-label="Current local logo preview">✦</span></div><div class="button-row"><button class="outlined-button logo-choice" data-logo="star" type="button">Star preset</button><button class="outlined-button logo-choice" data-logo="orbit" type="button">Orbit preset</button><button class="outlined-button logo-choice" data-logo="grid" type="button">Grid preset</button></div><label for="logo-upload">Choose a local custom image<input id="logo-upload" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" /></label><p id="logo-status" class="supporting">No custom logo selected. Presets change presentation only and never change installed identity.</p><button id="reset-settings" class="text-button" type="button">Reset visitor settings</button></div></div></div><div class="card"><h2>Surface tabs</h2><p>Tab order and the left-side default are part of the documented contract. This public source keeps the narrow layout responsive by turning the rail into a horizontal strip below 720px.</p><div class="button-row"><button class="outlined-button" id="pin-current-tab" type="button">Pin current tab</button><button class="outlined-button" id="manage-tabs" type="button">Manage tab groups</button></div></div>`, 'Settings', 'Controls are local, persisted, and explicit about their boundaries.');
 }
 
 function renderDownloads() {
@@ -144,12 +139,13 @@ function renderRoute() {
   bindRouteActions();
   bindSearches();
   hydrateSettings();
+  syncDomLocks();
   loadProvenance();
 }
 
 function renderTabs() {
-  const tabs = state.tabs.length ? state.tabs : DEFAULT_TABS(routes);
-  document.querySelector('#tab-list').innerHTML = tabs.map((tab) => { const route = routes.find(([id]) => id === tab.id); const icon = route?.[1] || '□'; const label = tab.label || route?.[2] || tab.id; const group = state.tabGroups.find((entry) => entry.id === tab.groupId); const destination = route?.[0] || 'home'; return `<button class="tab-button" role="tab" aria-selected="${state.route === destination}" data-route="${destination}" data-context-target="tab-${tab.id}" data-tab-id="${tab.id}"><span aria-hidden="true">${icon}</span><span>${escapeHtml(label)}</span>${group ? `<small class="tab-group-label">${escapeHtml(group.label)}</small>` : ''}${tab.pinned ? '<span class="tab-pin" aria-label="Pinned tab">●</span>' : ''}</button>`; }).join('');
+  const tabs = visitorController.state.tabs.length ? visitorController.state.tabs : DEFAULT_TABS(routes);
+  document.querySelector('#tab-list').innerHTML = tabs.map((tab) => { const route = routes.find(([id]) => id === tab.id); const icon = route?.[1] || '□'; const label = tab.label || route?.[2] || tab.id; const group = visitorController.state.groups.find((entry) => entry.id === tab.groupId); const destination = route?.[0] || 'home'; return `<button class="tab-button" role="tab" aria-selected="${state.route === destination}" data-route="${destination}" data-context-target="tab-${tab.id}" data-tab-id="${tab.id}"><span aria-hidden="true">${icon}</span><span>${escapeHtml(label)}</span>${group ? `<small class="tab-group-label">${escapeHtml(group.label)}</small>` : ''}${tab.pinned ? '<span class="tab-pin" aria-label="Pinned tab">●</span>' : ''}</button>`; }).join('');
   document.querySelectorAll('[data-route]').forEach((button) => button.addEventListener('click', () => { state.route = button.dataset.route; location.hash = state.route; renderTabs(); renderRoute(); }));
 }
 
@@ -161,15 +157,35 @@ function bindRouteActions() {
 
 function bindSearches() {
   document.querySelectorAll('.search-row input').forEach((input) => input.addEventListener('input', () => {
-    const value = input.value.trim().toLowerCase();
-    const surface = input.closest('[data-search-surface]');
-    if (!surface) return;
-    const scope = surface.dataset.searchSurface === 'features-search' ? '#feature-list [data-feature]' : surface.dataset.searchSurface === 'docs-search' ? '#docs-list [data-doc]' : null;
-    const rows = scope ? document.querySelectorAll(scope) : surface.closest('.card')?.querySelectorAll('.status-card, .setting, .empty-state, .feature-row');
-    rows?.forEach((row) => { row.hidden = Boolean(value && !row.textContent.toLowerCase().includes(value)); });
-    if (surface.dataset.searchSurface?.includes('search')) surface.dataset.query = value;
+    regexState.delete(input.id);
+    dispatchSearch(input.id);
   }));
+  document.querySelectorAll('.search-row input').forEach((input) => input.addEventListener('change', () => {
+    dispatchSearch(input.id);
+  }));
+  /* The originating search owns its query and scope, never a shared global filter. */
+  document.querySelectorAll('.search-row input').forEach((input) => {
+    input.dataset.searchBound = 'true';
+  });
+  /* Regex buttons are bound below after their target field exists. */
   document.querySelectorAll('.regex-button').forEach((button) => button.addEventListener('click', () => openRegex(button.dataset.regexFor)));
+}
+
+function dispatchSearch(inputId) {
+  const input = document.querySelector(`#${CSS.escape(inputId)}`);
+  if (!input) return;
+  const surface = input.closest('[data-search-surface]');
+  if (!surface) return;
+  const stateForInput = regexState.get(inputId);
+  const query = input.value.trim();
+  let matcher = (text) => text.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  if (stateForInput?.mode === 'regex' && stateForInput.valid) { const expression = new RegExp(stateForInput.pattern, stateForInput.flags); matcher = (text) => expression.test(text); }
+  const scope = surface.dataset.searchSurface === 'features-search' ? '#feature-list [data-feature]' : surface.dataset.searchSurface === 'docs-search' ? '#docs-list [data-doc]' : null;
+  const rows = scope ? document.querySelectorAll(scope) : surface.closest('.card')?.querySelectorAll('.status-card, .setting, .empty-state, .feature-row');
+  rows?.forEach((row) => { row.hidden = Boolean(query && !matcher(row.textContent)); });
+  surface.dataset.query = query;
+  surface.dataset.mode = stateForInput?.mode || 'text';
+  surface.dataset.resultCount = String([...rows || []].filter((row) => !row.hidden).length);
 }
 
 function hydrateSettings() {
@@ -178,17 +194,19 @@ function hydrateSettings() {
   const emoji = document.querySelector('#emoji-toggle');
   if (emoji) emoji.addEventListener('click', () => { state.emojis = !state.emojis; save('emojis', state.emojis); emoji.setAttribute('aria-pressed', state.emojis); notify(state.emojis ? 'Emoji decoration enabled' : 'Emoji decoration disabled', 'Factual copy and accessible names remain unchanged.'); });
   const en = document.querySelector('#funny-en');
-  if (en) en.addEventListener('input', () => { state.funnyEnglish = Number(en.value); save('funnyEnglish', state.funnyEnglish); document.querySelector('#funny-en-value').value = state.funnyEnglish; document.querySelector('#funny-en-value').textContent = state.funnyEnglish; });
+  if (en) en.addEventListener('input', () => { state.funnyEnglish = Number(en.value); save('funnyEnglish', state.funnyEnglish); document.querySelector('#funny-en-value').value = state.funnyEnglish; document.querySelector('#funny-en-value').textContent = state.funnyEnglish; updateFunnyPreview(); });
   const zh = document.querySelector('#funny-zh');
-  if (zh) zh.addEventListener('input', () => { state.funnyCantonese = Number(zh.value); save('funnyCantonese', state.funnyCantonese); document.querySelector('#funny-zh-value').value = state.funnyCantonese; document.querySelector('#funny-zh-value').textContent = state.funnyCantonese; });
+  if (zh) zh.addEventListener('input', () => { state.funnyCantonese = Number(zh.value); save('funnyCantonese', state.funnyCantonese); document.querySelector('#funny-zh-value').value = state.funnyCantonese; document.querySelector('#funny-zh-value').textContent = state.funnyCantonese; updateFunnyPreview(); });
   document.querySelectorAll('.logo-choice').forEach((button) => button.addEventListener('click', () => { state.logo = button.dataset.logo; save('logo', state.logo); state.customLogo = ''; localStorage.removeItem('cdd.customLogo'); updateLogo(); notify('Logo preset applied', 'The selected mark changes presentation only.'); }));
   const upload = document.querySelector('#logo-upload');
   if (upload) upload.addEventListener('change', () => { const file = upload.files?.[0]; if (!file) return; if (file.size > 2 * 1024 * 1024) { notify('Logo rejected', 'The local image exceeds the 2 MiB limit.'); upload.value = ''; return; } const reader = new FileReader(); reader.onload = () => { state.customLogo = String(reader.result); save('customLogo', state.customLogo); updateLogo(); notify('Local logo applied', 'The image stays in this browser profile.'); }; reader.readAsDataURL(file); });
   document.querySelector('#reset-settings')?.addEventListener('click', () => { Object.assign(state, { language: 'en', emojis: true, funnyEnglish: 5, funnyCantonese: 5, logo: 'star', customLogo: '' }); ['language', 'emojis', 'funnyEnglish', 'funnyCantonese', 'logo', 'customLogo'].forEach((key) => localStorage.removeItem(`cdd.${key}`)); renderRoute(); notify('Visitor settings reset', 'The original shipped wording and presentation are active again.'); });
-  document.querySelector('#pin-current-tab')?.addEventListener('click', () => { const pinned = toggleTabPin(state.route); renderTabs(); notify(pinned ? 'Tab pinned' : 'Tab unpinned', 'The tab state is stored in the versioned local visitor store.'); });
-  document.querySelector('#manage-tabs')?.addEventListener('click', () => { const group = createTabGroup(); renderTabs(); notify('Tab group created', `${group.label} is stored in the versioned local visitor store.`); });
+  document.querySelector('#pin-current-tab')?.addEventListener('click', () => { const pinned = visitorController.togglePin(state.route); renderTabs(); notify(pinned ? 'Tab pinned' : 'Tab unpinned', 'The tab state is stored in the versioned local visitor store.'); });
+  document.querySelector('#manage-tabs')?.addEventListener('click', () => { const group = visitorController.createGroup(); renderTabs(); notify('Tab group created', `${group.label} is stored in the versioned local visitor store.`); });
   updateLogo();
 }
+
+function updateFunnyPreview() { const preview = document.querySelector('#funny-preview'); if (preview) preview.innerHTML = funny('Status updates stay precise.', '狀態更新保持準確。'); }
 
 function updateLogo() {
   const preview = document.querySelector('#logo-preview');
@@ -217,32 +235,39 @@ function notify(title, body) {
 }
 
 let regexTarget = null;
+const regexState = new Map();
+const MAX_REGEX_PATTERN = 2048;
+const MAX_REGEX_SAMPLE = 100000;
 function openRegex(target) {
   regexTarget = target || null;
-  const source = target ? document.querySelector(`#${target}`)?.value || '' : '';
-  document.querySelector('#regex-pattern').value = source;
+  const saved = regexState.get(regexTarget) || { mode: 'text', pattern: target ? document.querySelector(`#${target}`)?.value || '' : '', flags: 'giu', valid: true };
+  document.querySelector('#regex-mode').value = saved.mode;
+  document.querySelector('#regex-pattern').value = saved.pattern;
+  document.querySelector('#regex-flags').value = saved.flags;
   document.querySelector('#regex-dialog').showModal();
   evaluateRegex();
 }
 function evaluateRegex() {
-  const pattern = document.querySelector('#regex-pattern').value;
+  const pattern = document.querySelector('#regex-pattern').value.slice(0, MAX_REGEX_PATTERN);
   const flags = document.querySelector('#regex-flags').value;
-  const sample = document.querySelector('#regex-sample').value;
+  const mode = document.querySelector('#regex-mode').value;
+  const sample = document.querySelector('#regex-sample').value.slice(0, MAX_REGEX_SAMPLE);
   const status = document.querySelector('#regex-validation');
   const explanation = document.querySelector('#regex-explanation');
   const matches = document.querySelector('#regex-matches');
-  if (!pattern) { status.textContent = 'Enter a pattern to inspect matches.'; explanation.textContent = 'No pattern yet'; matches.textContent = '0'; return; }
-  try { const expression = new RegExp(pattern, flags); const found = [...sample.matchAll(expression)]; status.textContent = 'Pattern is valid and evaluated locally.'; status.className = 'inline-status verified'; explanation.textContent = `/${pattern}/${flags} with ${expression.source.length} pattern characters`; matches.textContent = String(found.length); } catch (error) { status.textContent = `Pattern is invalid: ${error.message}`; status.className = 'inline-status error'; explanation.textContent = 'No match evaluation'; matches.textContent = '0'; }
+  if (!pattern) { status.textContent = 'Enter a pattern to inspect matches.'; status.className = 'inline-status'; explanation.textContent = 'No pattern yet'; matches.textContent = '0'; if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: false }); return; }
+  try { const expression = new RegExp(mode === 'text' ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : pattern, flags); const found = [...sample.matchAll(expression)]; status.textContent = mode === 'text' ? 'Plain text is valid and evaluated locally.' : 'Pattern is valid and evaluated locally.'; status.className = 'inline-status verified'; explanation.textContent = mode === 'text' ? `Literal search with ${pattern.length} characters` : `/${pattern}/${flags} with ${expression.source.length} pattern characters`; matches.textContent = String(found.length); if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: true }); } catch (error) { status.textContent = `Pattern is invalid: ${error.message}`; status.className = 'inline-status error'; explanation.textContent = 'No match evaluation'; matches.textContent = '0'; if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: false }); }
 }
 
 document.querySelector('#regex-pattern').addEventListener('input', evaluateRegex);
 document.querySelector('#regex-flags').addEventListener('input', evaluateRegex);
+document.querySelector('#regex-mode').addEventListener('change', evaluateRegex);
 document.querySelector('#regex-sample').addEventListener('input', evaluateRegex);
 document.querySelectorAll('[data-close-dialog]').forEach((button) => button.addEventListener('click', () => document.querySelector(`#${button.dataset.closeDialog}`).close()));
-document.querySelector('#apply-regex').addEventListener('click', () => { if (regexTarget) { const input = document.querySelector(`#${regexTarget}`); if (input) input.value = document.querySelector('#regex-pattern').value; } document.querySelector('#regex-dialog').close(); });
+document.querySelector('#apply-regex').addEventListener('click', () => { if (regexTarget) { const mode = document.querySelector('#regex-mode').value; const pattern = document.querySelector('#regex-pattern').value.slice(0, MAX_REGEX_PATTERN); const flags = document.querySelector('#regex-flags').value; const current = regexState.get(regexTarget); if (!current?.valid) { document.querySelector('#regex-validation').textContent = 'Fix the pattern before applying it.'; return; } regexState.set(regexTarget, { mode, pattern, flags, valid: true }); const input = document.querySelector(`#${CSS.escape(regexTarget)}`); if (input) input.value = pattern; dispatchSearch(regexTarget); } document.querySelector('#regex-dialog').close(); });
 document.querySelector('#open-palette').addEventListener('click', () => openPalette());
 document.querySelector('#toggle-theme').addEventListener('click', () => { state.theme = state.theme === 'light' ? 'dark' : 'light'; save('theme', state.theme); document.documentElement.dataset.theme = state.theme; });
-document.querySelector('#add-tab').addEventListener('click', () => { const id = addTab('New tab'); renderTabs(); notify('New tab created', `${id} is stored in the versioned local visitor store.`); });
+document.querySelector('#add-tab').addEventListener('click', () => { const id = visitorController.addTab('New tab'); renderTabs(); notify('New tab created', `${id} is stored in the versioned local visitor store.`); });
 
 function openPalette() {
   const dialog = document.querySelector('#palette'); dialog.showModal(); const input = document.querySelector('#palette-search'); input.value = ''; input.focus(); renderPalette('');
@@ -255,13 +280,16 @@ function renderPalette(query) {
 }
 document.querySelector('#palette-search').addEventListener('input', (event) => renderPalette(event.target.value));
 
-document.addEventListener('contextmenu', (event) => { const target = event.target.closest('[data-context-target]'); if (!target) return; event.preventDefault(); document.querySelector('.context-menu')?.remove(); const menu = document.createElement('div'); menu.className = 'context-menu'; menu.setAttribute('role', 'menu'); menu.innerHTML = `<label class="sr-only" for="context-filter">Filter context actions</label><div class="context-search"><input id="context-filter" type="search" placeholder="Filter actions" /><button class="regex-button" data-regex-for="context-filter" type="button">.* Regex</button></div><button type="button" data-context-action="appearance">Edit appearance…</button><button type="button" data-context-action="lock">Lock this element…</button><button type="button" data-context-action="copy">Copy accessible name</button>`; document.body.appendChild(menu); const x = Math.min(event.clientX, innerWidth - menu.offsetWidth - 12); const y = Math.min(event.clientY, innerHeight - menu.offsetHeight - 12); menu.style.left = `${Math.max(8, x)}px`; menu.style.top = `${Math.max(8, y)}px`; menu.querySelector('input').focus(); menu.querySelector('input').addEventListener('input', (e) => menu.querySelectorAll('button[data-context-action]').forEach((button) => { button.hidden = !button.textContent.toLowerCase().includes(e.target.value.toLowerCase()); })); menu.querySelector('.regex-button').addEventListener('click', () => openRegex('context-filter')); menu.querySelectorAll('button[data-context-action]').forEach((button) => button.addEventListener('click', () => { if (button.dataset.contextAction === 'appearance') { state.route = 'settings'; location.hash = state.route; renderTabs(); renderRoute(); notify('Appearance editor', 'The settings surface is the documented place to adjust local presentation.'); } else if (button.dataset.contextAction === 'lock') { target.dataset.locked = 'true'; target.setAttribute('aria-disabled', 'true'); target.setAttribute('aria-label', `${target.getAttribute('aria-label') || 'Element'} locked`); state.locks[target.dataset.contextTarget || 'unknown'] = true; saveLargeState(); notify('Element lock enabled', 'This preview intercepts activation locally.'); } else { navigator.clipboard?.writeText(target.textContent.trim()); notify('Accessible name copied', 'Only visible local text was requested.'); } menu.remove(); })); });
+document.addEventListener('contextmenu', (event) => { const target = event.target.closest('[data-context-target]'); if (!target) return; event.preventDefault(); document.querySelector('.context-menu')?.remove(); const menu = document.createElement('div'); menu.className = 'context-menu'; menu.setAttribute('role', 'menu'); menu.innerHTML = `<label class="sr-only" for="context-filter">Filter context actions</label><div class="context-search"><input id="context-filter" type="search" placeholder="Filter actions" /><button class="regex-button" data-regex-for="context-filter" type="button">.* Regex</button></div><button type="button" data-context-action="appearance">Edit appearance…</button><button type="button" data-context-action="lock">Lock this element…</button><button type="button" data-context-action="copy">Copy accessible name</button>`; document.body.appendChild(menu); const x = Math.min(event.clientX, innerWidth - menu.offsetWidth - 12); const y = Math.min(event.clientY, innerHeight - menu.offsetHeight - 12); menu.style.left = `${Math.max(8, x)}px`; menu.style.top = `${Math.max(8, y)}px`; menu.querySelector('input').focus(); menu.querySelector('input').addEventListener('input', (e) => menu.querySelectorAll('button[data-context-action]').forEach((button) => { button.hidden = !button.textContent.toLowerCase().includes(e.target.value.toLowerCase()); })); menu.querySelector('.regex-button').addEventListener('click', () => openRegex('context-filter')); menu.querySelectorAll('button[data-context-action]').forEach((button) => button.addEventListener('click', () => { if (button.dataset.contextAction === 'appearance') { state.route = 'settings'; location.hash = state.route; renderTabs(); renderRoute(); notify('Appearance editor', 'The settings surface is the documented place to adjust local presentation.'); } else if (button.dataset.contextAction === 'lock') { openLockDialog(target, { setup: true }); } else { navigator.clipboard?.writeText(target.textContent.trim()); notify('Accessible name copied', 'Only visible local text was requested.'); } menu.remove(); })); });
 document.addEventListener('click', (event) => { if (!event.target.closest('.context-menu')) document.querySelector('.context-menu')?.remove(); });
 let lockedTarget = null;
-function openLockDialog(target) { lockedTarget = target; const dialog = document.querySelector('#lock-dialog'); const name = target.dataset.contextTarget || target.textContent.trim().slice(0, 80) || 'element'; document.querySelector('#lock-target-name').textContent = `The element “${name}” is locked locally. This is a user-experience lock, not security or encryption. Clear this site's storage to recover it.`; document.querySelector('#lock-value').value = ''; document.querySelector('#lock-status').textContent = 'Enter the phrase configured for this element.'; dialog.showModal(); document.querySelector('#lock-value').focus(); }
-document.addEventListener('click', (event) => { if (interceptLockedActivation(event.target, event)) openLockDialog(event.target.closest('[data-locked="true"]')); }, true);
-document.addEventListener('keydown', (event) => { if (!['Enter', ' '].includes(event.key)) return; if (interceptLockedActivation(event.target, event)) openLockDialog(event.target.closest('[data-locked="true"]')); }, true);
-document.querySelector('#unlock-element').addEventListener('click', () => { const value = document.querySelector('#lock-value').value; if (!value) { document.querySelector('#lock-status').textContent = 'A non-empty phrase is required; no action was performed.'; return; } if (!lockedTarget) return; lockedTarget.dataset.locked = 'false'; lockedTarget.removeAttribute('aria-disabled'); lockedTarget.removeAttribute('aria-label'); if (lockedTarget.dataset.contextTarget) delete state.locks[lockedTarget.dataset.contextTarget]; saveLargeState(); document.querySelector('#lock-dialog').close(); notify('Element unlocked', 'The protected action is available again.'); lockedTarget.focus?.(); lockedTarget = null; });
+let lockSetup = false;
+function openLockDialog(target, options = {}) { lockedTarget = target; lockSetup = Boolean(options.setup); const dialog = document.querySelector('#lock-dialog'); const name = target.dataset.contextTarget || target.textContent.trim().slice(0, 80) || 'element'; document.querySelector('#lock-title').textContent = lockSetup ? 'Configure element lock' : 'Unlock this element'; document.querySelector('#lock-target-name').textContent = lockSetup ? `Configure a browser-storage-only lock for “${name}”. It is a user-experience lock, not security or encryption.` : `The element “${name}” is locked locally. This is a user-experience lock, not security or encryption. Clear this site's storage to recover it.`; document.querySelector('#lock-policy-field').hidden = !lockSetup; document.querySelector('#lock-duration-field').hidden = !lockSetup; document.querySelector('#lock-confirm-field').hidden = !lockSetup; document.querySelector('#lock-value-label').textContent = lockSetup ? 'New phrase' : 'Unlock phrase'; document.querySelector('#unlock-element').textContent = lockSetup ? 'Save lock' : 'Unlock'; document.querySelector('#lock-value').value = ''; document.querySelector('#lock-confirm').value = ''; document.querySelector('#lock-status').textContent = lockSetup ? 'Choose a policy, duration, and phrase of at least four characters.' : 'Enter the configured phrase. Five failed attempts per minute are allowed.'; dialog.showModal(); document.querySelector('#lock-value').focus(); }
+function guardActivation(event, eventType) { const target = event.target.closest?.('[data-context-target]'); if (!target) return; const decision = visitorController.dispatchAction(target.dataset.contextTarget, eventType); if (decision.kind === 'unlock-required' && interceptLockedActivation(target, event)) openLockDialog(target); }
+document.addEventListener('click', (event) => guardActivation(event, 'click'), true);
+document.addEventListener('touchstart', (event) => guardActivation(event, 'touchstart'), true);
+document.addEventListener('keydown', (event) => { if (!['Enter', ' '].includes(event.key)) return; guardActivation(event, 'keydown'); }, true);
+document.querySelector('#unlock-element').addEventListener('click', () => { const value = document.querySelector('#lock-value').value; if (!lockedTarget) return; const id = lockedTarget.dataset.contextTarget || 'unknown'; if (lockSetup) { const confirm = document.querySelector('#lock-confirm').value; if (value.length < 4 || value !== confirm) { document.querySelector('#lock-status').textContent = 'The phrase must be at least four characters and match the confirmation.'; return; } const policy = document.querySelector('#lock-policy').value; const durationMs = Number(document.querySelector('#lock-duration').value); if (!visitorController.lock(id, value, { policy, durationMs })) { document.querySelector('#lock-status').textContent = 'The browser-storage-only lock could not be saved.'; return; } lockedTarget.dataset.locked = 'true'; lockedTarget.setAttribute('aria-disabled', 'true'); lockedTarget.setAttribute('aria-label', `${lockedTarget.getAttribute('aria-label') || 'Element'} locked`); document.querySelector('#lock-dialog').close(); notify('Element lock enabled', 'Activation is intercepted until its configured verifier succeeds.'); } else { if (!visitorController.unlock(id, value)) { document.querySelector('#lock-status').textContent = 'The phrase did not match or the rate limit is active. No action was performed.'; return; } lockedTarget.dataset.locked = 'false'; lockedTarget.removeAttribute('aria-disabled'); lockedTarget.removeAttribute('aria-label'); document.querySelector('#lock-dialog').close(); notify('Element unlocked', 'The protected action is available again.'); lockedTarget.focus?.(); } lockedTarget = null; });
 document.addEventListener('keydown', (event) => { if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'f') { event.preventDefault(); openPalette(); } if (event.key === 'Escape') document.querySelector('.context-menu')?.remove(); });
 window.addEventListener('hashchange', () => { state.route = location.hash.slice(1) || 'home'; renderTabs(); renderRoute(); });
 

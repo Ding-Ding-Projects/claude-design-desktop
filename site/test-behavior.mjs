@@ -16,9 +16,9 @@ assert.equal(controller.state.tabs.at(-1).groupId, group.id);
 assert.equal(saved.length, 4, 'tab, pin, group, and move mutations must persist');
 
 assert.equal(controller.lock(created, 'local phrase'), true);
-assert.deepEqual(controller.dispatchAction(created, 'click'), { kind: 'unlock-required', targetId: created });
-assert.deepEqual(controller.dispatchAction(created, 'keydown'), { kind: 'unlock-required', targetId: created });
-assert.deepEqual(controller.dispatchAction(created, 'programmatic'), { kind: 'unlock-required', targetId: created });
+assert.deepEqual(controller.dispatchAction(created, 'click'), { kind: 'unlock-required', targetId: created, policy: 'password' });
+assert.deepEqual(controller.dispatchAction(created, 'keydown'), { kind: 'unlock-required', targetId: created, policy: 'password' });
+assert.deepEqual(controller.dispatchAction(created, 'programmatic'), { kind: 'unlock-required', targetId: created, policy: 'password' });
 assert.equal(controller.unlock(created, 'local phrase'), true);
 assert.deepEqual(controller.dispatchAction(created, 'click'), { kind: 'action', targetId: created, eventType: 'click' });
 
