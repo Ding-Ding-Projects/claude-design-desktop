@@ -93,6 +93,7 @@ h2 { margin: 8px 0 12px; font-size: clamp(1.8rem, 4vw, 3.15rem); line-height: 1.
 .detail-list li::before { content: "✓"; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: var(--on-primary-container); background: var(--primary-container); font-weight: 700; }
 .metadata { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 24px; color: var(--on-surface-variant); font-size: .8rem; }
 .metadata code { color: var(--on-surface); }
+.toast-region { min-height: 28px; margin-top: 16px; color: var(--on-primary-container); font-size: .9rem; }
 
 @media (max-width: 760px) {
   .workspace { grid-template-columns: 1fr; }

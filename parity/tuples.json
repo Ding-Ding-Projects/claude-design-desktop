@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "screens": ["signin:default", "accounts:default", "projects:default", "editor:preview", "sharing:roles", "settings:appearance", "features:overview", "downloads:progress", "recovery:offline"],
+  "variants": [
+    { "id": "light-english-100", "theme": "light", "locale": "en-US", "width": 1280, "height": 800, "scale": 1 },
+    { "id": "light-english-125", "theme": "light", "locale": "en-US", "width": 1280, "height": 800, "scale": 1.25 },
+    { "id": "light-english-150", "theme": "light", "locale": "en-US", "width": 1280, "height": 800, "scale": 1.5 },
+    { "id": "light-english-200", "theme": "light", "locale": "en-US", "width": 1280, "height": 800, "scale": 2 },
+    { "id": "dark-english-100", "theme": "dark", "locale": "en-US", "width": 1280, "height": 800, "scale": 1 },
+    { "id": "light-bilingual-100", "theme": "light", "locale": "bilingual", "width": 720, "height": 900, "scale": 1 },
+    { "id": "light-cantonese-100", "theme": "light", "locale": "zh-Hant", "width": 960, "height": 700, "scale": 1 }
+  ],
+  "evidencePolicy": "pending until a real built reference and production package are captured; no placeholder image is accepted"
+}

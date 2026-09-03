@@ -6,12 +6,13 @@ The live Material Designer creation and export route was checked on 2026-09-02. 
 
 ## Launch
 
-From this folder, after installing the pinned development package:
+From the repository root, after the root package has installed its pinned Electron dependency:
 
 ```text
-npm install
-npm run reference -- --screen projects --state default --theme light --locale en-US --width 1280 --height 800 --scale 1 --time 2026-09-02T12:00:00.000Z --motion frozen
+npm --prefix design/apps/design-reference run reference -- --screen projects --state default --theme light --locale en-US --width 1280 --height 800 --scale 1 --time 2026-09-02T12:00:00.000Z --motion frozen --network disabled
 ```
+
+The reference launcher resolves Electron from the repository root package. It does not install a second nested Electron copy. The root package must pin Electron to `42.3.3`; when that root package is absent, the launcher fails with an explicit missing-root-runtime message.
 
 The renderer reads the route tuple from the query string. Supported screens are `signin`, `accounts`, `projects`, `editor`, `sharing`, `settings`, `features`, `downloads`, and `recovery`.
 
