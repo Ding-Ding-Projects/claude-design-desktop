@@ -26,6 +26,7 @@ input, textarea, select { border: 1px solid var(--outline); border-radius: 12px;
 textarea { resize: vertical; min-height: 5rem; }
 .workspace-shell { max-width: 1480px; margin: 0 auto; padding: 2rem clamp(1rem, 3vw, 3rem) 4rem; }
 .workspace-header, .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.inline-actions { display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center; }
 .workspace-header { border-bottom: 1px solid var(--outline); padding-bottom: 1.25rem; margin-bottom: 1rem; }
 h1, h2, p { margin-top: 0; }
 h1 { font-size: clamp(1.7rem, 3vw, 2.6rem); margin-bottom: 0.35rem; }
@@ -71,7 +72,7 @@ label { font-size: 0.9rem; font-weight: 650; margin-top: 0.4rem; }
 .file-button span { display: inline-block; width: 1.2rem; color: var(--primary); }
 .editor-surface textarea { min-height: 360px; font-family: "Cascadia Code", Consolas, monospace; line-height: 1.5; }
 .inline-warning, .unavailable { color: var(--error); margin-bottom: 0; }
-.preview { background: #090b0e; border: 1px solid var(--outline); border-radius: 12px; padding: 1rem; white-space: pre-wrap; overflow: auto; max-height: 60vh; }
+.preview-frame { width: 100%; min-height: 420px; border: 1px solid var(--outline); border-radius: 12px; background: #ffffff; }
 .chat-log { display: grid; gap: 0.75rem; max-height: 52vh; overflow: auto; margin-block: 1rem; }
 .chat-message { border-radius: 14px; padding: 0.75rem 1rem; background: var(--surface-high); }
 .chat-message p { margin: 0.35rem 0 0; white-space: pre-wrap; }

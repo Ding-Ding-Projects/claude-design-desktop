@@ -1,34 +1,43 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Account, DesignerBridge, Project, WorkspaceComment } from "./bridge";
+import type { AccountLifecycleEvent, AccountSlot, DesignerBridge, Project, WorkspaceComment } from "./bridge";
 import { createWorkspaceController } from "./controller";
+import { BridgeSchemaError, parseAccountSlot, parseProject } from "./schema";
 
-const owner: Account = { id: "owner-1", label: "Owner", email: "owner@example.test", role: "owner", ready: true };
-const viewer: Account = { id: "viewer-1", label: "Viewer", email: "viewer@example.test", role: "viewer", ready: true };
+const owner: AccountSlot = { slotId: "owner-1", label: "Owner", email: "owner@example.test", loginId: "login-owner", state: "ready", isOwner: true };
+const viewer: AccountSlot = { slotId: "viewer-1", label: "Viewer", email: "viewer@example.test", loginId: "login-viewer", state: "ready", isOwner: false };
 const project: Project = { id: "project-1", name: "Canvas", description: "A real project", updatedAt: "2026-09-02T20:00:00Z", role: "owner", shared: false };
 
 function fakeBridge(overrides: Partial<DesignerBridge> = {}): DesignerBridge {
   const comments: WorkspaceComment[] = [];
   return {
-    getSession: vi.fn(async () => ({ authenticated: true, accountId: owner.id })),
-    beginBrowserLogin: vi.fn(async () => undefined),
-    beginDeviceLogin: vi.fn(async () => ({ userCode: "ABCD-EFGH", verificationUri: "https://example.test/device" })),
+    getSession: vi.fn(async () => ({ authenticated: true, accountId: owner.slotId })),
+    beginBrowserLogin: vi.fn(async () => ({ slotId: owner.slotId })),
+    beginDeviceLogin: vi.fn(async () => ({ slotId: owner.slotId, userCode: "ABCD-EFGH", verificationUri: "https://example.test/device" })),
     listAccounts: vi.fn(async () => [owner, viewer]),
-    selectAccount: vi.fn(async (accountId: string) => accountId === owner.id ? owner : viewer),
+    selectAccount: vi.fn(async (accountId: string) => accountId === owner.slotId ? owner : viewer),
+    waitForAccountUpdate: vi.fn(async () => owner),
+    cancelLogin: vi.fn(async () => undefined),
+    logoutAccount: vi.fn(async () => undefined),
+    subscribeAccountEvents: vi.fn(() => () => undefined),
     listProjects: vi.fn(async () => [project]),
     createProject: vi.fn(async (input) => ({ ...project, id: "created", name: input.name, description: input.description })),
-    openProject: vi.fn(async () => ({ project, files: [{ path: "index.html", kind: "file", language: "html", size: 12 }] })),
+    openProject: vi.fn(async () => ({ project, files: [{ path: "index.html", kind: "file" as const, language: "html", size: 12 }] })),
     listDesignSystems: vi.fn(async () => []),
     readFile: vi.fn(async () => ({ content: "hello", language: "text" })),
     writeFile: vi.fn(async () => undefined),
-    streamChat: vi.fn(async (_id, _prompt, onChunk, signal) => {
+    streamChat: vi.fn(async (_id, _prompt, operationId, onEvent, signal) => {
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      onChunk("hello");
+      onEvent({ operationId, type: "chunk", chunk: "hello" });
       return { messageId: "message-1" };
     }),
+    interruptChat: vi.fn(async () => undefined),
     listComments: vi.fn(async () => comments),
     addComment: vi.fn(async (_id, body) => ({ id: "comment-1", author: "Owner", body, createdAt: "now", replies: [] })),
     replyToComment: vi.fn(async (_id, commentId, body) => ({ id: "reply-1", author: "Owner", body: `${commentId}:${body}`, createdAt: "now", replies: [] })),
     shareProject: vi.fn(async () => undefined),
+    revokeShare: vi.fn(async () => undefined),
+    transferProject: vi.fn(async () => undefined),
+    openPreview: vi.fn(async () => ({ id: "preview-1", title: "Preview", url: "https://example.test/preview", close: vi.fn(async () => undefined) })),
     saveSettings: vi.fn(async () => undefined),
     getSettings: vi.fn(async () => ({})),
     ...overrides
@@ -46,7 +55,7 @@ describe("WorkspaceController", () => {
   });
 
   it("enforces role capabilities before create and write operations", async () => {
-    const bridge = fakeBridge({ getSession: vi.fn(async () => ({ authenticated: true, accountId: viewer.id })) });
+    const bridge = fakeBridge({ getSession: vi.fn(async () => ({ authenticated: true, accountId: viewer.slotId })) });
     const controller = createWorkspaceController(bridge);
     await controller.bootstrap();
     expect(controller.has("project:create")).toBe(false);
@@ -76,8 +85,8 @@ describe("WorkspaceController", () => {
 
   it("keeps streamed chat cancellable and does not hide a cancellation", async () => {
     const bridge = fakeBridge({
-      streamChat: vi.fn((_id, _prompt, onChunk, signal) => new Promise<{ messageId: string }>((resolve, reject) => {
-        onChunk("partial");
+      streamChat: vi.fn((_id, _prompt, operationId, onEvent, signal) => new Promise<{ messageId: string }>((_resolve, reject) => {
+        onEvent({ operationId, type: "chunk", chunk: "partial" });
         signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
       }))
     });
@@ -111,5 +120,67 @@ describe("WorkspaceController", () => {
     controller.signOut();
     expect(controller.getState().auth).toBe("signed-out");
     expect(controller.getState().activeProject).toBeUndefined();
+  });
+
+  it("waits for the host account completion before loading projects", async () => {
+    let complete: ((account: AccountSlot) => void) | undefined;
+    const bridge = fakeBridge({
+      waitForAccountUpdate: vi.fn(() => new Promise<AccountSlot>((resolve) => { complete = resolve; })),
+      beginBrowserLogin: vi.fn(async () => ({ slotId: owner.slotId }))
+    });
+    const controller = createWorkspaceController(bridge);
+    const pending = controller.beginBrowserLogin();
+    await Promise.resolve();
+    expect(controller.getState().auth).toBe("browser-pending");
+    expect(bridge.listProjects).not.toHaveBeenCalled();
+    complete?.(owner);
+    await pending;
+    expect(controller.getState().auth).toBe("ready");
+    expect(bridge.listProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses project membership roles rather than the account slot role", async () => {
+    const readOnlyProject = { ...project, role: "viewer" as const };
+    const bridge = fakeBridge({ listProjects: vi.fn(async () => [readOnlyProject]), openProject: vi.fn(async () => ({ project: readOnlyProject, files: [] })) });
+    const controller = createWorkspaceController(bridge);
+    await controller.bootstrap();
+    await controller.openProject(project.id);
+    expect(controller.has("file:read")).toBe(true);
+    expect(controller.has("file:write")).toBe(false);
+    expect(controller.has("share")).toBe(false);
+  });
+
+  it("rejects stale project results after the active slot logs out", async () => {
+    let emit: ((event: AccountLifecycleEvent) => void) | undefined;
+    let finishOpen: ((value: { project: Project; files: never[] }) => void) | undefined;
+    const bridge = fakeBridge({
+      subscribeAccountEvents: vi.fn((listener) => { emit = listener; return () => undefined; }),
+      openProject: vi.fn(() => new Promise<{ project: Project; files: never[] }>((resolve) => { finishOpen = resolve; }))
+    });
+    const controller = createWorkspaceController(bridge);
+    await controller.bootstrap();
+    const opening = controller.openProject(project.id);
+    emit?.({ type: "logged-out", slotId: owner.slotId });
+    finishOpen?.({ project, files: [] });
+    await opening;
+    expect(controller.getState().auth).toBe("signed-out");
+    expect(controller.getState().activeProject).toBeUndefined();
+  });
+
+  it("exposes a preview handle and closes it through the host", async () => {
+    const close = vi.fn(async () => undefined);
+    const bridge = fakeBridge({ openPreview: vi.fn(async () => ({ id: "preview-1", title: "Preview", url: "https://example.test/preview", close })) });
+    const controller = createWorkspaceController(bridge);
+    await controller.bootstrap();
+    await controller.openProject(project.id);
+    await controller.openPreview();
+    expect(controller.getState().preview?.url).toBe("https://example.test/preview");
+    await controller.closePreview();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates the closed adapter schemas", () => {
+    expect(() => parseAccountSlot({ state: "ready" })).toThrow(BridgeSchemaError);
+    expect(() => parseProject({ id: "p", name: "P", description: "", updatedAt: "now", role: "admin", shared: false })).toThrow(BridgeSchemaError);
   });
 });
