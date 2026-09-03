@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { CODEX_PACKAGE_VERSION } from "./config.js";
 import { APP_SERVER_SCHEMA_ADAPTER } from "./protocol-schema.js";
 
@@ -10,6 +10,7 @@ export const BUNDLED_CODEX_MANIFEST_RELATIVE_PATH = join("codex", `${CODEX_PACKA
 export interface BundledRuntimeMetadata { executablePath: string; sha256: string; packageVersion: string; platform: "win32-x64"; schemaAdapterVersion: string; }
 
 export async function resolveBundledRuntime(resourcesRoot: string): Promise<BundledRuntimeMetadata> {
+  if (!isAbsolute(resourcesRoot)) throw new Error("Bundled resources root must be absolute");
   const root = resolve(resourcesRoot);
   const executablePath = resolve(root, BUNDLED_CODEX_RELATIVE_PATH);
   const manifestPath = resolve(root, BUNDLED_CODEX_MANIFEST_RELATIVE_PATH);

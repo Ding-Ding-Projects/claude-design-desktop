@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { PassThrough, Writable } from "node:stream";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, it } from "vitest";
-import { AccountHost, AppServerClient, CODEX_AUTH_KEYRING_SERVICE, deriveKeyringAccountKey, ensureCodexHome, readSafeConfig, type SpawnFn } from "../src/index.js";
+import { AccountHost, CODEX_AUTH_KEYRING_SERVICE, deriveKeyringAccountKey, ensureCodexHome, readSafeConfig } from "../src/index.js";
+import { AppServerClient, type SpawnFn } from "../src/jsonl-client.js";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
-  readonly stdin = new Writable({ write: (chunk, _encoding, callback) => { this.handle(JSON.parse(String(chunk).trim()) as { id?: number; method: string; params?: Record<string, unknown> }); callback(); } });
+  readonly messages: Array<{ id?: number; method?: string; params?: Record<string, unknown>; error?: { code: number } }> = [];
+  readonly stdin = new Writable({ write: (chunk, _encoding, callback) => { const message = JSON.parse(String(chunk).trim()) as { id?: number; method?: string; params?: Record<string, unknown>; error?: { code: number } }; this.messages.push(message); if (message.method) this.handle(message as { id?: number; method: string; params?: Record<string, unknown> }); callback(); } });
   killed = false;
   constructor(private readonly respondToRequests = true) { super(); }
   private handle(request: { id?: number; method: string; params?: Record<string, unknown> }): void {
@@ -26,6 +28,7 @@ class FakeChild extends EventEmitter {
   }
   kill(): boolean { this.killed = true; this.emit("exit", 0, null); return true; }
   notify(method: string, params: Record<string, unknown> = {}): void { this.stdout.write(`${JSON.stringify({ method, params })}\n`); }
+  notifyRequest(id: number, method: string, params: Record<string, unknown> = {}): void { this.stdout.write(`${JSON.stringify({ id, method, params })}\n`); }
 }
 function fakeSpawn(respondToRequests = true): { spawn: SpawnFn; children: FakeChild[] } { const children: FakeChild[] = []; const spawn: SpawnFn = () => { const child = new FakeChild(respondToRequests); children.push(child); return child as never; }; return { spawn, children }; }
 const roots: string[] = [];
@@ -56,10 +59,21 @@ describe("account host", () => {
   });
   it("refuses rate-limit reads while a turn is active until explicit interrupt", async () => {
     const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn });
-    const slot = await host.startLogin({ flow: "deviceCode" }); const child = fake.children[0]!; child.notify("account/login/completed", { loginId: slot.loginId, success: false }); await new Promise((resolve) => setImmediate(resolve)); const account = (await host.list())[0]!; await host.activate(account.slotId); const turn = await host.startTurn({ threadId: "thr_1", input: [{ type: "text", text: "hello" }] }); await assert.rejects(() => host.readRateLimits(account.slotId), /busy/); await host.interruptTurn("thr_1", turn.id); await host.close();
+    const slot = await host.startLogin({ flow: "deviceCode" }); const child = fake.children[0]!; child.notify("account/login/completed", { loginId: slot.loginId, success: false }); await new Promise((resolve) => setImmediate(resolve)); const account = (await host.list())[0]!; await host.activate(account.slotId); const turn = await host.startTurn({ threadId: "thr_1", input: [{ type: "text", text: "hello" }] }); await assert.rejects(() => host.readRateLimits(account.slotId), /busy/); const interruption = host.interruptTurn("thr_1", turn.id); fake.children[1]!.notify("turn/completed", { threadId: "thr_1", turn: { id: turn.id, status: "interrupted" } }); await interruption; await host.close();
   });
   it("enforces request deadlines and rejects unsupported methods before they reach the process", async () => {
     const fake = fakeSpawn(false); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn, requestTimeoutMs: 10 }); await client.start(); await assert.rejects(() => client.request("account/read", { refreshToken: false }), /timed out/); await client.close();
     const responsive = fakeSpawn(); const second = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: responsive.spawn }); await second.start(); await assert.rejects(() => second.request("not-a-stable-method")); await second.close();
+  });
+  it("replies to a server request without treating its id as a stale response", async () => {
+    const fake = fakeSpawn(); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn }); await client.start(); fake.children[0]!.notifyRequest(991, "server/request"); await new Promise((resolve) => setImmediate(resolve)); assert.equal(fake.children[0]!.messages.some((message) => message.error?.code === -32601), true); await client.close();
+  });
+  it("rejects stale login ids and removes a slot only after owner preflight and logout", async () => {
+    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn, prepareRemoval: async (slotId) => ({ slotId, ownedProjectIds: [], sharedProjectIds: [], canRemove: true }) });
+    const challenge = await host.startLogin({ flow: "deviceCode" }); await assert.rejects(() => host.cancelLogin("33333333-3333-3333-3333-333333333333"), /stale|unknown|invalid/i); await host.cancelLogin(challenge.loginId); const slot = (await host.list())[0]!; await host.remove({ slotId: slot.slotId, confirmed: true }); assert.equal((await host.list()).length, 0); await host.close();
+  });
+  it("maps local image handles through the authorized resolver instead of exposing paths", async () => {
+    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); let seenHandle = ""; const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn, resolveProjectFileHandle: async (handle) => { seenHandle = handle; return "C:\\project\\image.png"; } });
+    const challenge = await host.startLogin({ flow: "deviceCode" }); await host.cancelLogin(challenge.loginId); const slot = (await host.list())[0]!; await host.activate(slot.slotId); await host.startTurn({ threadId: "thr_1", input: [{ type: "localImage", projectFileHandle: "file-handle-1" }] }); assert.equal(seenHandle, "file-handle-1"); await host.close();
   });
 });

@@ -1,7 +1,5 @@
 export * from "./account-host.js";
 export * from "./config.js";
-export * from "./jsonl-client.js";
-export * from "./slot-store.js";
 export * from "./types.js";
 export * from "./bundled-runtime.js";
-export * from "./protocol-schema.js";
+export { APP_SERVER_SCHEMA_ADAPTER, MAX_PENDING_REQUESTS, MAX_VALUE_DEPTH } from "./protocol-schema.js";

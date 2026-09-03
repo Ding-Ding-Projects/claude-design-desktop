@@ -23,6 +23,7 @@ export class AppServerClient extends EventEmitter {
   private readonly pending = new Map<JsonRpcId, Pending>();
   private readonly completedIds = new Set<JsonRpcId>();
   private outputBuffer = Buffer.alloc(0);
+  private exitPromise: Promise<void> = Promise.resolve();
   constructor(options: AppServerClientOptions) { super(); this.options = { ...options, appVersion: options.appVersion ?? "0.1.0", requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS }; }
   get ready(): boolean { return this.state === "ready"; }
   async start(): Promise<void> {
@@ -33,6 +34,8 @@ export class AppServerClient extends EventEmitter {
       this.child = (this.options.spawn ?? spawn)(this.options.codexExecutable, ["app-server", "--listen", "stdio://"], { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (error) { this.state = "failed"; throw sanitizeError(error); }
     if (!this.child.stdin || !this.child.stdout) { this.state = "failed"; throw new Error("App-server stdio transport is unavailable"); }
+    const child = this.child;
+    this.exitPromise = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     this.child.stdout.on("data", (chunk: Buffer | string) => this.handleData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     this.child.stderr?.resume();
     this.child.on("error", (error) => this.fail(sanitizeError(error)));
@@ -62,6 +65,7 @@ export class AppServerClient extends EventEmitter {
     this.pending.clear();
     this.child.stdin?.end();
     if (!this.child.killed) this.child.kill();
+    await Promise.race([this.exitPromise, new Promise<void>((resolve) => setTimeout(resolve, 2_000))]);
     this.child = undefined;
   }
   private sendRequest(method: string, params: Record<string, unknown> | undefined, initializing: boolean): Promise<unknown> {
@@ -96,12 +100,12 @@ export class AppServerClient extends EventEmitter {
     try { assertProtocolLineSize(line); } catch (error) { this.fail(error as Error); return; }
     let message: JsonRpcResponse | JsonRpcNotification;
     try { message = JSON.parse(line) as JsonRpcResponse | JsonRpcNotification; validateResponseEnvelope(message); } catch { const error = new Error("App-server returned malformed or invalid JSON"); this.emit("protocolError", error); this.fail(error); return; }
+    if ("method" in message && typeof message.method === "string") { if ("id" in message && typeof message.id === "number") this.sendError(message.id, -32601, "Server-initiated requests are not supported"); else this.emit("notification", message); return; }
     if ("id" in message && typeof message.id === "number") {
       if (this.completedIds.has(message.id)) { this.fail(new Error("App-server returned a duplicate response id")); return; }
       const pending = this.pending.get(message.id); if (!pending) { this.fail(new Error("App-server returned a stale response id")); return; }
       this.pending.delete(message.id); this.completedIds.add(message.id); clearTimeout(pending.timer); pending.resolve(message); return;
     }
-    if ("method" in message && typeof message.method === "string") { if ("id" in message && typeof message.id === "number") this.sendError(message.id, -32601, "Server-initiated requests are not supported"); else this.emit("notification", message); return; }
     this.emit("protocolError", new Error("App-server returned an invalid JSON-RPC message"));
   }
   private fail(error: Error): void {
