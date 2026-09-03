@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "sourceTool": "built-in image_gen",
+  "inspection": {
+    "method": "built-in view_image",
+    "result": "Both generated images were inspected visually. The square mark is text-free, transparent, flat, violet with a small teal accent, and has a clear modular C/D silhouette with an editing cursor. The wide composition is text-free, has safe margins, uses the same identity, and contains abstract design-workspace panels without device framing or third-party marks."
+  },
+  "assets": {
+    "logoMaster": {
+      "path": "assets/branding/logo-master.png",
+      "sha256": "3b4ab9c1bec0dc19c5fa8bffa3be04313b635d0113b26222edd004f9a900ad15",
+      "dimensions": { "width": 1254, "height": 1254 },
+      "format": "PNG",
+      "alpha": "present and non-opaque",
+      "prompt": "Use case: logo-brand\nAsset type: original transparent square product mark for a desktop design application\nPrimary request: Create an original, scalable, minimal flat silhouette that subtly suggests the letters C and D through interlocking modular design panels and a precise editing cursor. The mark should feel like a confident creative workspace identity, with crisp geometry and balanced negative space.\nScene/backdrop: genuinely transparent background\nSubject: one centered abstract emblem, no wordmark\nStyle/medium: flat vector-like bitmap mark with clean hard edges, suitable for app icon and product branding\nComposition/framing: square 1:1 canvas, centered mark with generous clear margin, strong readability at small sizes\nColor palette: expressive violet as the dominant color with a small teal accent\nMaterials/textures: solid flat fills only, no texture\nText (verbatim): none\nConstraints: genuinely transparent alpha background; no text; no gradients; no 3D; no watermark; no drop shadow; no mockup; original design only; must not resemble any existing logo\nAvoid: letters rendered as literal typography, extra symbols, decorative clutter, photographic detail, glossy effects, bevels, metallic treatment, brand marks, signatures"
+    },
+    "socialPreviewMaster": {
+      "path": "assets/branding/social-preview-master.png",
+      "sha256": "3dabf6667af973b3ed31f767f7f3a33a6911cde9b96718ef282771348d382bd5",
+      "dimensions": { "width": 1774, "height": 887 },
+      "format": "PNG",
+      "alpha": "none",
+      "prompt": "Use case: ads-marketing\nAsset type: wide 2:1 social-preview composition for a desktop design application\nPrimary request: Create a polished wide composition using the same original visual identity as a violet modular C/D emblem with a small teal accent, paired with abstract local design-workspace panels. Include the emblem as the clear focal mark and a restrained arrangement of overlapping geometric panels that suggest a design editor without showing readable interface text.\nScene/backdrop: clean deep violet and charcoal workspace atmosphere with flat abstract panels and generous breathing room\nSubject: the original modular C/D-style product mark, plus abstract local design-workspace panels and a precise editing cursor motif\nStyle/medium: flat vector-like bitmap branding composition, crisp geometric forms, contemporary product identity\nComposition/framing: 2:1 landscape canvas, mark placed with generous safe margins and balanced empty space around it, no edge cropping, readable when shared as a social preview\nLighting/mood: calm, confident, precise, creative\nColor palette: expressive violet dominant, small teal accent, deep neutral supporting panels, high contrast\nMaterials/textures: solid flat fills, subtle opaque panel layering only\nText (verbatim): none\nConstraints: no text; no gradients; no 3D; no watermark; no third-party marks; no device mockup; no signatures; use the same visual identity as the square mark; original design only; no resemblance to any existing logo\nAvoid: interface labels, fake screenshots, browser chrome, laptops, phones, decorative clutter, photographic textures, glossy effects, bevels, metallic treatment",
+      "editPrompt": "Use case: precise-object-edit\nAsset type: final wide 2:1 social-preview composition\nPrimary request: Replace only the smooth tonal gradient in the backdrop with a single deep flat violet field and flat opaque panel fills. Preserve the original modular violet C/D-style mark, teal accent, editing cursor, panel geometry, layout, scale, and generous safe margins exactly.\nConstraints: change only the background treatment from gradient-like tonal variation to flat solid fills; preserve all subject geometry and colors; no text; no gradients; no 3D; no watermark; no third-party marks; no device mockup; no signatures; keep the same visual identity and 2:1 landscape composition"
+    },
+    "socialPreviewCopies": [
+      {
+        "path": "social-preview.png",
+        "sha256": "3dabf6667af973b3ed31f767f7f3a33a6911cde9b96718ef282771348d382bd5",
+        "dimensions": { "width": 1774, "height": 887 },
+        "format": "PNG",
+        "alpha": "none"
+      },
+      {
+        "path": "site/social-preview.png",
+        "sha256": "3dabf6667af973b3ed31f767f7f3a33a6911cde9b96718ef282771348d382bd5",
+        "dimensions": { "width": 1774, "height": 887 },
+        "format": "PNG",
+        "alpha": "none"
+      }
+    ],
+    "derivedDisplayAssets": [
+      { "path": "assets/branding/logo-16.png", "sha256": "b0e2736e2d292679d3db0c5792fa34b1c21b7307835d6f64e7a70536bda0b662", "dimensions": { "width": 16, "height": 16 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-24.png", "sha256": "befc9dbf984f4be5a5898c8a37d9072112a28912a1a93413e69028f53f98bd6f", "dimensions": { "width": 24, "height": 24 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-32.png", "sha256": "3b9315c013671fa0f742e42466e539d4105c513c264ec52149fe0b9f5d206e59", "dimensions": { "width": 32, "height": 32 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-48.png", "sha256": "485f6722268cec6994ed905d70f1d91b5c4cb042279b9606aca321925464b09f", "dimensions": { "width": 48, "height": 48 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-64.png", "sha256": "bc7960e78e3f519bc7fbe1b85507c88484ab92bd9c01c286514d53576627b311", "dimensions": { "width": 64, "height": 64 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-128.png", "sha256": "c1139e81a8078d01a8b61aba7a81592c3a40fc72073b348ef0acd08cb2db4e53", "dimensions": { "width": 128, "height": 128 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-256.png", "sha256": "110eda6d79bac0e98420b1c5ca4f9d6b313ef3b2923441e5dd6986055d0eb63f", "dimensions": { "width": 256, "height": 256 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/app-icon.ico", "sha256": "b60c6a864fb21dd26e29c28f0ea2bfa13ed1ba1ec51e3627f7d586bb628c0d8e", "dimensions": { "width": 256, "height": 256 }, "format": "ICO", "alpha": "present", "sizes": [16, 24, 32, 48, 64, 128, 256], "converter": "Pillow 12.3.0, deterministic LANCZOS resize from logo-master.png" }
+    ]
+  }
+}
