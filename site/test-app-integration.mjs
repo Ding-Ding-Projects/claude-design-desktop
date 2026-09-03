@@ -12,6 +12,7 @@ assert.match(source, /dispatchSearch\(regexTarget\)/);
 assert.match(source, /menu\.dataset\.searchSurface = 'context-menu'/);
 assert.match(source, /surface\.dataset\.searchSurface === 'context-menu'/);
 assert.match(source, /new Worker\('\.\/regex-worker\.js'/);
+assert.match(source, /regexDispatcher\.apply/);
 
 const writes = [];
 const controller = createVisitorController({ set: async (key, value) => writes.push({ key, value }) });

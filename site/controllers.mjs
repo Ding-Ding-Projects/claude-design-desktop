@@ -73,3 +73,16 @@ export function matchRows(rows, pattern, flags = 'giu', mode = 'regex') {
   const expression = new RegExp(source, flags);
   return rows.map((row) => { expression.lastIndex = 0; const matched = expression.test(String(row)); expression.lastIndex = 0; return matched; });
 }
+
+export function createRegexResultDispatcher() {
+  let latestRequest = 0;
+  return {
+    nextRequest() { latestRequest += 1; return latestRequest; },
+    apply(rows, matches, requestId) {
+      if (requestId !== latestRequest) return false;
+      rows.forEach((row, index) => { row.hidden = !matches[index]; });
+      return true;
+    },
+    currentRequest() { return latestRequest; }
+  };
+}

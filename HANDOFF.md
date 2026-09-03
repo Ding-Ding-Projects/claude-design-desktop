@@ -13,11 +13,12 @@ This lane owns the static documentation and landing-site source in `site/` and `
 - `site/test-static.mjs` checks the hand-written inventory, article parity, responsive metadata, strict CSP, absence of premature Open Graph image metadata, local article rendering, and no remote script or stylesheet. It includes a deliberate mutation probe that must fail before restoring the source.
 - `site/test-behavior.mjs` executes controller behavior for tab creation, pinning, grouping, persistence, lock interception, unlock, and scoped search.
 - `site/test-app-integration.mjs` proves `app.js` imports the controllers, uses their mutation and lock methods, binds the context-menu search scope, and starts bounded regex evaluation.
+- `site/test-regex-dispatch.mjs` exercises asynchronous feature, docs, and context-menu results and proves an older worker response cannot overwrite a newer request.
 - Root documentation records the extraction baseline and does not claim an installer or release.
 
 ## Verification
 
-`node --check site/app.js`, `node site/test-static.mjs`, and `node site/test-behavior.mjs` are the focused source checks for this lane. They validate source contracts and controller behavior only. Final built-artifact, accessibility, touch-device, hosted-site, image, installer, and release verification are not complete here.
+`node --check site/app.js`, `node site/test-static.mjs`, `node site/test-behavior.mjs`, `node site/test-app-integration.mjs`, and `node site/test-regex-dispatch.mjs` are the focused source checks for this lane. They validate source contracts and controller behavior only. Final built-artifact, accessibility, touch-device, hosted-site, image, installer, and release verification are not complete here.
 
 ## Remaining work
 

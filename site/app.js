@@ -1,5 +1,5 @@
 import { openVersionedStore } from './storage.js';
-import { createVisitorController, interceptLockedActivation, styleFunnyCopy } from './controllers.mjs';
+import { createVisitorController, createRegexResultDispatcher, interceptLockedActivation, styleFunnyCopy } from './controllers.mjs';
 
 export const FEATURE_IDS = [
   'language-modes', 'dialog-emoji-toggle', 'school-mode', 'narration', 'scheduled-settings',
@@ -181,7 +181,7 @@ function dispatchSearch(inputId) {
   const scope = surface.dataset.searchSurface === 'features-search' ? '#feature-list [data-feature]' : surface.dataset.searchSurface === 'docs-search' ? '#docs-list [data-doc]' : surface.dataset.searchSurface === 'context-menu' ? 'button[data-context-action]' : null;
   const rows = scope ? surface.querySelectorAll(scope) : surface.closest('.card')?.querySelectorAll('.status-card, .setting, .empty-state, .feature-row');
   const rowValues = [...rows || []].map((row) => row.textContent);
-  if (stateForInput?.mode === 'regex' && stateForInput.valid) { const request = ++regexRequest; runBoundedRegex(stateForInput.pattern, stateForInput.flags, rowValues).then((result) => { if (request !== regexRequest) return; rows?.forEach((row, index) => { row.hidden = Boolean(query && !result.matches[index]); }); surface.dataset.resultCount = String(result.matches.filter(Boolean).length); }).catch(() => { rows?.forEach((row) => { row.hidden = Boolean(query); }); surface.dataset.resultCount = '0'; }); } else { const matcher = (text) => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()); rows?.forEach((row) => { row.hidden = Boolean(query && !matcher(row.textContent)); }); }
+  if (stateForInput?.mode === 'regex' && stateForInput.valid) { const request = regexDispatcher.nextRequest(); runBoundedRegex(stateForInput.pattern, stateForInput.flags, rowValues, request).then((result) => { if (!regexDispatcher.apply([...rows || []], result.matches, request)) return; surface.dataset.resultCount = String(result.matches.filter(Boolean).length); }).catch(() => { if (request !== regexDispatcher.currentRequest()) return; rows?.forEach((row) => { row.hidden = Boolean(query); }); surface.dataset.resultCount = '0'; }); } else { const matcher = (text) => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()); rows?.forEach((row) => { row.hidden = Boolean(query && !matcher(row.textContent)); }); }
   surface.dataset.query = query;
   surface.dataset.mode = stateForInput?.mode || 'text';
   surface.dataset.resultCount = String([...rows || []].filter((row) => !row.hidden).length);
@@ -238,13 +238,13 @@ const regexState = new Map();
 const MAX_REGEX_PATTERN = 2048;
 const MAX_REGEX_SAMPLE = 100000;
 let regexWorker = null;
-let regexRequest = 0;
-function runBoundedRegex(pattern, flags, samples) {
+const regexDispatcher = createRegexResultDispatcher();
+function runBoundedRegex(pattern, flags, samples, requestId) {
   if (typeof Worker === 'undefined') return Promise.reject(new Error('Regex mode is unavailable because a bounded worker is not supported.'));
   if (pattern.length > MAX_REGEX_PATTERN || samples.some((sample) => String(sample).length > MAX_REGEX_SAMPLE)) return Promise.reject(new Error('Regex input exceeds the local safety bound.'));
   regexWorker ||= new Worker('./regex-worker.js');
   const worker = regexWorker;
-  return new Promise((resolve, reject) => { const id = ++regexRequest; const timer = setTimeout(() => { worker.terminate(); regexWorker = null; reject(new Error('Regex evaluation exceeded the bounded worker time.')); }, 120); const listener = (event) => { if (event.data?.id !== id) return; clearTimeout(timer); worker.removeEventListener('message', listener); event.data.ok ? resolve({ matches: event.data.results }) : reject(new Error(event.data.error)); }; worker.addEventListener('message', listener); worker.postMessage({ id, pattern, flags, samples }); });
+  return new Promise((resolve, reject) => { const id = requestId; const timer = setTimeout(() => { worker.terminate(); regexWorker = null; reject(new Error('Regex evaluation exceeded the bounded worker time.')); }, 120); const listener = (event) => { if (event.data?.id !== id) return; clearTimeout(timer); worker.removeEventListener('message', listener); event.data.ok ? resolve({ matches: event.data.results }) : reject(new Error(event.data.error)); }; worker.addEventListener('message', listener); worker.postMessage({ id, pattern, flags, samples }); });
 }
 function openRegex(target) {
   regexTarget = target || null;
@@ -266,7 +266,8 @@ function evaluateRegex() {
   if (!pattern) { status.textContent = 'Enter a pattern to inspect matches.'; status.className = 'inline-status'; explanation.textContent = 'No pattern yet'; matches.textContent = '0'; if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: false }); return; }
   if (mode === 'text') { try { const literal = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); const expression = new RegExp(literal, flags); expression.lastIndex = 0; const found = [...sample.matchAll(expression)]; status.textContent = 'Plain text is valid and evaluated locally.'; status.className = 'inline-status verified'; explanation.textContent = `Literal search with ${pattern.length} characters`; matches.textContent = String(found.length); if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: true }); } catch (error) { status.textContent = `Pattern is invalid: ${error.message}`; status.className = 'inline-status error'; explanation.textContent = 'No match evaluation'; matches.textContent = '0'; if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: false }); } return; }
   if (typeof Worker === 'undefined') { status.textContent = 'Regex mode is unavailable because a bounded worker is not supported.'; status.className = 'inline-status error'; if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: false }); return; }
-  runBoundedRegex(pattern, flags, [sample]).then((result) => { status.textContent = 'Pattern is valid and evaluated in a bounded worker.'; status.className = 'inline-status verified'; explanation.textContent = `/${pattern}/${flags} with bounded worker evaluation`; matches.textContent = String(result.matches.filter(Boolean).length); if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: true }); }).catch((error) => { status.textContent = `Pattern is invalid or exceeded the worker bound: ${error.message}`; status.className = 'inline-status error'; explanation.textContent = 'No match evaluation'; matches.textContent = '0'; if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: false }); });
+  const request = regexDispatcher.nextRequest();
+  runBoundedRegex(pattern, flags, [sample], request).then((result) => { if (request !== regexDispatcher.currentRequest()) return; status.textContent = 'Pattern is valid and evaluated in a bounded worker.'; status.className = 'inline-status verified'; explanation.textContent = `/${pattern}/${flags} with bounded worker evaluation`; matches.textContent = String(result.matches.filter(Boolean).length); if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: true }); }).catch((error) => { if (request !== regexDispatcher.currentRequest()) return; status.textContent = `Pattern is invalid or exceeded the worker bound: ${error.message}`; status.className = 'inline-status error'; explanation.textContent = 'No match evaluation'; matches.textContent = '0'; if (regexTarget) regexState.set(regexTarget, { mode, pattern, flags, valid: false }); });
 }
 
 document.querySelector('#regex-pattern').addEventListener('input', evaluateRegex);
