@@ -5,7 +5,8 @@ export async function safeProjectPath(root: string, relativePath: string): Promi
   if (typeof relativePath !== "string" || !relativePath.trim()) throw new UnsafeProjectPathError("A project path is required.");
   if (path.isAbsolute(relativePath) || /^[a-zA-Z]:[\\/]/.test(relativePath) || /^\\\\/.test(relativePath)) throw new UnsafeProjectPathError("Absolute and device paths are not allowed.");
   const parts = relativePath.replaceAll("\\", "/").split("/");
-  if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\0"))) throw new UnsafeProjectPathError("Traversal, empty segments, and NUL bytes are not allowed.");
+  const reserved = /^(con|prn|aux|nul|clock\$|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+  if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\0") || part.includes(":") || /[. ]$/.test(part) || reserved.test(part))) throw new UnsafeProjectPathError("Traversal, ADS, reserved device names, trailing dots or spaces, and NUL bytes are not allowed.");
   const rootAbsolute = path.resolve(root); const candidate = path.resolve(rootAbsolute, ...parts); const prefix = rootAbsolute.endsWith(path.sep) ? rootAbsolute : `${rootAbsolute}${path.sep}`;
   if (candidate !== rootAbsolute && !candidate.startsWith(prefix)) throw new UnsafeProjectPathError("The path escapes the project workspace.");
   let current = rootAbsolute;

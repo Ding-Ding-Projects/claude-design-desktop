@@ -27,7 +27,8 @@ async function run(): Promise<void> {
     await expectCode(() => service.writeFile({ projectId: project.id, actorSlotId: "editor", path: "../escape", content: "no" }), "UNSAFE_PROJECT_PATH");
     await expectCode(() => service.writeFile({ projectId: project.id, actorSlotId: "editor", path: "blocked.txt", content: "no", expectedVersion: 99 }), "VERSION_CONFLICT");
     await expectCode(() => service.addComment({ projectId: project.id, actorSlotId: "owner", body: "comment" }).then(() => service.removeAccount("owner")), "ACCOUNT_OWNS_PROJECTS");
-    await service.transferOwnership(project.id, "owner", "editor");
+    await assert.rejects(() => service.transferOwnership(project.id, "owner", "editor", { firstKeyVerified: true, secondKeyVerified: false, sliderProgress: 1, receipt: "" }));
+    await service.transferOwnership(project.id, "owner", "editor", { firstKeyVerified: true, secondKeyVerified: true, sliderProgress: 1, receipt: "transfer-receipt" });
     assert.equal((await service.role(project.id, "editor")), "owner");
     assert.equal((await service.role(project.id, "owner")), "editor");
     await service.removeAccount("owner");
@@ -42,6 +43,8 @@ async function run(): Promise<void> {
     assert.equal(state.projects.length, 2);
     assert.ok(state.history.some((revision) => revision.action === "created"));
     await assert.rejects(() => safeProjectPath(root, "C:\\temp\\bad.txt"));
+    await assert.rejects(() => safeProjectPath(root, "CON.txt"));
+    await assert.rejects(() => safeProjectPath(root, "notes:stream"));
   } finally {
     service?.close();
     await rm(root, { recursive: true, force: true });
