@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { newId, nowIso, type HistoryRevision } from "../../project-domain/src/model";
@@ -7,7 +7,7 @@ const run = promisify(execFile); const SENSITIVE = /(secret|token|password|crede
 export class LocalGitHistory {
   constructor(private readonly root: string) {}
   async record(projectId: string, workspace: string, action: string, summary: string, metadata: Record<string, unknown> = {}): Promise<HistoryRevision> {
-    const repo = path.join(this.root, "projects", `${projectId}.git`); const snapshot = path.join(this.root, "snapshots", projectId); await mkdir(repo, { recursive: true }); await mkdir(snapshot, { recursive: true });
+    const repo = path.join(this.root, "projects", `${projectId}.git`); const snapshot = path.join(this.root, "snapshots", projectId); await mkdir(repo, { recursive: true }); await rm(snapshot, { recursive: true, force: true }); await mkdir(snapshot, { recursive: true });
     try { await run("git", ["--git-dir", repo, "rev-parse", "--git-dir"]); } catch { await run("git", ["init", "--bare", repo]); }
     await cp(workspace, snapshot, { recursive: true, force: true }); await writeFile(path.join(snapshot, ".project-history-event.json"), JSON.stringify({ action, summary, metadata: redact(metadata), createdAt: nowIso() }));
     const env = { ...process.env, GIT_DIR: repo, GIT_WORK_TREE: snapshot, GIT_AUTHOR_NAME: "Claude Fable 5.1", GIT_AUTHOR_EMAIL: "noreply@anthropic.com", GIT_COMMITTER_NAME: "Claude Fable 5.1", GIT_COMMITTER_EMAIL: "noreply@anthropic.com" }; await run("git", ["add", "-A"], { env }); let commit: string | null = null;

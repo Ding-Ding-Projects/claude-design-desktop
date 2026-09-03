@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { inflateRawSync } from "node:zlib";
 import { DomainError, ProjectDomainService } from "../../project-domain/src/index";
 import { nowIso, type MigrationReceipt } from "../../project-domain/src/model";
 export const MIGRATION_FORMAT = "claude-design-desktop-import-v1"; export const SOURCE_COMMIT = "4a3c267e7e22f6636a02542554309cd49cd41e9d";
@@ -13,3 +15,44 @@ export async function importMigrationArchive(service: ProjectDomainService, arch
 async function scan(archive: MigrationArchive): Promise<{ safeEntries: ArchiveEntry[]; excluded: MigrationPreflight["excluded"]; errors: string[]; totalBytes: number }> { const safeEntries: ArchiveEntry[] = []; const excluded: MigrationPreflight["excluded"] = []; const errors: string[] = []; const names = new Set<string>(); let totalBytes = 0; for await (const raw of archive.entries) { const name = raw.name.replaceAll("\\", "/"); if (!name || name.startsWith("/") || /^[a-zA-Z]:/.test(name) || name.split("/").some((part) => part === ".." || part === "")) { errors.push(`Unsafe archive path: ${raw.name}.`); continue; } if (names.has(name)) { errors.push(`Duplicate archive path: ${name}.`); continue; } names.add(name); if (raw.symlink || raw.reparsePoint) { errors.push(`Links are not accepted: ${name}.`); continue; } if (raw.bytes.byteLength > MAX_ENTRY_BYTES) { errors.push(`Archive entry is too large: ${name}.`); continue; } totalBytes += raw.bytes.byteLength; if (totalBytes > MAX_TOTAL_BYTES) { errors.push("Archive exceeds the total byte limit."); continue; } if (FORBIDDEN.test(name)) { excluded.push({ name, reason: "secret, browser, gateway, request-log, cache, or telemetry data is never imported" }); continue; } safeEntries.push({ ...raw, name }); } return { safeEntries, excluded, errors, totalBytes }; }
 function fingerprint(manifest: ImportManifest): string { return createHash("sha256").update(JSON.stringify({ format: manifest.format, schemaVersion: manifest.schemaVersion, sourceDatabaseSha256: manifest.sourceDatabaseSha256, idempotencyKey: manifest.idempotencyKey, fileHashes: manifest.fileHashes })).digest("hex"); }
 function safeId(value: string): string { const clean = value.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^[-.]+/, "").slice(0, 100); return clean || `import_${randomUUID()}`; }
+
+/** Read a ZIP using the format's central directory, preserving entry bytes. */
+export async function readZipMigrationArchive(sourcePath: string): Promise<MigrationArchive> {
+  const compressed = await readFile(sourcePath);
+  if (compressed.byteLength > MAX_TOTAL_BYTES) throw new DomainError("MIGRATION_TOO_LARGE", "The compressed archive exceeds the byte limit.");
+  const end = findSignature(compressed, 0x06054b50, Math.max(0, compressed.length - 65_557));
+  if (end < 0) throw new DomainError("MIGRATION_ZIP", "The archive has no ZIP end record.");
+  const directorySize = compressed.readUInt32LE(end + 12); const directoryOffset = compressed.readUInt32LE(end + 16); const count = compressed.readUInt16LE(end + 10);
+  if (directoryOffset + directorySize > compressed.length || count > 100_000) throw new DomainError("MIGRATION_ZIP", "The ZIP central directory is invalid or too large.");
+  const entries: ArchiveEntry[] = []; let cursor = directoryOffset; let total = 0; let manifest: ImportManifest | undefined;
+  for (let index = 0; index < count; index += 1) {
+    if (compressed.readUInt32LE(cursor) !== 0x02014b50) throw new DomainError("MIGRATION_ZIP", "The ZIP central directory entry is malformed.");
+    const flags = compressed.readUInt16LE(cursor + 8); const method = compressed.readUInt16LE(cursor + 10); const packedSize = compressed.readUInt32LE(cursor + 20); const unpackedSize = compressed.readUInt32LE(cursor + 24); const nameLength = compressed.readUInt16LE(cursor + 28); const extraLength = compressed.readUInt16LE(cursor + 30); const commentLength = compressed.readUInt16LE(cursor + 32); const externalAttributes = compressed.readUInt32LE(cursor + 38); const localOffset = compressed.readUInt32LE(cursor + 42); const name = compressed.subarray(cursor + 46, cursor + 46 + nameLength).toString((flags & 0x800) ? "utf8" : "latin1");
+    cursor += 46 + nameLength + extraLength + commentLength; total += unpackedSize; if (total > MAX_TOTAL_BYTES || (packedSize > 0 && unpackedSize / packedSize > 1_000)) throw new DomainError("MIGRATION_ZIP", `ZIP expansion limits exceeded at ${name}.`);
+    if (flags & 1) throw new DomainError("MIGRATION_ZIP", `Encrypted ZIP entries are not supported: ${name}.`);
+    if (compressed.readUInt32LE(localOffset) !== 0x04034b50) throw new DomainError("MIGRATION_ZIP", `ZIP local header is invalid: ${name}.`);
+    const localNameLength = compressed.readUInt16LE(localOffset + 26); const localExtraLength = compressed.readUInt16LE(localOffset + 28); const dataStart = localOffset + 30 + localNameLength + localExtraLength; const dataEnd = dataStart + packedSize; if (dataEnd > compressed.length) throw new DomainError("MIGRATION_ZIP", `ZIP entry is truncated: ${name}.`);
+    const packed = compressed.subarray(dataStart, dataEnd); const bytes = method === 0 ? packed : method === 8 ? inflateRawSync(packed, { maxOutputLength: MAX_ENTRY_BYTES }) : (() => { throw new DomainError("MIGRATION_ZIP", `Unsupported ZIP compression method ${method}: ${name}.`); })(); if (bytes.byteLength !== unpackedSize) throw new DomainError("MIGRATION_ZIP", `ZIP size mismatch: ${name}.`);
+    const entry: ArchiveEntry = { name, bytes, symlink: ((externalAttributes >>> 16) & 0xf000) === 0xa000, reparsePoint: false }; entries.push(entry); if (name === "manifest.json") manifest = parseManifest(bytes);
+  }
+  if (!manifest) throw new DomainError("MIGRATION_MANIFEST", "The archive is missing manifest.json.");
+  for (const entry of entries) { const expected = manifest.fileHashes[entry.name]; if (expected && createHash("sha256").update(entry.bytes).digest("hex") !== expected) throw new DomainError("MIGRATION_HASH", `SHA-256 mismatch for ${entry.name}.`); }
+  return { entries, manifest };
+}
+
+function parseManifest(bytes: Uint8Array): ImportManifest {
+  const value = parseStrictJson(Buffer.from(bytes).toString("utf8")) as Record<string, any>; const keys = new Set(["format","schemaVersion","sourceProductVersion","sourceCommit","sourceDatabaseSha256","exportedAt","idempotencyKey","recordCounts","exclusionCounts","fileHashes"]);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new DomainError("MIGRATION_MANIFEST", "The manifest must be an object.");
+  for (const key of Object.keys(value)) if (!keys.has(key)) throw new DomainError("MIGRATION_MANIFEST", `Unknown manifest field: ${key}.`);
+  if (value.format !== MIGRATION_FORMAT || value.schemaVersion !== 1 || typeof value.sourceProductVersion !== "string" || typeof value.sourceCommit !== "string" || typeof value.sourceDatabaseSha256 !== "string" || typeof value.exportedAt !== "string" || typeof value.idempotencyKey !== "string" || !value.idempotencyKey) throw new DomainError("MIGRATION_MANIFEST", "Manifest fields are missing or invalid.");
+  for (const hash of [value.sourceDatabaseSha256, ...Object.values(value.fileHashes as Record<string, unknown>)]) if (typeof hash !== "string" || !/^[a-f0-9]{64}$/i.test(hash)) throw new DomainError("MIGRATION_MANIFEST", "Manifest hashes must be SHA-256 values.");
+  for (const collection of [value.recordCounts, value.exclusionCounts, value.fileHashes]) if (!collection || typeof collection !== "object" || Array.isArray(collection) || Object.values(collection).some((n) => typeof n !== "number" && typeof n !== "string")) throw new DomainError("MIGRATION_MANIFEST", "Manifest count and hash maps are invalid.");
+  return value as ImportManifest;
+}
+
+function parseStrictJson(text: string): unknown {
+  const value = JSON.parse(text) as unknown; const scopes: Array<Set<string>> = []; let quoted = false; let escaped = false; let key = "";
+  for (let i = 0; i < text.length; i += 1) { const char = text[i]; if (quoted) { if (escaped) escaped = false; else if (char === "\\") escaped = true; else if (char === '"') quoted = false; continue; } if (char === '"') { const start = i++; let out = ""; while (i < text.length) { const c = text[i++]; if (c === "\\") { out += c + (text[i++] || ""); } else if (c === '"') break; else out += c; } while (/\s/.test(text[i] || "")) i += 1; if (text[i] === ":" && scopes.length) { key = JSON.parse(`"${out.replaceAll('"', '\\\"')}"`); const scope = scopes[scopes.length - 1]; if (scope.has(key)) throw new DomainError("MIGRATION_MANIFEST", `Duplicate manifest field: ${key}.`); scope.add(key); } else { quoted = false; } i -= 1; continue; } if (char === "{") scopes.push(new Set()); else if (char === "}") scopes.pop(); }
+  return value;
+}
+function findSignature(bytes: Uint8Array, signature: number, start: number): number { for (let i = bytes.length - 22; i >= start; i -= 1) if ((bytes[i] | bytes[i + 1] << 8 | bytes[i + 2] << 16 | bytes[i + 3] << 24) >>> 0 === signature) return i; return -1; }
