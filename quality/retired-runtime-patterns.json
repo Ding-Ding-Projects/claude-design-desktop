@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "inventoryId": "claude-design-desktop-retired-runtime",
+  "scanRoots": ["build", "packages", "docs"],
+  "rules": [
+    {
+      "id": "old-hosted-design-url",
+      "description": "The retired hosted design origin must not be shipped.",
+      "patterns": ["https://claude-design\\.ccrdesk\\.top", "https://claude\\.ai/design"]
+    },
+    {
+      "id": "default-me-fixture",
+      "description": "The retired DEFAULT_ME fixture must not be shipped.",
+      "patterns": ["\\b(?:const|let|var)\\s+DEFAULT_ME\\s*="]
+    },
+    {
+      "id": "router-imports-and-config",
+      "description": "Legacy router and gateway imports or configuration must not be shipped.",
+      "patterns": ["^\\s*(?:import|export)\\b[^\\r\\n;]*(?:router|gateway)", "\\bgateway(?:Origin|Auth|Url|Package|Runtime|Model)", "\\brouter(?:Endpoint|Default)\\b"]
+    },
+    {
+      "id": "ccr-protocol",
+      "description": "The retired ccr protocol handler must not be shipped.",
+      "patterns": ["ccr://"]
+    },
+    {
+      "id": "cdp-interception",
+      "description": "CDP Fetch interception must not be shipped.",
+      "patterns": ["Fetch\\.enable", "Fetch\\.requestPaused", "CDP Fetch interceptor"]
+    },
+    {
+      "id": "webrequest-interception",
+      "description": "Electron webRequest interception must not be shipped.",
+      "patterns": ["\\bwebRequest\\.onBeforeRequest\\b", "\\bsession\\.webRequest\\b"]
+    },
+    {
+      "id": "request-body-logging",
+      "description": "Request and response body logging must not be shipped.",
+      "patterns": ["\\bmaybeLogRequest\\b", "request_body\\s+TEXT", "response_body\\s+TEXT", "log-body\\.worker"]
+    },
+    {
+      "id": "legacy-runtime-paths",
+      "description": "Legacy runtime and hosted asset path wiring must not be shipped.",
+      "patterns": ["\\blegacyDistDir\\b", "CCR_CLAUDE_DESIGN_FRONTEND_URL", "CCR_CLAUDE_SHIP_FRONTEND_ORIGIN", "CCR_RESOURCE_RUNTIME_PATH", "DEFAULT_FRONTEND_ASSETS_ORIGIN"]
+    },
+    {
+      "id": "package-output-wiring",
+      "description": "Legacy gateway package output must not be shipped.",
+      "patterns": ["electronGatewayRuntimeOutput", "electronBotGatewaySdkPackageOutput", "botGatewaySdkRunnerOutput", "next-ai-gateway\\.js", "bot-gateway-stdio\\.mjs"]
+    }
+  ]
+}
