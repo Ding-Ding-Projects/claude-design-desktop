@@ -1,28 +1,65 @@
 # Handoff
 
-## Scope
+## Current state
 
-This lane owns the static documentation and landing-site source in `site/` and `docs/`. It does not own the desktop runtime, app-server integration, compatibility adapters, packaging, releases, or router removal.
+This working tree carries the product-record lane for the standalone Claude Design Desktop extraction. The lane is based on source commit `4a3c267e7e22f6636a02542554309cd49cd41e9d` from `Ding-Ding-Projects/claude-code-router` and is checked out on `codex/product-docs`.
 
-## Implemented
+The shipping product contract is local-only. It never contacts the hosted shell at `https://claude-design.ccrdesk.top/design` and never contacts the legacy router. The source files that implement those historical compatibility paths are extraction material and must be removed from the shipping tip.
 
-- `site/index.html`, `site/styles.css`, and `site/app.js` form a local-asset responsive surface with tabs, visitor settings, local search, anchored regex workbench, command palette, context actions, status, downloads, changelog, and provenance states.
-- `site/storage.js` provides a versioned IndexedDB visitor store for tab, group, lock, and other larger local state; `site/controllers.mjs` contains executable tab, group, lock, and scoped-search controllers.
-- `site/regex-worker.js` runs regex-mode matching off the main page thread with 2,048-character pattern and 100,000-character sample bounds; multi-factor lock policies remain visible but disabled with exact pending-verifier reasons in the browser-only preview.
-- `docs/README.md` indexes thirty feature articles under `docs/features/`.
-- `site/test-static.mjs` checks the hand-written inventory, article parity, responsive metadata, strict CSP, absence of premature Open Graph image metadata, local article rendering, and no remote script or stylesheet. It includes a deliberate mutation probe that must fail before restoring the source.
-- `site/test-behavior.mjs` executes controller behavior for tab creation, pinning, grouping, persistence, lock interception, unlock, and scoped search.
-- `site/test-app-integration.mjs` proves `app.js` imports the controllers, uses their mutation and lock methods, binds the context-menu search scope, and starts bounded regex evaluation.
-- `site/test-regex-dispatch.mjs` exercises asynchronous feature, docs, and context-menu results and proves an older worker response cannot overwrite a newer request.
-- Root documentation records the extraction baseline and does not claim an installer or release.
+## Stable identity contract
 
-## Verification
+| Field | Stable value |
+| --- | --- |
+| Package | `@ding-ding-projects/claude-design-desktop` |
+| App ID | `com.dingdingprojects.claudedesigndesktop` |
+| Executable | `Claude Design Desktop.exe` |
+| Protocol | `claude-design-desktop://` |
+| Local data root | `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop` |
+| Public URL | `https://ding-ding-projects.github.io/claude-design-desktop/` |
 
-`node --check site/app.js`, `node site/test-static.mjs`, `node site/test-behavior.mjs`, `node site/test-app-integration.mjs`, and `node site/test-regex-dispatch.mjs` are the focused source checks for this lane. They validate source contracts and controller behavior only. Final built-artifact, accessibility, touch-device, hosted-site, image, installer, and release verification are not complete here.
+The display label is presentation-only. It must not alter any identity field or local data location.
 
-## Remaining work
+The product-record lane added public root records and categorized product documentation. The integrated tree now also contains the reviewed runtime-shell foundation and the reviewed public preview foundation. Release tooling, account and project hosts, migration, captures, packaging, and stable release remain open.
 
-- Merge with the integrated runtime and generate the offline article bundle from this source.
-- Bind `site/version.json` to the running release provenance, then replace the intentionally unavailable updated-at state.
-- Generate and verify the product-specific social preview and real captures from the packaged application.
-- Add the immutable verified installer link only after publication evidence exists.
+## Integrated preview foundation
+
+- `site/index.html`, `site/styles.css`, and `site/app.js` form a local-asset responsive preview.
+- `site/storage.js` provides versioned IndexedDB visitor state, while `site/controllers.mjs` owns tab, group, lock, and scoped-search behavior.
+- `site/regex-worker.js` provides bounded off-main-thread regex evaluation. Multi-factor choices without a verifier remain visible only as disabled options with exact pending reasons.
+- `docs/README.md` indexes thirty feature articles under `docs/features/`. Every feature row remains pending full implementation and built evidence.
+- `site/test-static.mjs`, `site/test-behavior.mjs`, `site/test-app-integration.mjs`, and `site/test-regex-dispatch.mjs` pass on the integrated source. They are source and controller checks, not deployed-site or capture proof.
+
+## Verified records
+
+| Record | Evidence | State |
+| --- | --- | --- |
+| Product identity and scope | `README.md`, `docs/product/overview.md` | Verified as documentation |
+| MIT license | `LICENSE` | Preserved from source baseline |
+| Third-party notice | `THIRD_PARTY_NOTICES.md` | Notice recorded; runtime package not yet present |
+| Security model | `SECURITY.md`, `docs/product/security.md` | Verified as documentation |
+| Source extraction provenance | `provenance/extraction.md` | Baseline and filter recorded |
+| Stable identity | `README.md`, `docs/product/overview.md` | Values recorded; runtime proof pending integration |
+| Shell source checks | `package.json`, `apps/desktop`, `packages/ui-shell` | Integrated; 22 focused tests passed before this merge |
+| Public preview source checks | `site/test-*.mjs` | Integrated; source and controller checks passed |
+| Release build route | `CONTRIBUTING.md`, `docs/product/build-and-contribute.md` | Planned; installer path not yet verified |
+| Captures and recording | `README.md`, `ROADMAP.md` | Pending; no real capture exists |
+
+## Open blockers
+
+1. The current extraction has a root package manifest and focused shell checks, but no verified one-click installer build, so no runnable packaged product or installer can be claimed yet.
+2. The target repository's remote has no published refs yet. Verify the first intended default-branch push and release transaction before cleanup.
+3. The repository has no verified capture or recording in this baseline.
+4. The `@openai/codex` runtime notice is recorded, but its exact packaged version and source revision must be added when the runtime lane lands.
+5. The 16,728-line historical module `packages/electron/bundled-plugins/claude-design/index.cjs` is present in the extraction material and must be absent from the shipping tip.
+6. The shipping product still needs a router bridge migration proof followed by bridge removal proof. No router bridge may remain in the 1.0.0 shipping product.
+
+## Next owner
+
+The integration owner has reconciled the nine root-record add/add conflicts by retaining product identity and provenance together with the current preview implementation and source checks. Next, integrate the remaining reviewed domain packages, remove the historical hosted/runtime paths from the shipping tree, run the real build and installer routes, and replace this source-only handoff with exact packaged evidence. Preserve the 2025 `musistudio` MIT notice and complete the router bridge migration then removal before 1.0.0. Keep every open roadmap item unticked until the corresponding built-product proof exists.
+
+## Suggested reading
+
+- [`docs/product/overview.md`](docs/product/overview.md)
+- [`docs/product/licensing.md`](docs/product/licensing.md)
+- [`docs/product/security.md`](docs/product/security.md)
+- [`docs/product/release-readiness.md`](docs/product/release-readiness.md)
