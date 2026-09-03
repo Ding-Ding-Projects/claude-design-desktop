@@ -5,7 +5,8 @@ button, input { font: inherit; }
 button { border: 0; cursor: pointer; }
 button:focus-visible, input:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; }
-.titlebar { height: 48px; display: flex; align-items: center; background: #151820; border-bottom: 1px solid #2c313b; user-select: none; -webkit-app-region: drag; }
+.titlebar { height: 48px; display: flex; align-items: center; background: #151820; border-bottom: 1px solid #2c313b; user-select: none; }
+.titlebar-drag-region { height: 48px; display: flex; align-items: center; flex: 1; min-width: 0; -webkit-app-region: drag; }
 .titlebar button, .titlebar-extra, .no-drag { -webkit-app-region: no-drag; }
 .titlebar-icon { width: 48px; height: 48px; color: var(--primary); background: transparent; font-size: 22px; }
 .titlebar-title { padding: 0 12px; font-size: 14px; font-weight: 600; letter-spacing: .01em; }

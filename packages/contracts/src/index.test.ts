@@ -9,4 +9,8 @@ describe("isAccountEvent", () => {
     expect(isAccountEvent({ type: "updated", account, extra: true })).toBe(false);
     expect(isAccountEvent({ type: "updated", account: { ...account, state: "connected" } })).toBe(false);
   });
+  it("rejects unbounded DTO strings", () => {
+    expect(isAccountEvent({ type: "updated", account: { ...account, slotId: "x".repeat(129) } })).toBe(false);
+    expect(isAccountEvent({ type: "error", slotId: "slot-1", message: "x".repeat(241) })).toBe(false);
+  });
 });

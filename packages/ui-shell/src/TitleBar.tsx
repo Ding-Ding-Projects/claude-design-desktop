@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { isTitlebarDragDoubleClickTarget } from "./titlebar-behavior";
 
 export function TitleBar({ title, children }: { title: string; children?: ReactNode }) {
   const [maximized, setMaximized] = useState(false);
@@ -8,11 +9,13 @@ export function TitleBar({ title, children }: { title: string; children?: ReactN
     return window.designer.window.onStateChange((state) => setMaximized(state.maximized));
   }, []);
   return (
-    <header className="titlebar" onDoubleClick={() => void window.designer.window.toggleMaximize()}>
-      <button className="titlebar-icon no-drag" aria-label="Show window menu" title="Show window menu" onDoubleClick={(event) => event.stopPropagation()} onClick={() => void window.designer.window.showSystemMenu()}>
-        <span aria-hidden="true">✦</span>
-      </button>
-      <div className="titlebar-title" aria-label={title}>{title}</div>
+    <header className="titlebar">
+      <div className="titlebar-drag-region" onDoubleClick={(event) => { if (isTitlebarDragDoubleClickTarget(event.target)) void window.designer.window.toggleMaximize(); }}>
+        <button className="titlebar-icon no-drag" aria-label="Show window menu" title="Show window menu" onClick={() => void window.designer.window.showSystemMenu()}>
+          <span aria-hidden="true">✦</span>
+        </button>
+        <div className="titlebar-title" aria-label={title}>{title}</div>
+      </div>
       <div className="titlebar-extra no-drag">{children}</div>
       <div className="window-controls no-drag" role="group" aria-label="Window controls">
         <button aria-label="Minimize" title="Minimize" onClick={() => void window.designer.window.minimize()}>−</button>

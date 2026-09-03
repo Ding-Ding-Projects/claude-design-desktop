@@ -7,6 +7,9 @@ import { clampBounds, DEFAULT_BOUNDS, MIN_BOUNDS } from "./window-bounds";
 import { parseProtocolRoute, PROTOCOL_SCHEME, type ProtocolRoute } from "./protocol-route";
 import { readPackagedProvenance } from "./provenance";
 import { parsePersistedState, type PersistedState, type WindowBounds } from "./persisted-state";
+import { configureSessionSecurity } from "./session-security";
+import { protocolRouteEvent } from "./protocol-delivery";
+import { runAfterReady } from "./ready-bootstrap";
 
 const APP_ID = "com.dingdingprojects.claudedesigndesktop";
 const PRODUCT_NAME = "Claude Design Desktop";
@@ -20,6 +23,7 @@ let state: PersistedState = { version: 1, maximized: false };
 let lastNormalBounds: WindowBounds | undefined;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
 let pendingRoute: ProtocolRoute | null = null;
+let rendererReady = false;
 
 function stableUserDataPath() {
   const localAppData = process.env.LOCALAPPDATA;
@@ -124,7 +128,7 @@ function registerIpc() {
   ipcMain.handle("accounts:list", (event, input: unknown) => { assertRequest(event, input, ["version"]); return unavailable("Account listing"); });
   ipcMain.handle("accounts:start-login", (event, input: unknown) => {
     assertRequest(event, input, ["version", "slotId", "flow"]);
-    if (!isRecord(input) || (input.flow !== "browser" && input.flow !== "deviceCode") || (input.slotId !== undefined && typeof input.slotId !== "string")) throw new TypeError("Invalid account login request");
+    if (!isRecord(input) || (input.flow !== "browser" && input.flow !== "deviceCode") || (input.slotId !== undefined && (typeof input.slotId !== "string" || input.slotId.length < 1 || input.slotId.length > 128))) throw new TypeError("Invalid account login request");
     return unavailable("Account sign-in");
   });
   ipcMain.handle("accounts:cancel-login", (event, input: unknown) => { assertRequest(event, input, ["version", "loginId"]); if (!isRecord(input) || typeof input.loginId !== "string" || input.loginId.length < 1 || input.loginId.length > 200) throw new TypeError("Invalid login id"); return unavailable("Account sign-in cancellation"); });
@@ -140,7 +144,14 @@ function routeProtocol(argv: string[]) {
   const candidate = argv.find((value) => value.startsWith(`${PROTOCOL_SCHEME}://`));
   if (!candidate) return;
   const route = parseProtocolRoute(candidate);
-  if (route) pendingRoute = route;
+  if (route) { pendingRoute = route; deliverProtocolRoute(); }
+}
+
+function deliverProtocolRoute() {
+  if (!rendererReady || !mainWindow || mainWindow.isDestroyed() || !pendingRoute) return;
+  const route = pendingRoute;
+  pendingRoute = null;
+  mainWindow.webContents.send("app:route", protocolRouteEvent(route));
 }
 
 async function createWindow() {
@@ -160,6 +171,8 @@ async function createWindow() {
   mainWindow.webContents.on("before-input-event", (event, input) => { if (input.type === "keyDown" && input.alt && input.key === " ") { event.preventDefault(); showSystemMenu(); } });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (isReviewedExternalHttps(url)) void shell.openExternal(url); return { action: "deny" }; });
   await mainWindow.loadFile(join(__dirname, "renderer.html"));
+  rendererReady = true;
+  deliverProtocolRoute();
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -172,8 +185,6 @@ else {
   routeProtocol(process.argv);
   app.on("second-instance", (_event, commandLine) => { routeProtocol(commandLine); if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
   app.on("open-url", (event, url) => { event.preventDefault(); routeProtocol([url]); });
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
-  app.whenReady().then(async () => { statePath = join(app.getPath("userData"), "state.json"); state = loadState(); registerIpc(); await createWindow(); });
+  runAfterReady(() => app.whenReady().then(() => undefined), () => configureSessionSecurity(session.defaultSession), async () => { statePath = join(app.getPath("userData"), "state.json"); state = loadState(); registerIpc(); await createWindow(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 }

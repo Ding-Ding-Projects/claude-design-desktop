@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { isAccountEvent, type AccountEvent, type DesignerBridge } from "../../../packages/contracts/src/index";
+import { isAccountEvent, isAppRouteEvent, type DesignerBridge } from "../../../packages/contracts/src/index";
 
 const REQUEST_VERSION = 1 as const;
 
@@ -33,7 +33,14 @@ const bridge: DesignerBridge = {
     create: (input) => ipcRenderer.invoke("projects:create", { version: REQUEST_VERSION, ...input }),
     open: (projectId) => ipcRenderer.invoke("projects:open", { version: REQUEST_VERSION, projectId }),
   },
-  app: { provenance: () => ipcRenderer.invoke("app:provenance", { version: REQUEST_VERSION }) },
+  app: {
+    provenance: () => ipcRenderer.invoke("app:provenance", { version: REQUEST_VERSION }),
+    onRoute: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => { if (isAppRouteEvent(payload)) listener(payload); };
+      ipcRenderer.on("app:route", handler);
+      return () => ipcRenderer.removeListener("app:route", handler);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld("designer", bridge);

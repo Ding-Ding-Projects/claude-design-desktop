@@ -1,6 +1,7 @@
 export const PROTOCOL_SCHEME = "claude-design-desktop";
 
-export type ProtocolRoute = { type: "home" } | { type: "open-project"; projectId: string };
+import type { ProtocolRoute } from "../../../packages/contracts/src/index";
+export type { ProtocolRoute } from "../../../packages/contracts/src/index";
 
 export function parseProtocolRoute(rawUrl: string): ProtocolRoute | null {
   try {

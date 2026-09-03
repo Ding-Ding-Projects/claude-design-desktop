@@ -39,6 +39,11 @@ function App() {
     });
   }, []);
 
+  useEffect(() => window.designer.app.onRoute((event) => {
+    if (event.status === "unavailable") setNotice(event.message ?? "The requested project host is unavailable");
+    else setActivePage(event.route.type === "open-project" ? "projects" : "home");
+  }), []);
+
   const projectFilter = useMemo(() => {
     if (!regexMode) return { items: projects.filter((project) => project.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())), error: null };
     try {
