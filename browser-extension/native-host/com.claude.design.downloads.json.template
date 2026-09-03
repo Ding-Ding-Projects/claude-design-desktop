@@ -1,0 +1,7 @@
+{
+  "name": "com.claude.design.downloads",
+  "description": "Claude Design local download companion",
+  "path": "{{INSTALL_DIR}}\\claude-design-download-host.exe",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://{{EXTENSION_ID}}/"]
+}
