@@ -18,7 +18,12 @@ $manifest = Get-Content -Raw (Join-Path $root 'release-support/dependency-manife
 $nodeExe = Join-Path $env:LOCALAPPDATA ("Ding-Ding-Projects/ClaudeDesignDesktop/toolchain/node-v{0}-win-x64/node.exe" -f $manifest.node.version)
 $npm = Join-Path (Split-Path $nodeExe -Parent) 'npm.cmd'
 $package = Get-Content -Raw (Join-Path $root 'package.json') | ConvertFrom-Json
+if (-not $package.scripts.build) { throw "package.json does not declare the required build script." }
 if (-not $package.scripts.dist) { throw "package.json does not declare the required dist packaging script." }
+
+if (-not $Silent) { Write-Host '[installer] Building the current source before packaging' }
+& $npm run build
+if ($LASTEXITCODE -ne 0) { throw "npm run build exited with code $LASTEXITCODE." }
 
 if (-not $Silent) { Write-Host '[installer] Building unsigned Squirrel.Windows output through npm run dist' }
 & $npm run dist -- '--win' 'squirrel'

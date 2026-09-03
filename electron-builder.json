@@ -26,12 +26,13 @@
   ],
   "win": {
     "target": ["squirrel"],
-    "signAndEditExecutable": false
+    "signAndEditExecutable": false,
+    "signExecutable": false
   },
   "squirrelWindows": {
     "artifactName": "Setup.${ext}",
-    "msi": false
+    "msi": false,
+    "useAppIdAsId": true
   },
-  "forceCodeSigning": false,
-  "signExecutable": false
+  "forceCodeSigning": false
 }

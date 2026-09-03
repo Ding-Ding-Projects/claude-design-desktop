@@ -24,7 +24,15 @@ function Write-Phase([string]$Message) {
 }
 
 function Get-Sha256([string]$Path) {
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $stream = [System.IO.File]::OpenRead($Path)
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = $sha256.ComputeHash($stream)
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
 }
 
 function Invoke-Checked([string]$Command, [string[]]$Arguments) {
