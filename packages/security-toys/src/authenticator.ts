@@ -1,6 +1,7 @@
 import { normalizeBase32, parseOtpAuthUri, totpCodeAt, verifyTotpCode, type TotpUri } from "./totp";
 import type { RedactedTotpEntry, TotpEntry } from "./types";
 import { randomId, SecretVault } from "./vault";
+import { MainProcessPairingService, type PairingDisplay } from "./pairing-service";
 
 export type AuthenticatorInput = TotpUri & { source: "uri" | "qr-image" | "clipboard" | "camera" | "manual" };
 export const MAX_QR_INPUT_BYTES = 1_048_576;
@@ -49,12 +50,14 @@ export class AuthenticatorManager {
   private readonly now: () => number;
   private readonly metadata: AuthenticatorMetadataStore;
   private readonly secretRefs: AuthenticatorSecretReferenceStore;
+  private readonly pairing: MainProcessPairingService;
 
-  constructor(vault: SecretVault, now: () => number = () => Date.now(), metadata: AuthenticatorMetadataStore = new MemoryAuthenticatorMetadataStore(), secretRefs: AuthenticatorSecretReferenceStore = new MemoryAuthenticatorSecretReferenceStore()) {
+  constructor(vault: SecretVault, now: () => number = () => Date.now(), metadata: AuthenticatorMetadataStore = new MemoryAuthenticatorMetadataStore(), secretRefs: AuthenticatorSecretReferenceStore = new MemoryAuthenticatorSecretReferenceStore(), pairing = new MainProcessPairingService(vault, now)) {
     this.vault = vault;
     this.now = now;
     this.metadata = metadata;
     this.secretRefs = secretRefs;
+    this.pairing = pairing;
     for (const entry of metadata.listEntries()) this.entries.set(entry.id, { ...entry, secretRef: secretRefs.get(entry.id) ?? "" });
   }
 
@@ -87,6 +90,22 @@ export class AuthenticatorManager {
   async addManual(input: Omit<AuthenticatorInput, "source">): Promise<RedactedTotpEntry> {
     return this.add({ ...input, source: "manual" });
   }
+
+  startPairing(issuer: string, account: string, options: Parameters<MainProcessPairingService["start"]>[2] = {}): PairingDisplay {
+    return this.pairing.start(issuer, account, options);
+  }
+
+  async confirmPairing(pairingId: string, code: string): Promise<RedactedTotpEntry | undefined> {
+    const handoff = await this.pairing.confirm(pairingId, code);
+    if (!handoff) return undefined;
+    const entry: TotpEntry = { id: randomId("totp"), issuer: handoff.issuer, account: handoff.account, algorithm: handoff.algorithm, digits: handoff.digits, period: handoff.period, secretRef: handoff.secretRef, createdAt: this.now() };
+    this.entries.set(entry.id, entry);
+    this.secretRefs.set(entry.id, entry.secretRef);
+    this.metadata.saveEntry(redact(entry));
+    return redact(entry);
+  }
+
+  cancelPairing(pairingId: string): void { this.pairing.cancel(pairingId); }
 
   async addFromClipboard(uri: string): Promise<RedactedTotpEntry> {
     return this.importUri(uri, "clipboard");

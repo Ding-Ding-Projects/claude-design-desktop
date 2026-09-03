@@ -1,6 +1,8 @@
-export * from "./types";
+export type { AuthenticatorAlgorithm, FactorState, HistoryEntry, LockFactor, LockPolicy, LockRecord, LockSummary, RedactedTotpEntry, UnlockDuration, UnlockSession } from "./types";
+export { LOCK_POLICY_FACTORS } from "./types";
 export * from "./vault";
-export * from "./totp";
+export { decodeBase32, encodeBase32, hotpCode, normalizeBase32, totpCode, totpCodeAt, verifyTotpCode, verifyTotpCodeAt } from "./totp";
+export type { TotpOptions } from "./totp";
 export * from "./locks";
 export * from "./authenticator";
 export * from "./history";

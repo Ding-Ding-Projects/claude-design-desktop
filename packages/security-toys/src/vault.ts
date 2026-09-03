@@ -90,14 +90,26 @@ export async function verifySecret(vault: SecretVault, ref: string, candidate: s
     return false;
   }
   if (record.version === 2 && record.algorithm === "memory-sha256") {
-    const computed = await legacyMemoryDigest(candidate, hexToBytes(record.salt), record.memoryBytes, record.rounds);
-    if (!fixedTimeEqual(computed, hexToBytes(record.hash))) return false;
-    await storeHashedSecret(vault, ref, candidate);
-    return true;
+    try {
+      const computed = await legacyMemoryDigest(candidate, hexToBytes(record.salt), record.memoryBytes, record.rounds);
+      if (!fixedTimeEqual(computed, hexToBytes(record.hash))) return false;
+      await storeHashedSecret(vault, ref, candidate);
+      return true;
+    } catch { return false; }
+  }
+  if (record.version === 2 && record.algorithm === "pbkdf2-sha256") {
+    try {
+      const computed = await bundledKdf(candidate, hexToBytes(record.salt), record.iterations);
+      if (!fixedTimeEqual(computed, hexToBytes(record.hash))) return false;
+      await storeHashedSecret(vault, ref, candidate);
+      return true;
+    } catch { return false; }
   }
   if (record.version !== 3 || record.algorithm !== "pbkdf2-sha256" || typeof record.salt !== "string" || typeof record.hash !== "string") return false;
-  const computed = await bundledKdf(candidate, hexToBytes(record.salt), record.iterations);
-  return fixedTimeEqual(computed, hexToBytes(record.hash));
+  try {
+    const computed = await bundledKdf(candidate, hexToBytes(record.salt), record.iterations);
+    return fixedTimeEqual(computed, hexToBytes(record.hash));
+  } catch { return false; }
 }
 
 export async function storeHashedSecret(vault: SecretVault, ref: string, secret: string): Promise<void> {
@@ -113,6 +125,7 @@ export async function storeHashedSecret(vault: SecretVault, ref: string, secret:
 
 type PasswordRecord =
   | { version: 2; algorithm: "memory-sha256"; salt: string; memoryBytes: number; rounds: number; hash: string }
+  | { version: 2; algorithm: "pbkdf2-sha256"; salt: string; iterations: number; hash: string }
   | { version: 3; algorithm: "pbkdf2-sha256"; salt: string; iterations: number; hash: string };
 
 async function bundledKdf(secret: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {

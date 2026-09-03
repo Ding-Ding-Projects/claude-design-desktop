@@ -1,6 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const toys = require("../dist/index.js");
+const internalTotp = require("../dist/totp.js");
+const { MainProcessPairingService } = require("../dist/pairing-service.js");
 
 test("RFC 6238 vectors cover SHA-1, SHA-256, and SHA-512", async () => {
   const vectors = [
@@ -26,35 +28,40 @@ test("RFC 4226 HOTP vector matrix passes all published counters", async () => {
 
 test("otpauth URI preserves parameters and local QR model has no network dependency", () => {
   const input = { issuer: "Example", account: "alice@example.test", secret: "JBSWY3DPEHPK3PXP", algorithm: "SHA-256", digits: 8, period: 60 };
-  const parsed = toys.parseOtpAuthUri(toys.buildOtpAuthUri(input));
+  const parsed = internalTotp.parseOtpAuthUri(internalTotp.buildOtpAuthUri(input));
   assert.deepEqual(parsed, input);
-  assert.equal(toys.localQrModel(input).networkRequired, false);
-  assert.match(toys.localQrModel(input).textAlternative, /QR pairing/);
+  assert.equal("localQrModel" in toys, false);
 });
 
-test("pairing requires an explicit local reveal and code confirmation before arming", async () => {
-  const pairing = new toys.TotpPairingSession("Example", "alice@example.test");
-  assert.equal(pairing.isArmed(), false);
-  assert.equal(pairing.wasManuallyRevealed(), false);
-  const manual = pairing.revealManualSecret();
-  assert.equal(pairing.wasManuallyRevealed(), true);
-  const code = await toys.totpCodeAt(manual.secret, Date.now(), manual);
-  assert.equal(await pairing.confirm("000000"), false);
-  assert.equal(await pairing.confirm(code), true);
-  assert.equal(pairing.qr((uri) => ({ textAlternative: uri.startsWith("otpauth://") ? "paired" : "bad", revealRequired: true, networkRequired: false })).networkRequired, false);
-  assert.deepEqual(pairing.consumeArmed().issuer, "Example");
-  assert.equal(pairing.consumeArmed(), undefined);
+test("pairing service exposes only opaque display state and redacted manager metadata", async () => {
+  let now = 30_000;
+  const vault = new toys.MemorySecretVault();
+  const service = new MainProcessPairingService(vault, () => now, () => new Uint8Array(20).fill(1));
+  const manager = new toys.AuthenticatorManager(vault, () => now, new toys.MemoryAuthenticatorMetadataStore(), new toys.MemoryAuthenticatorSecretReferenceStore(), service);
+  const display = manager.startPairing("Example", "alice@example.test");
+  assert.equal(typeof display.pairingId, "string");
+  assert.equal("uri" in display, false);
+  assert.doesNotMatch(JSON.stringify(display), /otpauth|secret|JBS/);
+  assert.equal(await manager.confirmPairing(display.pairingId, "000000"), undefined);
+  const code = await internalTotp.totpCodeAt(internalTotp.encodeBase32(new Uint8Array(20).fill(1)), now, { digits: 6, period: 30, algorithm: "SHA-1" });
+  const entry = await manager.confirmPairing(display.pairingId, code);
+  assert.equal(entry.secretStored, true);
+  assert.equal("secretRef" in entry, false);
 });
 
-test("pairing expires, purges its secret, and serializes only status", async () => {
+test("public package surface excludes pairing URI, raw secret, and privileged renderer APIs", () => {
+  for (const forbidden of ["buildOtpAuthUri", "parseOtpAuthUri", "localQrModel", "PrivilegedQrRenderer", "TotpPairingSession", "consumeArmed", "MainProcessPairingService"]) {
+    assert.equal(forbidden in toys, false, `public export leaked ${forbidden}`);
+  }
+});
+
+test("pairing expires, cancels, and serializes only status", async () => {
   let now = 0;
-  const pairing = new toys.TotpPairingSession("Example", "alice", { now: () => now, expiresInMs: 1_000 });
-  const manual = pairing.revealManualSecret();
+  const service = new MainProcessPairingService(new toys.MemorySecretVault(), () => now, () => new Uint8Array(20).fill(1));
+  const display = service.start("Example", "alice", { expiresInMs: 1_000 });
   now = 1_001;
-  assert.throws(() => pairing.qr(() => ({ textAlternative: "", revealRequired: true, networkRequired: false })), /expired/);
-  assert.equal(pairing.consumeArmed(), undefined);
-  assert.deepEqual(JSON.parse(JSON.stringify(pairing)), { armed: false, expired: true });
-  assert.equal(await toys.verifyTotpCodeAt(manual.secret, "000000", 0), false);
+  assert.equal((await service.confirm(display.pairingId, "000000")), undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(service.status(display.pairingId))), { pairingId: display.pairingId, pending: false, expired: true });
 });
 
 test("authenticator accepts manual and URI imports, exposes countdown and next code, and redacts vault references", async () => {
@@ -66,7 +73,7 @@ test("authenticator accepts manual and URI imports, exposes countdown and next c
   assert.equal(display.code, "287082");
   assert.equal(display.secondsRemaining, 1);
   assert.equal(display.nextCode.length, 6);
-  assert.equal((await authenticator.addFromClipboard(toys.buildOtpAuthUri({ issuer: "Example", account: "bob", secret: "JBSWY3DPEHPK3PXP", algorithm: "SHA-1", digits: 6, period: 30 }))).issuer, "Example");
+  assert.equal((await authenticator.addFromClipboard(internalTotp.buildOtpAuthUri({ issuer: "Example", account: "bob", secret: "JBSWY3DPEHPK3PXP", algorithm: "SHA-1", digits: 6, period: 30 }))).issuer, "Example");
   assert.match(authenticator.exportRedacted(), /secretsOmitted/);
   assert.doesNotMatch(authenticator.exportRedacted(), /GEZDGNBVGY3TQOJQ/);
 });
@@ -165,6 +172,30 @@ test("password vault records are versioned, salted, and reject tampered records"
   assert.equal(await toys.verifySecret(vault, "password", "wrong"), false);
   await vault.put("password", JSON.stringify({ ...record, hash: record.hash.replace(/^../, "ff") }));
   assert.equal(await toys.verifySecret(vault, "password", "correct horse battery staple"), false);
+});
+
+test("version 2 PBKDF2 records migrate to version 3 after successful verification", async () => {
+  const vault = new toys.MemorySecretVault();
+  const salt = Uint8Array.from({ length: 16 }, (_, index) => index + 1);
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("legacy password"), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100_000, hash: "SHA-256" }, key, 256);
+  const hash = Array.from(new Uint8Array(bits), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const saltHex = Array.from(salt, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  await vault.put("legacy", JSON.stringify({ version: 2, algorithm: "pbkdf2-sha256", salt: saltHex, iterations: 100_000, hash }));
+  assert.equal(await toys.verifySecret(vault, "legacy", "legacy password"), true);
+  assert.equal(JSON.parse(await vault.get("legacy")).version, 3);
+});
+
+test("malformed KDF parameters and unavailable vaults fail closed", async () => {
+  const vault = new toys.MemorySecretVault();
+  await vault.put("bad", JSON.stringify({ version: 3, algorithm: "pbkdf2-sha256", salt: "00", iterations: 1, hash: "00" }));
+  assert.equal(await toys.verifySecret(vault, "bad", "anything"), false);
+  const unavailable = new toys.UnavailableSecretVault();
+  assert.equal(await unavailable.has("anything"), false);
+  await assert.rejects(() => unavailable.put("anything", "value"), /unavailable/);
+  const osVault = new toys.OperatingSystemSecretVault(undefined);
+  assert.deepEqual(osVault.status(), { available: false, reason: "The operating-system credential vault is unavailable" });
+  await assert.rejects(() => osVault.put("anything", "value"), /unavailable/);
 });
 
 test("super confirmation requires two independently verified keys and the full slider", async () => {
