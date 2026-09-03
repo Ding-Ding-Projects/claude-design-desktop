@@ -6,7 +6,7 @@ This package owns the main-process update lifecycle for the Windows desktop appl
 
 The feed is bounded JSON with schemaVersion 1, a semantic version, an ISO-8601 updatedAt, an HTTPS release-notes URL, and one Windows x64 package descriptor. The caller supplies an allowlist of hosts, and the transport resolves each host before connecting. Private, loopback, link-local, unavailable, or mixed unsafe DNS results are refused. URLs must use HTTPS, contain no credentials, use the default port or 443, and keep the package on the same host as the feed. Unknown fields, unsupported platforms, invalid versions, invalid hashes, and oversized values are refused.
 
-fetchHttpsFeed rejects redirects, applies a deadline, and reads at most 256 KiB. downloadHttpsPackage rejects redirects, applies a deadline, streams the response, and bounds it at 2,000,000,000 bytes. AtomicUpdaterStore writes chunks to a unique temporary file, hashes as it writes, retries transient Windows rename errors, and revalidates the staged file on restart. The state machine checks the exact byte count and SHA-256 before exposing ready.
+fetchHttpsFeed rejects redirects, applies a deadline, and reads at most 256 KiB over a socket bound to the validated DNS result. downloadHttpsPackage rejects redirects, applies a deadline, streams the response, and bounds it at 2,000,000,000 bytes. AtomicUpdaterStore writes chunks to a unique temporary file, hashes as it writes, retries transient Windows rename errors, assigns an opaque handle-owned stage filename, and revalidates the staged file on restart. The state machine checks the exact byte count and SHA-256 before exposing ready.
 
 ## Lifecycle
 

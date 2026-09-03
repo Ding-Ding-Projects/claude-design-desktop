@@ -1,7 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { open, rename, rm } from "node:fs/promises";
 import { lookup } from "node:dns/promises";
+import { request as httpsRequest } from "node:https";
+import { isIP } from "node:net";
 import path from "node:path";
 
 export const MAX_FEED_BYTES = 256 * 1024;
@@ -18,7 +20,7 @@ export type Body = Uint8Array | AsyncIterable<Uint8Array>;
 export type FeedResponse = { body: Body; headers?: Record<string, string>; status: number };
 export type FeedTransport = (url: string, signal: AbortSignal) => Promise<FeedResponse>;
 export type PackageTransport = (descriptor: PackageDescriptor, signal: AbortSignal) => Promise<Body>;
-export type StageResult = { fileName?: string; sha256: string; sizeBytes: number };
+export type StageResult = { fileName?: string; handleId?: string; sha256: string; sizeBytes: number };
 export type PersistedUpdaterState = {
   available?: UpdateMetadata; lastCheckedAt?: string; productId?: string; stagedFileName?: string;
   stagedSha256?: string; stagedSizeBytes?: number; state: UpdateStateName; stateReason?: string;
@@ -27,13 +29,13 @@ export type UpdaterStore = {
   load(): PersistedUpdaterState | undefined;
   save(state: PersistedUpdaterState): void;
   stage(metadata: UpdateMetadata, body: Body, signal?: AbortSignal): Promise<StageResult> | StageResult;
-  discardStaged?(metadata: UpdateMetadata): Promise<void> | void;
+  discardStaged?(handle: StageResult): Promise<void> | void;
   rehydrate?(signal?: AbortSignal): Promise<PersistedUpdaterState | undefined>;
 };
 export type UpdateBanner = { actions: readonly ["restart-to-install", "later"]; releaseNotesUrl: string; unsignedWarning: string; version: string };
 export type UpdateState = PersistedUpdaterState & { banner?: UpdateBanner };
 export type RestartResult = { ok: true } | { ok: false; reason: "no-ready-update" | "unsaved-work" | "restart-refused" };
-export type TransportSecurity = { allowedHosts: readonly string[]; resolveHost?: (host: string) => Promise<readonly string[]>; timeoutMs?: number };
+export type TransportSecurity = { allowedHosts: readonly string[]; resolveHost?: (host: string) => Promise<readonly string[]>; timeoutMs: number };
 export type UpdaterOptions = {
   allowedHosts: readonly string[]; currentVersion: string; feedUrl: string; fetchFeed: FeedTransport; downloadPackage: PackageTransport;
   now?: () => Date; onStateChange?: (state: UpdateState) => void; productId?: string; restart?: () => Promise<void> | void;
@@ -93,21 +95,35 @@ export function validateHttpsAllowlistedUrl(value: unknown, allowedHosts: readon
   return url.toString();
 }
 
-function isPrivateAddress(address: string): boolean {
+function isUnsafeAddress(address: string): boolean {
   const lower = address.toLowerCase();
-  if (lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80:")) return true;
-  const octets = lower.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  return octets[0] === 10 || octets[0] === 127 || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
-    (octets[0] === 192 && octets[1] === 168) || (octets[0] === 169 && octets[1] === 254) || octets[0] === 0;
+  if (isIP(lower) === 4) {
+    const octets = lower.split(".").map(Number);
+    if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+    const [a, b] = octets;
+    return a === 0 || a === 10 || (a === 100 && b >= 64 && b <= 127) || a === 127 || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168 || b === 2)) ||
+      (a === 198 && (b === 18 || b === 19 || b === 51)) || (a === 203 && b === 0) || a >= 224;
+  }
+  if (isIP(lower) !== 6) return true;
+  if (lower === "::" || lower === "::1" || lower.startsWith("::ffff:") || lower.startsWith("fc") ||
+    lower.startsWith("fd") || lower.startsWith("fe80:") || lower.startsWith("ff")) return true;
+  const first = Number.parseInt(lower.split(":")[0] || "0", 16);
+  return (first & 0xe000) !== 0x2000;
+}
+
+type ResolvedTransportTarget = { address: string; family: 4 | 6; url: string };
+async function resolveSafeTransportTarget(urlValue: string, security: TransportSecurity, label: string): Promise<ResolvedTransportTarget> {
+  const url = validateHttpsAllowlistedUrl(urlValue, security.allowedHosts, label);
+  if (!Number.isSafeInteger(security.timeoutMs) || security.timeoutMs < 1000 || security.timeoutMs > 120_000) throw new Error("Transport timeout is outside its supported bound.");
+  const resolve = security.resolveHost || (async (host: string) => (await lookup(host, { all: true, verbatim: true })).map((entry) => entry.address));
+  const addresses = await resolve(new URL(url).hostname);
+  if (!addresses.length || addresses.some(isUnsafeAddress)) throw new Error(label + " resolved to an unsafe, reserved, or unavailable address.");
+  return { address: addresses[0], family: isIP(addresses[0]) as 4 | 6, url };
 }
 
 export async function assertSafeTransportTarget(urlValue: string, security: TransportSecurity, label: string): Promise<string> {
-  const url = validateHttpsAllowlistedUrl(urlValue, security.allowedHosts, label);
-  const resolve = security.resolveHost || (async (host: string) => (await lookup(host, { all: true, verbatim: true })).map((entry) => entry.address));
-  const addresses = await resolve(new URL(url).hostname);
-  if (!addresses.length || addresses.some(isPrivateAddress)) throw new Error(label + " resolved to an unsafe or unavailable address.");
-  return url;
+  return (await resolveSafeTransportTarget(urlValue, security, label)).url;
 }
 
 function deadlineSignal(parent: AbortSignal, timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
@@ -138,44 +154,59 @@ async function readBoundedBody(body: Body, limit: number, signal: AbortSignal): 
   return result;
 }
 
-export async function fetchHttpsFeed(urlValue: string, signal: AbortSignal, security?: TransportSecurity): Promise<FeedResponse> {
-  const safeUrl = await assertSafeTransportTarget(urlValue, security || { allowedHosts: [new URL(urlValue).hostname] }, "Update feed URL");
-  const deadline = deadlineSignal(signal, security?.timeoutMs || DEFAULT_TRANSPORT_TIMEOUT_MS);
-  try {
-    const response = await fetch(safeUrl, { redirect: "error", signal: deadline.signal, headers: { accept: "application/json" } });
-    const body = await readBoundedBody(response.body ? (response.body as unknown as AsyncIterable<Uint8Array>) : new Uint8Array(), MAX_FEED_BYTES, deadline.signal);
-    return { body, headers: Object.fromEntries(response.headers.entries()), status: response.status };
-  } finally { deadline.dispose(); }
+type BoundResponse = { body: AsyncIterable<Uint8Array>; headers: Record<string, string>; status: number };
+async function requestBoundHttps(target: ResolvedTransportTarget, signal: AbortSignal, timeoutMs: number, accept: string): Promise<BoundResponse> {
+  const deadline = deadlineSignal(signal, timeoutMs);
+  return new Promise((resolve, reject) => {
+    const url = new URL(target.url);
+    const request = httpsRequest({
+      host: url.hostname,
+      lookup: (_hostname, _options, callback) => callback(null, target.address, target.family),
+      path: url.pathname + url.search,
+      port: 443,
+      servername: url.hostname,
+      signal: deadline.signal,
+      headers: { accept }
+    }, (response) => {
+      const incoming = response as unknown as AsyncIterable<Uint8Array>;
+      async function* body(): AsyncIterable<Uint8Array> {
+        try {
+          for await (const chunk of incoming) {
+            if (deadline.signal.aborted) throw deadline.signal.reason || new Error("Update transport timed out.");
+            yield chunk;
+          }
+        } finally { deadline.dispose(); }
+      }
+      const headers = Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : String(value || "")]));
+      resolve({ body: body(), headers, status: response.statusCode || 0 });
+    });
+    request.once("error", (error) => { deadline.dispose(); reject(error); });
+    request.end();
+  });
 }
 
-export async function downloadHttpsPackage(descriptor: PackageDescriptor, signal: AbortSignal, security?: TransportSecurity): Promise<Body> {
+export async function fetchHttpsFeed(urlValue: string, signal: AbortSignal, security: TransportSecurity): Promise<FeedResponse> {
+  const target = await resolveSafeTransportTarget(urlValue, security, "Update feed URL");
+  const response = await requestBoundHttps(target, signal, security.timeoutMs, "application/json");
+  const body = await readBoundedBody(response.body, MAX_FEED_BYTES, signal);
+  return { body, headers: response.headers, status: response.status };
+}
+
+export async function downloadHttpsPackage(descriptor: PackageDescriptor, signal: AbortSignal, security: TransportSecurity): Promise<Body> {
   if (descriptor.platform !== "win32" || descriptor.architecture !== "x64") throw new Error("Only win32/x64 update packages are supported.");
-  const safeUrl = await assertSafeTransportTarget(descriptor.url, security || { allowedHosts: [new URL(descriptor.url).hostname] }, "Update package URL");
-  const deadline = deadlineSignal(signal, security?.timeoutMs || DEFAULT_TRANSPORT_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(safeUrl, { redirect: "error", signal: deadline.signal, headers: { accept: "application/octet-stream" } });
-  } catch (error) {
-    deadline.dispose();
-    throw error;
-  }
-  const contentLength = response.headers.get("content-length");
-  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_PACKAGE_BYTES)) {
-    deadline.dispose();
-    throw new Error("Update package Content-Length is outside the supported bound.");
-  }
-  if (!response.body) { deadline.dispose(); throw new Error("Update package response has no body."); }
-  const stream = response.body as unknown as AsyncIterable<Uint8Array>;
+  const target = await resolveSafeTransportTarget(descriptor.url, security, "Update package URL");
+  const response = await requestBoundHttps(target, signal, security.timeoutMs, "application/octet-stream");
+  if (response.status < 200 || response.status >= 300) throw new Error("Update package returned HTTP " + response.status + ".");
+  const contentLength = response.headers["content-length"];
+  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_PACKAGE_BYTES)) throw new Error("Update package Content-Length is outside the supported bound.");
+  let total = 0;
   async function* bounded(): AsyncIterable<Uint8Array> {
-    let total = 0;
-    try {
-      for await (const chunk of stream) {
-        if (deadline.signal.aborted) throw deadline.signal.reason || new Error("Update transport timed out.");
-        total += chunk.byteLength;
-        if (total > MAX_PACKAGE_BYTES) throw new Error("Update package exceeds its bounded size.");
-        yield chunk;
-      }
-    } finally { deadline.dispose(); }
+    for await (const chunk of response.body) {
+      if (signal.aborted) throw signal.reason || new Error("Operation cancelled.");
+      total += chunk.byteLength;
+      if (total > MAX_PACKAGE_BYTES) throw new Error("Update package exceeds its bounded size.");
+      yield chunk;
+    }
   }
   return bounded();
 }
@@ -235,12 +266,21 @@ export class AtomicUpdaterStore implements UpdaterStore {
   }
   public async rehydrate(signal?: AbortSignal): Promise<PersistedUpdaterState | undefined> {
     const state = this.load();
-    if (!state?.available || !state.stagedFileName || !state.stagedSha256 || !state.stagedSizeBytes) return state;
+    if (!state?.available) return state;
+    if (state.state === "ready" || state.state === "deferred") {
+      if (!state.stagedFileName || !state.stagedSha256 || !state.stagedSizeBytes) {
+        const corrupt = { productId: this.productId, state: "corrupt-package" as const, stateReason: "Ready update is missing staged-byte provenance." };
+        this.save(corrupt);
+        return corrupt;
+      }
+    } else if (!state.stagedFileName || !state.stagedSha256 || !state.stagedSizeBytes) return state;
+    const corrupt = { productId: this.productId, state: "corrupt-package" as const, stateReason: "Staged update bytes failed revalidation." };
     let result: StageResult;
     try { result = await hashFile(this.safeStagePath(state.stagedFileName), signal); }
-    catch { return { productId: this.productId, state: "corrupt-package", stateReason: "Staged update bytes failed revalidation." }; }
+    catch { this.save(corrupt); return corrupt; }
     if (result.sha256 !== state.stagedSha256 || result.sizeBytes !== state.stagedSizeBytes || result.sha256 !== state.available.package.sha256 || result.sizeBytes !== state.available.package.sizeBytes) {
-      return { productId: this.productId, state: "corrupt-package", stateReason: "Staged update bytes failed revalidation." };
+      this.save(corrupt);
+      return corrupt;
     }
     return state;
   }
@@ -251,7 +291,8 @@ export class AtomicUpdaterStore implements UpdaterStore {
     renameSyncWithRetry(temp, this.statePath);
   }
   public async stage(metadata: UpdateMetadata, body: Body, signal?: AbortSignal): Promise<StageResult> {
-    const fileName = this.productId + "-" + metadata.version.replace(/[^A-Za-z0-9.-]/g, "_") + "-" + metadata.package.sha256 + ".exe";
+    const handleId = randomUUID();
+    const fileName = this.productId + "-" + metadata.version.replace(/[^A-Za-z0-9.-]/g, "_") + "-" + metadata.package.sha256 + "-" + handleId + ".exe";
     const target = this.safeStagePath(fileName);
     const temp = target + "." + process.pid + "." + ++tempCounter + ".part";
     const handle = await open(temp, "wx");
@@ -271,16 +312,16 @@ export class AtomicUpdaterStore implements UpdaterStore {
       await handle.sync();
       await handle.close();
       await renameWithRetry(temp, target);
-      return { fileName, sha256, sizeBytes: size };
+      return { fileName, handleId, sha256, sizeBytes: size };
     } catch (error) {
       await handle.close().catch(() => undefined);
       await rm(temp, { force: true }).catch(() => undefined);
       throw error;
     }
   }
-  public async discardStaged(metadata: UpdateMetadata): Promise<void> {
-    const fileName = this.productId + "-" + metadata.version.replace(/[^A-Za-z0-9.-]/g, "_") + "-" + metadata.package.sha256 + ".exe";
-    await rm(this.safeStagePath(fileName), { force: true });
+  public async discardStaged(handle: StageResult): Promise<void> {
+    if (!handle.fileName || !handle.handleId || !handle.fileName.includes(handle.handleId)) return;
+    await rm(this.safeStagePath(handle.fileName), { force: true });
   }
   public stagedPath(fileName: string): string { return this.safeStagePath(fileName); }
   private safeStagePath(fileName: string): string {
@@ -337,6 +378,7 @@ export class UpdaterStateMachine {
   private operation: Operation | undefined;
   private generation = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private stageHandle: StageResult | undefined;
   public constructor(options: UpdaterOptions) {
     this.options = options;
     this.now = options.now || (() => new Date());
@@ -384,9 +426,10 @@ export class UpdaterStateMachine {
       if (!this.isCurrent(operation)) return this.state;
       const staged = await this.options.store.stage(metadata, body, operation.controller.signal);
       if (!this.isCurrent(operation) || operation.controller.signal.aborted) {
-        await this.options.store.discardStaged?.(metadata);
+        await this.options.store.discardStaged?.(staged);
         return this.state;
       }
+      this.stageHandle = staged;
       this.setState({ stagedFileName: staged.fileName, stagedSha256: staged.sha256, stagedSizeBytes: staged.sizeBytes, state: "ready", stateReason: undefined });
     } catch (error) {
       if (!this.isCurrent(operation) || operation.controller.signal.aborted) return this.state;
@@ -405,11 +448,13 @@ export class UpdaterStateMachine {
   public cancelDownload(): UpdateState {
     if (this.stateValue.state === "downloading" || this.stateValue.state === "paused") {
       const operation = this.operation;
+      const stageHandle = this.stageHandle;
       this.generation += 1;
       operation?.controller.abort(new Error("Download cancelled by the user."));
       this.operation = undefined;
+      this.stageHandle = undefined;
       this.setState({ state: "available", stateReason: "Download cancelled by the user.", stagedFileName: undefined, stagedSha256: undefined, stagedSizeBytes: undefined });
-      if (this.stateValue.available) void this.options.store.discardStaged?.(this.stateValue.available);
+      if (stageHandle) void this.options.store.discardStaged?.(stageHandle);
     }
     return this.state;
   }

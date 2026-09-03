@@ -51,11 +51,14 @@ test("semantic versions are monotonic and prereleases sort before stable", () =>
   assert.equal(compareSemanticVersions("1.2.3-beta.2", "1.2.3-beta.10"), -1);
   assert.equal(compareSemanticVersions("1.2.3", "1.2.3-rc.1"), 1);
 });
-test("transport rejects credentials, private DNS, non-HTTPS, and non-allowlisted hosts", async () => {
-  await assert.rejects(() => assertSafeTransportTarget("https://user:pass@updates.example.test/a", { allowedHosts: ["updates.example.test"], resolveHost: async () => ["93.184.216.34"] }, "Feed"), /HTTPS/);
-  await assert.rejects(() => assertSafeTransportTarget("https://updates.example.test/a", { allowedHosts: ["updates.example.test"], resolveHost: async () => ["192.168.1.9"] }, "Feed"), /unsafe/);
-  await assert.rejects(() => assertSafeTransportTarget("http://updates.example.test/a", { allowedHosts: ["updates.example.test"], resolveHost: async () => ["93.184.216.34"] }, "Feed"), /HTTPS/);
-  await assert.rejects(() => assertSafeTransportTarget("https://other.example.test/a", { allowedHosts: ["updates.example.test"], resolveHost: async () => ["93.184.216.34"] }, "Feed"), /allowlisted/);
+test("transport rejects credentials, unsafe address classes, non-HTTPS, and non-allowlisted hosts", async () => {
+  const security = { allowedHosts: ["updates.example.test"], timeoutMs: 5_000, resolveHost: async () => ["93.184.216.34"] };
+  await assert.rejects(() => assertSafeTransportTarget("https://user:pass@updates.example.test/a", security, "Feed"), /HTTPS/);
+  for (const address of ["0.0.0.0", "127.0.0.1", "100.64.0.1", "169.254.169.254", "192.0.0.1", "192.0.2.1", "198.18.0.1", "224.0.0.1", "::", "::1", "::ffff:93.184.216.34", "fc00::1", "fe80::1", "ff02::1"]) {
+    await assert.rejects(() => assertSafeTransportTarget("https://updates.example.test/a", { ...security, resolveHost: async () => [address] }, "Feed"), /unsafe|reserved/);
+  }
+  await assert.rejects(() => assertSafeTransportTarget("http://updates.example.test/a", security, "Feed"), /HTTPS/);
+  await assert.rejects(() => assertSafeTransportTarget("https://other.example.test/a", security, "Feed"), /allowlisted/);
 });
 test("startup check and staged download produce a persistent ready banner", async () => {
   const store = memoryStore();
@@ -127,6 +130,23 @@ test("atomic store stages, rehydrates, binds product identity, and rejects corru
     const restored = new AtomicUpdaterStore(root, "claude-design", context);
     assert.equal((await restored.rehydrate())?.stagedSha256, hash);
     assert.throws(() => store.save({ state: "idle", productId: "other" }), /identity/);
+    const corruptBytes = Buffer.from(readFileSync(path.join(root, "updates", stageFile)));
+    corruptBytes[0] ^= 1;
+    require("node:fs").writeFileSync(path.join(root, "updates", stageFile), corruptBytes);
+    assert.equal((await restored.rehydrate())?.state, "corrupt-package");
+    assert.equal(restored.load()?.state, "corrupt-package");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+test("A-cancel/B-stage/A-cleanup cannot remove B's stage handle", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "updater-race-"));
+  try {
+    const context = { allowedHosts: ["updates.example.test"], currentVersion: "1.2.3", feedUrl };
+    const store = new AtomicUpdaterStore(root, "claude-design", context);
+    const first = await store.stage(metadata(), packageBytes);
+    const second = await store.stage(metadata(), packageBytes);
+    await store.discardStaged(first);
+    assert.equal(require("node:fs").existsSync(store.stagedPath(second.fileName as string)), true);
+    await store.discardStaged(second);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 test("Squirrel handoff is restricted to newer unsigned win32/x64 updates", () => {
