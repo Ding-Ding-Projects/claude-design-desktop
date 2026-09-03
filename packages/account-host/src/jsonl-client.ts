@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
 import { CLIENT_NAME, CLIENT_TITLE, CODEX_PACKAGE_VERSION, DEFAULT_REQUEST_TIMEOUT_MS, MAX_PROTOCOL_LINE_BYTES, sanitizeError } from "./config.js";
-import type { Writable, Readable } from "node:stream";
+import type { Writable } from "node:stream";
+import { assertProtocolLineSize, MAX_PENDING_REQUESTS, validateRequestParams, validateResponseEnvelope } from "./protocol-schema.js";
 
 export type JsonRpcId = number;
 export interface JsonRpcResponse { id: JsonRpcId; result?: unknown; error?: { code?: number; message?: string; data?: unknown }; }
@@ -21,6 +21,8 @@ export class AppServerClient extends EventEmitter {
   private state: State = "new";
   private nextId = 1;
   private readonly pending = new Map<JsonRpcId, Pending>();
+  private readonly completedIds = new Set<JsonRpcId>();
+  private outputBuffer = Buffer.alloc(0);
   constructor(options: AppServerClientOptions) { super(); this.options = { ...options, appVersion: options.appVersion ?? "0.1.0", requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS }; }
   get ready(): boolean { return this.state === "ready"; }
   async start(): Promise<void> {
@@ -31,7 +33,7 @@ export class AppServerClient extends EventEmitter {
       this.child = (this.options.spawn ?? spawn)(this.options.codexExecutable, ["app-server", "--listen", "stdio://"], { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (error) { this.state = "failed"; throw sanitizeError(error); }
     if (!this.child.stdin || !this.child.stdout) { this.state = "failed"; throw new Error("App-server stdio transport is unavailable"); }
-    createInterface({ input: this.child.stdout }).on("line", (line) => this.handleLine(line));
+    this.child.stdout.on("data", (chunk: Buffer | string) => this.handleData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     this.child.stderr?.resume();
     this.child.on("error", (error) => this.fail(sanitizeError(error)));
     this.child.on("exit", (code, signal) => this.fail(new Error(`App-server exited (${code ?? "null"}, ${signal ?? "none"})`)));
@@ -66,6 +68,8 @@ export class AppServerClient extends EventEmitter {
     if (!initializing && this.state !== "ready") return Promise.reject(new Error("App-server client is not initialized"));
     const stdin = this.child?.stdin as Writable | undefined;
     if (!stdin || this.state === "closed" || this.state === "failed") return Promise.reject(new Error("App-server transport is unavailable"));
+    validateRequestParams(method, params);
+    if (this.pending.size >= MAX_PENDING_REQUESTS) return Promise.reject(new Error("App-server request queue is full"));
     const id = this.nextId++;
     const wire = JSON.stringify({ method, id, ...(params === undefined ? {} : { params }) });
     if (Buffer.byteLength(wire, "utf8") > MAX_PROTOCOL_LINE_BYTES) throw new Error("App-server request exceeded the size limit");
@@ -76,13 +80,26 @@ export class AppServerClient extends EventEmitter {
     stdin.write(`${wire}\n`);
     return response;
   }
+  private handleData(chunk: Buffer): void {
+    this.outputBuffer = Buffer.concat([this.outputBuffer, chunk]);
+    if (this.outputBuffer.length > MAX_PROTOCOL_LINE_BYTES) { this.fail(new Error("App-server protocol buffer exceeded the size limit")); return; }
+    let newline = this.outputBuffer.indexOf(0x0a);
+    while (newline >= 0) {
+      const line = this.outputBuffer.subarray(0, newline).toString("utf8").replace(/\r$/, "");
+      this.outputBuffer = this.outputBuffer.subarray(newline + 1);
+      this.handleLine(line);
+      if (this.state === "failed") return;
+      newline = this.outputBuffer.indexOf(0x0a);
+    }
+  }
   private handleLine(line: string): void {
-    if (Buffer.byteLength(line, "utf8") + 1 > MAX_PROTOCOL_LINE_BYTES) { this.fail(new Error("App-server protocol line exceeded the size limit")); return; }
+    try { assertProtocolLineSize(line); } catch (error) { this.fail(error as Error); return; }
     let message: JsonRpcResponse | JsonRpcNotification;
-    try { message = JSON.parse(line) as JsonRpcResponse | JsonRpcNotification; } catch { const error = new Error("App-server returned malformed JSON"); this.emit("protocolError", error); this.fail(error); return; }
+    try { message = JSON.parse(line) as JsonRpcResponse | JsonRpcNotification; validateResponseEnvelope(message); } catch { const error = new Error("App-server returned malformed or invalid JSON"); this.emit("protocolError", error); this.fail(error); return; }
     if ("id" in message && typeof message.id === "number") {
-      const pending = this.pending.get(message.id); if (!pending) return;
-      this.pending.delete(message.id); clearTimeout(pending.timer); pending.resolve(message); return;
+      if (this.completedIds.has(message.id)) { this.fail(new Error("App-server returned a duplicate response id")); return; }
+      const pending = this.pending.get(message.id); if (!pending) { this.fail(new Error("App-server returned a stale response id")); return; }
+      this.pending.delete(message.id); this.completedIds.add(message.id); clearTimeout(pending.timer); pending.resolve(message); return;
     }
     if ("method" in message && typeof message.method === "string") { if ("id" in message && typeof message.id === "number") this.sendError(message.id, -32601, "Server-initiated requests are not supported"); else this.emit("notification", message); return; }
     this.emit("protocolError", new Error("App-server returned an invalid JSON-RPC message"));

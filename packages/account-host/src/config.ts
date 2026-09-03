@@ -10,6 +10,8 @@ export const MAX_LABEL_LENGTH = 80;
 export const MAX_PROTOCOL_LINE_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const LOGIN_TIMEOUT_MS = 10 * 60_000;
+export type AccountHostErrorCode = "invalid_input" | "unauthenticated" | "busy" | "request_timeout" | "transport_unavailable" | "unsafe_input" | "operation_failed";
+export class AccountHostError extends Error { constructor(readonly code: AccountHostErrorCode, message: string) { super(message); this.name = "AccountHostError"; } }
 
 export function validateSlotId(slotId: string): string {
   if (!/^[A-Za-z0-9_-]{16,80}$/.test(slotId)) throw new Error("Invalid account slot id");
@@ -38,9 +40,12 @@ export async function ensureCodexHome(home: string): Promise<void> {
   await writeFile(join(home, "config.toml"), 'cli_auth_credentials_store = "keyring"\nforced_login_method = "chatgpt"\n', { encoding: "utf8", mode: 0o600 });
 }
 export async function readSafeConfig(home: string): Promise<string> { return readFile(join(home, "config.toml"), "utf8"); }
-export function sanitizeError(error: unknown): Error {
+export function sanitizeError(error: unknown): AccountHostError {
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(message.replace(/https?:\/\/[^\s)]+/gi, "[url redacted]").replace(/(?:access|refresh|id|api)[-_ ]?token\s*[:=]\s*[^\s,}]+/gi, "[redacted]").slice(0, 500));
+  const lower = message.toLowerCase();
+  const code: AccountHostErrorCode = lower.includes("timed out") ? "request_timeout" : lower.includes("not authenticated") || lower.includes("no active authenticated") ? "unauthenticated" : lower.includes("queue is full") || lower.includes("already in progress") || lower.includes("must complete") ? "busy" : lower.includes("unsafe") || lower.includes("escaped") || lower.includes("redacted") ? "unsafe_input" : lower.includes("invalid") || lower.includes("unsupported") ? "invalid_input" : lower.includes("unavailable") || lower.includes("exited") || lower.includes("transport") ? "transport_unavailable" : "operation_failed";
+  const safeMessage: Record<AccountHostErrorCode, string> = { invalid_input: "The supplied value is invalid.", unauthenticated: "The selected account is not authenticated.", busy: "The account is busy with another operation.", request_timeout: "The account service did not respond in time.", transport_unavailable: "The account service is unavailable.", unsafe_input: "The supplied value was refused.", operation_failed: "The account operation could not be completed." };
+  return new AccountHostError(code, safeMessage[code]);
 }
 export function isAllowedAuthUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 4096) return false;

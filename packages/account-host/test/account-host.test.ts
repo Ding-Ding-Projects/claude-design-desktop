@@ -25,6 +25,7 @@ class FakeChild extends EventEmitter {
     return send({});
   }
   kill(): boolean { this.killed = true; this.emit("exit", 0, null); return true; }
+  notify(method: string, params: Record<string, unknown> = {}): void { this.stdout.write(`${JSON.stringify({ method, params })}\n`); }
 }
 function fakeSpawn(respondToRequests = true): { spawn: SpawnFn; children: FakeChild[] } { const children: FakeChild[] = []; const spawn: SpawnFn = () => { const child = new FakeChild(respondToRequests); children.push(child); return child as never; }; return { spawn, children }; }
 const roots: string[] = [];
@@ -39,17 +40,26 @@ describe("account host", () => {
     const config = await readSafeConfig(homeA); assert.match(config, /cli_auth_credentials_store = "keyring"/); assert.match(config, /forced_login_method = "chatgpt"/); assert.doesNotMatch(config, /auth\.json|api[_-]?key/i);
   });
   it("does not return a browser auth URL to renderer callers", async () => {
-    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); let opened = "";
-    const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn, openExternal: (url) => { opened = url; } });
-    const challenge = await host.startLogin({ flow: "browser" }); assert.deepEqual(challenge, { flow: "browser", loginId: "22222222-2222-2222-2222-222222222222" }); assert.match(opened, /^https:\/\/chatgpt\.com\//); assert.equal("authUrl" in challenge, false); await host.close();
+    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); let opened = ""; let childEnvironment: NodeJS.ProcessEnv | undefined;
+    const spawn: SpawnFn = (file, args, options) => { childEnvironment = options.env; return fake.spawn(file, args, options); };
+    const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn, environment: { OPENAI_API_KEY: "must-not-cross", CODEX_ACCESS_TOKEN: "must-not-cross", CODEX_HOME: "C:\\foreign" }, openExternal: (url) => { opened = url; } });
+    const challenge = await host.startLogin({ flow: "browser" }); assert.deepEqual(challenge, { flow: "browser", loginId: "22222222-2222-2222-2222-222222222222" }); assert.match(opened, /^https:\/\/chatgpt\.com\//); assert.equal("authUrl" in challenge, false); assert.equal(childEnvironment?.OPENAI_API_KEY, undefined); assert.equal(childEnvironment?.CODEX_ACCESS_TOKEN, undefined); assert.match(childEnvironment?.CODEX_HOME ?? "", new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))); await host.close();
   });
   it("supports device login cancellation and active account routing", async () => {
     const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn });
     const challenge = await host.startLogin({ flow: "deviceCode" }); assert.equal(challenge.flow, "deviceCode"); if (challenge.flow === "deviceCode") { assert.equal(challenge.userCode, "ABCD-1234"); assert.equal(challenge.verificationUrl, "https://auth.openai.com/codex/device"); }
     await host.cancelLogin(challenge.loginId); const accounts = await host.list(); assert.equal(accounts[0]?.state, "signedOut"); await host.activate(accounts[0]!.slotId); const thread = await host.startThread({}); assert.equal(thread.thread.id, "thr_1"); assert.equal("accessToken" in thread, false); await host.close();
   });
+  it("waits for both login notifications before accepting an account", async () => {
+    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn });
+    const challenge = await host.startLogin({ flow: "deviceCode" }); const child = fake.children[0]!; child.notify("account/updated"); await new Promise((resolve) => setImmediate(resolve)); assert.equal((await host.list())[0]?.state, "signingIn"); child.notify("account/login/completed", { loginId: challenge.loginId, success: true, error: null }); await new Promise((resolve) => setImmediate(resolve)); assert.equal((await host.list())[0]?.state, "ready"); await host.close();
+  });
+  it("refuses rate-limit reads while a turn is active until explicit interrupt", async () => {
+    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn });
+    const slot = await host.startLogin({ flow: "deviceCode" }); const child = fake.children[0]!; child.notify("account/login/completed", { loginId: slot.loginId, success: false }); await new Promise((resolve) => setImmediate(resolve)); const account = (await host.list())[0]!; await host.activate(account.slotId); const turn = await host.startTurn({ threadId: "thr_1", input: [{ type: "text", text: "hello" }] }); await assert.rejects(() => host.readRateLimits(account.slotId), /busy/); await host.interruptTurn("thr_1", turn.id); await host.close();
+  });
   it("enforces request deadlines and rejects unsupported methods before they reach the process", async () => {
-    const fake = fakeSpawn(false); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn, requestTimeoutMs: 10 }); await client.start(); await assert.rejects(() => client.request("account/read"), /timed out/); await client.close();
+    const fake = fakeSpawn(false); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn, requestTimeoutMs: 10 }); await client.start(); await assert.rejects(() => client.request("account/read", { refreshToken: false }), /timed out/); await client.close();
     const responsive = fakeSpawn(); const second = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: responsive.spawn }); await second.start(); await assert.rejects(() => second.request("not-a-stable-method")); await second.close();
   });
 });

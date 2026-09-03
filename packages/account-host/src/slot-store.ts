@@ -27,7 +27,7 @@ export class AccountSlotStore {
             slotId, label,
             email: typeof candidate.email === "string" ? candidate.email.slice(0, 320) : null,
             planType: typeof candidate.planType === "string" ? candidate.planType.slice(0, 80) : null,
-            state: normalizeState(candidate.state),
+            state: normalizeState(candidate.state), appServerVersion: typeof candidate.appServerVersion === "string" ? candidate.appServerVersion.slice(0, 32) : "0.152.1",
             lastVerifiedAt: typeof candidate.lastVerifiedAt === "string" ? candidate.lastVerifiedAt : null,
             home: resolveSlotHome(this.accountsRoot, slotId),
           });
@@ -39,7 +39,7 @@ export class AccountSlotStore {
   get(slotId: string): StoredAccountSlot { const value = this.slots.get(validateSlotId(slotId)); if (!value) throw new Error("Unknown account slot"); return { ...value }; }
   create(label: string): StoredAccountSlot {
     const slotId = randomUUID();
-    const value: StoredAccountSlot = { slotId, label: validateLabel(label), email: null, planType: null, state: "signedOut", lastVerifiedAt: null, home: resolveSlotHome(this.accountsRoot, slotId) };
+    const value: StoredAccountSlot = { slotId, label: validateLabel(label), email: null, planType: null, state: "signedOut", lastVerifiedAt: null, appServerVersion: "0.152.1", home: resolveSlotHome(this.accountsRoot, slotId) };
     this.slots.set(slotId, value); return { ...value };
   }
   update(slotId: string, patch: Partial<Omit<StoredAccountSlot, "slotId" | "home">>): StoredAccountSlot {
