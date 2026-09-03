@@ -50,6 +50,8 @@ test("semantic versions are monotonic and prereleases sort before stable", () =>
   assert.equal(compareSemanticVersions("1.2.4", "1.2.3"), 1);
   assert.equal(compareSemanticVersions("1.2.3-beta.2", "1.2.3-beta.10"), -1);
   assert.equal(compareSemanticVersions("1.2.3", "1.2.3-rc.1"), 1);
+  assert.equal(compareSemanticVersions("1.2.3-400", "1.2.3-401"), -1);
+  assert.equal(compareSemanticVersions("1.2.3-401", "1.2.3-400"), 1);
   assert.equal(compareSemanticVersions("1." + "9".repeat(1024) + ".0", "1.0.0"), 1);
   assert.throws(() => compareSemanticVersions("1.2.3-01", "1.2.3"), /leading-zero/);
 });

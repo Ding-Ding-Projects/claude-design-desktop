@@ -80,7 +80,10 @@ export function compareSemanticVersions(left: string, right: string): number {
     if (a[3][index] === b[3][index]) continue;
     const an = /^\d+$/.test(a[3][index]);
     const bn = /^\d+$/.test(b[3][index]);
-    if (an && bn) return Number(a[3][index]) > Number(b[3][index]) ? 1 : -1;
+    if (an && bn) {
+      if (a[3][index].length !== b[3][index].length) return a[3][index].length > b[3][index].length ? 1 : -1;
+      return a[3][index] > b[3][index] ? 1 : -1;
+    }
     if (an) return -1;
     if (bn) return 1;
     return a[3][index] > b[3][index] ? 1 : -1;
