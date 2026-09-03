@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "sourceTool": "built-in image_gen plus deterministic Node packaging converter",
+  "inspection": {
+    "method": "built-in view_image",
+    "result": "Raw built-in masters and Node-derived package sizes were inspected visually at master scale, 16 pixel scale, and social-preview scale. The canonical mark is text-free, genuinely transparent, simple, violet and teal, with no cursor or grid detail. The wide composition uses the same visual identity, generous margins, and abstract workspace panels without text, device framing, or third-party marks. No Python image manipulation or normalization was used. The raw built-in output retains visible tonal variation, so the no-gradient requirement remains an explicit limitation of the built-in route rather than a falsely claimed property."
+  },
+  "assets": {
+    "logoMaster": {
+      "path": "assets/branding/logo-master.png",
+      "sha256": "37b0a8d1bca1273de344c2f57b6940b46ff3a0d64be189b36924c001a84465d1",
+      "dimensions": { "width": 1254, "height": 1254 },
+      "format": "PNG",
+      "alpha": "present and non-opaque",
+      "prompt": "Use case: logo-brand\nAsset type: final spot-color vector icon\nPrimary request: Design an original minimal icon made from exactly two flat spot-color shapes. The outer shape is a simple interlocking C and D silhouette in one constant purple ink. The inner shape is one small teal triangular inset. Use exactly two opaque inks, deep purple and teal, with uniform color inside each shape. Think of a two-color screen-print stencil or a flat SVG icon, not a rendered illustration.\nScene/backdrop: transparent\nSubject: one centered abstract emblem\nStyle/medium: pure flat vector icon, spot colors, hard clean edges\nComposition/framing: 1:1 square, centered, generous clear margin, legible at 16 pixels\nColor palette: purple #6D28D9 and teal #14B8A6, exactly\nMaterials/textures: none\nText (verbatim): none\nConstraints: transparent background; exactly two opaque spot colors; constant color within each shape; no gradient; no shading; no lighting; no vignette; no glow; no shadow; no texture; no bevel; no 3D; no anti-aliased color fringes; no cursor; no grid; no text; no watermark; no extra colors; original symbol; no resemblance to existing logos\nAvoid: illustration, rendering, dimensionality, soft edges, bevels, gloss, color transitions, noise, checkerboard pixels"
+    },
+    "socialPreviewMaster": {
+      "path": "assets/branding/social-preview-master.png",
+      "sha256": "800764c2a4a217cbb8eb1b3bbc5c500cd74b5b1966e54ae77986bc3d0905a36c",
+      "dimensions": { "width": 1774, "height": 887 },
+      "format": "PNG",
+      "alpha": "none",
+      "prompt": "Use case: ads-marketing\nAsset type: final wide 2:1 social-preview composition\nInput images: Image 1: exact canonical mark reference; use it as the focal emblem while preserving its visual identity\nPrimary request: Create a wide composition around the supplied mark with clean geometric panels suggesting a local design workspace. Keep the emblem dominant and leave generous safe margins.\nScene/backdrop: deep purple product-identity field\nSubject: supplied canonical mark plus abstract workspace panels\nStyle/medium: clean flat product identity composition\nComposition/framing: 2:1 landscape, emblem on the left, panels on the right, no edge cropping\nColor palette: supplied violet and teal identity plus solid charcoal and violet panels\nMaterials/textures: opaque geometric fills only\nText (verbatim): none\nConstraints: no text; no gradients; no vignette; no glow; no texture; no 3D; no shadows; no cursor; no grid; no watermark; no device mockup; no third-party marks; preserve the supplied identity\nAvoid: emblem redraw, tonal background, photographic appearance, glossy effects, bevels, decorative clutter",
+      "editPrompt": "Use case: compositing\nAsset type: final wide 2:1 social-preview composition\nInput images: Image 1: exact canonical mark cutout; Image 2: wide layout reference\nPrimary request: Place Image 1 unchanged as the dominant focal emblem on the left side of the wide layout, with flat geometric workspace panels on the right.\nConstraints: preserve Image 1 pixels, silhouette, colors, and transparency; no gradients; no vignette; no glow; no texture; no 3D; no shadows; no cursor; no grid; no text; no watermark; no device mockup; no third-party marks"
+    },
+    "socialPreviewBackdrop": {
+      "path": "assets/branding/social-preview-backdrop.png",
+      "sha256": "942f32f0b28941ad4f29e8d2f6f9b812758e612f4466d04e157a6fda58b8c86f",
+      "dimensions": { "width": 1774, "height": 887 },
+      "format": "PNG",
+      "alpha": "none",
+      "source": "preserved generated wide backdrop, unchanged"
+    },
+    "canonicalPlacement": {
+      "source": "assets/branding/logo-master.png",
+      "destination": { "x": 32, "y": 24, "width": 840, "height": 840 },
+      "placementFillRgb": [33, 20, 65],
+      "method": "deterministic nearest-neighbor resize followed by alpha composite in Node"
+    },
+    "socialPreviewCopies": [
+      {
+        "path": "social-preview.png",
+        "sha256": "800764c2a4a217cbb8eb1b3bbc5c500cd74b5b1966e54ae77986bc3d0905a36c",
+        "dimensions": { "width": 1774, "height": 887 },
+        "format": "PNG",
+        "alpha": "none"
+      },
+      {
+        "path": "site/social-preview.png",
+        "sha256": "800764c2a4a217cbb8eb1b3bbc5c500cd74b5b1966e54ae77986bc3d0905a36c",
+        "dimensions": { "width": 1774, "height": 887 },
+        "format": "PNG",
+        "alpha": "none"
+      }
+    ],
+    "derivedDisplayAssets": [
+      { "path": "assets/branding/logo-16-source.png", "sha256": "e72714e90dc5f37881b9acff1990c5864e92fad4552f0343427fd1d0ff7bc2de", "dimensions": { "width": 16, "height": 16 }, "format": "PNG", "alpha": "present", "source": "dedicated simplified tiny source generated with built-in image_gen, packaged by Node converter" },
+      { "path": "assets/branding/logo-16.png", "sha256": "e72714e90dc5f37881b9acff1990c5864e92fad4552f0343427fd1d0ff7bc2de", "dimensions": { "width": 16, "height": 16 }, "format": "PNG", "alpha": "present", "source": "Node package copy of logo-16-source.png" },
+      { "path": "assets/branding/logo-24.png", "sha256": "4a54b795444b54fd01a27963ff7315828d302ca87e7a43eae5a108325bfe574c", "dimensions": { "width": 24, "height": 24 }, "format": "PNG", "alpha": "present", "source": "Node resize from logo-master.png" },
+      { "path": "assets/branding/logo-32.png", "sha256": "623f1e9d0bf8289bdf0cf1ce107b1a11beb2cb6f0605f3dcd7d036a579b3d824", "dimensions": { "width": 32, "height": 32 }, "format": "PNG", "alpha": "present", "source": "Node resize from logo-master.png" },
+      { "path": "assets/branding/logo-48.png", "sha256": "23abaf45d1a64868b307d32116b0656ac0dfa8ba23d7bbe60964b4e264a00a21", "dimensions": { "width": 48, "height": 48 }, "format": "PNG", "alpha": "present", "source": "Node resize from logo-master.png" },
+      { "path": "assets/branding/logo-64.png", "sha256": "60eac93b3bc52f091126b82ae92fc472f57f6fbfa22f7b9d09224edabf32ed16", "dimensions": { "width": 64, "height": 64 }, "format": "PNG", "alpha": "present", "source": "Node resize from logo-master.png" },
+      { "path": "assets/branding/logo-128.png", "sha256": "2085ef67a61cd8a3192ee833925e48801a740b67a8147a04109e743827a88f31", "dimensions": { "width": 128, "height": 128 }, "format": "PNG", "alpha": "present", "source": "Node resize from logo-master.png" },
+      { "path": "assets/branding/logo-256.png", "sha256": "0c50f702761392b0063a9415c8cdddcba68bdee10254a36f921ec6bc6bb8a786", "dimensions": { "width": 256, "height": 256 }, "format": "PNG", "alpha": "present", "source": "Node resize from logo-master.png" },
+      { "path": "assets/branding/app-icon.ico", "sha256": "fd7e3e93d1649f5fe4db81412589b28438f33fdf673b62a9ad6e1b4da124d30c", "dimensions": { "width": 256, "height": 256 }, "format": "ICO", "alpha": "present", "sizes": [16, 24, 32, 48, 64, 128, 256], "converter": "deterministic Node PNG decoder and encoder, nearest-neighbor resize, PNG-in-ICO packaging" }
+    ]
+  }
+}
