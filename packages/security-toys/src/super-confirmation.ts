@@ -1,3 +1,5 @@
+import { randomId } from "./vault";
+
 export type SuperConfirmationState = {
   operationId: string;
   action: string;
@@ -29,7 +31,7 @@ export class SuperConfirmation {
     this.action = action;
     this.affectedData = affectedData;
     this.verifyKey = verifyKey;
-    this.operationId = options.operationId ?? `op_${Math.random().toString(36).slice(2)}`;
+    this.operationId = options.operationId ?? randomId("operation");
     this.now = options.now ?? (() => Date.now());
     const expiresInMs = options.expiresInMs ?? 120_000;
     if (!Number.isInteger(expiresInMs) || expiresInMs < 1 || expiresInMs > 15 * 60_000) throw new Error("Confirmation expiry is out of bounds");

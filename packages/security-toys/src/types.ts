@@ -65,6 +65,8 @@ export type TotpEntry = {
   period: number;
   secretRef: string;
   createdAt: number;
+  groupId?: string;
+  order?: number;
 };
 
 export type RedactedTotpEntry = Omit<TotpEntry, "secretRef"> & { secretStored: true };

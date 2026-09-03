@@ -1,4 +1,4 @@
-import { parseOtpAuthUri, totpCode, verifyTotpCode, type TotpUri } from "./totp";
+import { normalizeBase32, parseOtpAuthUri, totpCodeAt, verifyTotpCode, type TotpUri } from "./totp";
 import type { RedactedTotpEntry, TotpEntry } from "./types";
 import { randomId, SecretVault } from "./vault";
 
@@ -10,21 +10,45 @@ export interface LocalQrInputAdapters {
   scanCamera(): string | undefined;
 }
 
+export type AuthenticatorGroup = { id: string; name: string; order: number };
+
+export interface AuthenticatorMetadataStore {
+  listEntries(): TotpEntry[];
+  saveEntry(entry: TotpEntry): void;
+  removeEntry(id: string): void;
+  listGroups(): AuthenticatorGroup[];
+  saveGroup(group: AuthenticatorGroup): void;
+}
+
+export class MemoryAuthenticatorMetadataStore implements AuthenticatorMetadataStore {
+  private readonly entries = new Map<string, TotpEntry>();
+  private readonly groups = new Map<string, AuthenticatorGroup>();
+  listEntries(): TotpEntry[] { return Array.from(this.entries.values(), (entry) => ({ ...entry })); }
+  saveEntry(entry: TotpEntry): void { this.entries.set(entry.id, { ...entry }); }
+  removeEntry(id: string): void { this.entries.delete(id); }
+  listGroups(): AuthenticatorGroup[] { return Array.from(this.groups.values(), (group) => ({ ...group })); }
+  saveGroup(group: AuthenticatorGroup): void { this.groups.set(group.id, { ...group }); }
+}
+
 export class AuthenticatorManager {
   private readonly entries = new Map<string, TotpEntry>();
   private readonly vault: SecretVault;
   private readonly now: () => number;
+  private readonly metadata: AuthenticatorMetadataStore;
 
-  constructor(vault: SecretVault, now: () => number = () => Date.now()) {
+  constructor(vault: SecretVault, now: () => number = () => Date.now(), metadata: AuthenticatorMetadataStore = new MemoryAuthenticatorMetadataStore()) {
     this.vault = vault;
     this.now = now;
+    this.metadata = metadata;
+    for (const entry of metadata.listEntries()) this.entries.set(entry.id, { ...entry });
   }
 
   async add(input: AuthenticatorInput): Promise<RedactedTotpEntry> {
     validateAuthenticatorInput(input);
+    const normalizedSecret = normalizeBase32(input.secret);
     const id = randomId("totp");
     const secretRef = randomId("totp-secret");
-    await this.vault.put(secretRef, input.secret);
+    await this.vault.put(secretRef, normalizedSecret);
     const entry: TotpEntry = {
       id,
       issuer: input.issuer,
@@ -36,6 +60,7 @@ export class AuthenticatorManager {
       createdAt: this.now()
     };
     this.entries.set(id, entry);
+    this.metadata.saveEntry(entry);
     return redact(entry);
   }
 
@@ -89,27 +114,62 @@ export class AuthenticatorManager {
     return this.list().filter((entry) => `${entry.issuer} ${entry.account}`.toLocaleLowerCase().includes(normalized));
   }
 
-  async code(id: string, timestamp = this.now()): Promise<{ code: string; secondsRemaining: number; nextCode: string }> {
+  async code(id: string): Promise<{ code: string; secondsRemaining: number; nextCode: string }> {
     const entry = this.require(id);
     const secret = await this.secret(entry);
+    const timestamp = this.now();
     const seconds = Math.floor(timestamp / 1000);
     const elapsed = seconds % entry.period;
     return {
-      code: await totpCode(secret, { ...entry, timestamp }),
+      code: await totpCodeAt(secret, timestamp, { ...entry }),
       secondsRemaining: entry.period - elapsed,
-      nextCode: await totpCode(secret, { ...entry, timestamp: timestamp + entry.period * 1000 })
+      nextCode: await totpCodeAt(secret, timestamp + entry.period * 1000, { ...entry })
     };
   }
 
-  async verify(id: string, candidate: string, timestamp = this.now()): Promise<boolean> {
+  async verify(id: string, candidate: string): Promise<boolean> {
     const entry = this.require(id);
-    return verifyTotpCode(await this.secret(entry), candidate, { ...entry, timestamp });
+    return verifyTotpCode(await this.secret(entry), candidate, { ...entry });
   }
 
   async remove(id: string): Promise<void> {
     const entry = this.require(id);
     await this.vault.delete(entry.secretRef);
     this.entries.delete(id);
+    this.metadata.removeEntry(id);
+  }
+
+  groups(): AuthenticatorGroup[] { return this.metadata.listGroups().sort((left, right) => left.order - right.order); }
+
+  createGroup(name: string): AuthenticatorGroup {
+    if (!name.trim() || name.length > 120) throw new Error("Authenticator group name is required and bounded");
+    const group = { id: randomId("totp-group"), name: name.trim(), order: this.groups().length };
+    this.metadata.saveGroup(group);
+    return { ...group };
+  }
+
+  moveToGroup(id: string, groupId: string | undefined): RedactedTotpEntry {
+    const entry = this.require(id);
+    if (groupId && !this.groups().some((group) => group.id === groupId)) throw new Error("Unknown authenticator group");
+    entry.groupId = groupId;
+    this.metadata.saveEntry(entry);
+    return redact(entry);
+  }
+
+  reorder(ids: string[]): RedactedTotpEntry[] {
+    const current = this.list();
+    const expected = new Set(current.map((entry) => entry.id));
+    if (ids.length !== expected.size || new Set(ids).size !== ids.length || ids.some((id) => !expected.has(id))) throw new Error("Authenticator reorder must name each entry exactly once");
+    ids.forEach((id, order) => { const entry = this.require(id); entry.order = order; this.metadata.saveEntry(entry); });
+    return this.list().sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+  }
+
+  async bulkRemove(ids: string[], authorize: () => Promise<boolean>): Promise<number> {
+    const unique = [...new Set(ids)];
+    unique.forEach((id) => this.require(id));
+    if (!await authorize()) throw new Error("Bulk removal was not authorized");
+    for (const id of unique) await this.remove(id);
+    return unique.length;
   }
 
   exportRedacted(): string {
@@ -132,6 +192,7 @@ export class AuthenticatorManager {
 function validateAuthenticatorInput(input: AuthenticatorInput): void {
   if (!input.issuer.trim() || !input.account.trim()) throw new Error("Issuer and account are required");
   if (!input.secret.trim()) throw new Error("Authenticator secret is required");
+  normalizeBase32(input.secret);
   if (!Number.isInteger(input.period) || input.period < 1 || input.period > 86_400) throw new Error("Period is out of bounds");
   if (![6, 7, 8].includes(input.digits)) throw new Error("Digits must be 6, 7, or 8");
   if (!( ["SHA-1", "SHA-256", "SHA-512"] as readonly string[]).includes(input.algorithm)) throw new Error("Algorithm is unsupported");

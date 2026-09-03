@@ -1,7 +1,7 @@
 import * as React from "react";
 import type { LockPolicy } from "./types";
 import { LOCK_DISCLOSURE } from "./locks";
-
+import { routeActivation } from "./activation";
 export type LockableProps = {
   elementId: string;
   locked: boolean;
@@ -14,8 +14,7 @@ export type LockableProps = {
 /** Operable wrapper used when a native disabled control cannot receive unlock events. */
 export function LockableElement(props: LockableProps): React.ReactElement {
   const handleActivate = (): void => {
-    if (props.locked) props.onUnlockRequest();
-    else props.onActivate();
+    routeActivation(props.locked, props.onActivate, props.onUnlockRequest);
   };
   return React.createElement(
     "div",
@@ -26,12 +25,12 @@ export function LockableElement(props: LockableProps): React.ReactElement {
       "aria-label": props.label,
       "aria-disabled": props.locked,
       "data-locked": props.locked ? "true" : "false",
-      onClickCapture: (event: MouseEvent) => { event.stopPropagation(); event.preventDefault(); handleActivate(); },
-      onPointerDownCapture: (event: PointerEvent) => { event.stopPropagation(); event.preventDefault(); },
-      onTouchStartCapture: (event: TouchEvent) => { event.stopPropagation(); event.preventDefault(); },
+      onClickCapture: (event: MouseEvent) => { if (props.locked) { event.stopPropagation(); event.preventDefault(); handleActivate(); } else if (event.target === event.currentTarget) handleActivate(); },
+      onPointerDownCapture: (event: PointerEvent) => { if (props.locked) { event.stopPropagation(); event.preventDefault(); } },
+      onTouchStartCapture: (event: TouchEvent) => { if (props.locked) { event.stopPropagation(); event.preventDefault(); } },
       onKeyDownCapture: (event: KeyboardEvent) => {
-        event.stopPropagation();
-        if (event.key === "Enter" || event.key === " ") {
+        if (props.locked) event.stopPropagation();
+        if ((event.key === "Enter" || event.key === " ") && (props.locked || event.target === event.currentTarget)) {
           event.preventDefault();
           handleActivate();
         }

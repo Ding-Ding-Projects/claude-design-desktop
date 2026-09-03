@@ -9,7 +9,7 @@ import {
   type UnlockSession
 } from "./types";
 import { randomId, SecretVault, storeHashedSecret, verifySecret } from "./vault";
-import { normalizeBase32, verifyTotpCode } from "./totp";
+import { normalizeBase32, verifyTotpCodeAt } from "./totp";
 
 export const LOCK_DISCLOSURE = "This lock is for fun only. It is not security, encryption, or protection from another person using this computer.";
 
@@ -18,15 +18,19 @@ export type LockManagerOptions = {
   now?: () => number;
   maxAttempts?: number;
   state?: LockStatePersistence;
+  cooldownMs?: number;
 };
 
 export interface LockStatePersistence {
   loadAttempts(lockId: string, factors: readonly LockFactor[]): Map<LockFactor, number>;
   saveAttempt(lockId: string, factor: LockFactor, attempts: number): void;
+  loadCooldown(lockId: string, factor: LockFactor): number;
+  saveCooldown(lockId: string, factor: LockFactor, until: number): void;
 }
 
 export class MemoryLockStatePersistence implements LockStatePersistence {
   private readonly attempts = new Map<string, Map<LockFactor, number>>();
+  private readonly cooldowns = new Map<string, Map<LockFactor, number>>();
   loadAttempts(lockId: string, factors: readonly LockFactor[]): Map<LockFactor, number> {
     const existing = this.attempts.get(lockId) ?? new Map(factors.map((factor) => [factor, 0]));
     this.attempts.set(lockId, existing);
@@ -36,6 +40,12 @@ export class MemoryLockStatePersistence implements LockStatePersistence {
     const record = this.attempts.get(lockId) ?? new Map<LockFactor, number>();
     record.set(factor, attempts);
     this.attempts.set(lockId, record);
+  }
+  loadCooldown(lockId: string, factor: LockFactor): number { return this.cooldowns.get(lockId)?.get(factor) ?? 0; }
+  saveCooldown(lockId: string, factor: LockFactor, until: number): void {
+    const record = this.cooldowns.get(lockId) ?? new Map<LockFactor, number>();
+    record.set(factor, until);
+    this.cooldowns.set(lockId, record);
   }
 }
 
@@ -52,6 +62,7 @@ export class LockManager {
   private readonly now: () => number;
   private readonly maxAttempts: number;
   private readonly state: LockStatePersistence;
+  private readonly cooldownMs: number;
 
   constructor(options: LockManagerOptions) {
     this.vault = options.vault;
@@ -59,6 +70,8 @@ export class LockManager {
     this.maxAttempts = options.maxAttempts ?? 5;
     if (!Number.isInteger(this.maxAttempts) || this.maxAttempts < 1 || this.maxAttempts > 100) throw new Error("Attempt budget is out of bounds");
     this.state = options.state ?? new MemoryLockStatePersistence();
+    this.cooldownMs = options.cooldownMs ?? 15 * 60_000;
+    if (!Number.isInteger(this.cooldownMs) || this.cooldownMs < 1_000 || this.cooldownMs > 24 * 60 * 60_000) throw new Error("Lock cooldown is out of bounds");
   }
 
   async createLock(input: {
@@ -83,6 +96,7 @@ export class LockManager {
     if (!input.recoveryDirectory.trim()) throw new Error("A recovery directory is required");
     const totpMetadata = input.totpMetadata ?? { algorithm: "SHA-1" as const, digits: 6 as const, period: 30 };
     if (!Number.isInteger(totpMetadata.period) || totpMetadata.period < 1 || totpMetadata.period > 86_400) throw new Error("TOTP metadata period is out of bounds");
+    if (!( ["SHA-1", "SHA-256", "SHA-512"] as readonly string[]).includes(totpMetadata.algorithm) || ![6, 7, 8].includes(totpMetadata.digits)) throw new Error("TOTP metadata is invalid");
 
     const id = randomId("lock");
     const credentialRefs: InternalLockRecord["credentialRefs"] = {};
@@ -149,41 +163,56 @@ export class LockManager {
     return cloneSession(session);
   }
 
-  async verifyNextFactor(lockId: string, sessionId: string, candidate: string, at = this.now()): Promise<UnlockSession> {
+  async verifyNextFactor(lockId: string, sessionId: string, candidate: string): Promise<UnlockSession> {
     const lock = this.requireLock(lockId);
     validateSessionId(sessionId);
     const session = this.sessions.get(sessionId);
     if (!session || session.lockId !== lockId) throw new Error("A valid unlock session is required");
     const current = session.factors.find((factor) => !factor.verified);
     if (!current) return cloneSession(session);
-    if (current.attempts >= this.maxAttempts) throw new Error("Attempt budget exhausted; use the documented recovery route");
-    current.attempts += 1;
-    this.attemptBudgets.get(lockId)?.set(current.factor, current.attempts);
-    this.state.saveAttempt(lockId, current.factor, current.attempts);
+    const now = this.now();
+    const cooldownUntil = this.state.loadCooldown(lockId, current.factor);
+    if (cooldownUntil > now) throw new Error("Attempt budget exhausted; wait for the cooldown or use the documented recovery route");
+    if (current.attempts >= this.maxAttempts) {
+      current.attempts = 0;
+      this.attemptBudgets.get(lockId)?.set(current.factor, 0);
+      this.state.saveAttempt(lockId, current.factor, 0);
+    }
     const ref = lock.credentialRefs[current.factor];
     let valid = false;
     if (ref) {
       if (current.factor === "totp") {
         const secret = await this.vault.get(ref);
-        valid = secret ? await verifyTotpCode(secret, candidate, { timestamp: at, ...lock.totp }) : false;
+        valid = secret ? await verifyTotpCodeAt(secret, candidate, now, { ...lock.totp }) : false;
       } else {
         valid = await verifySecret(this.vault, ref, candidate);
       }
     }
-    if (!valid) return cloneSession(session);
+    if (!valid) {
+      current.attempts += 1;
+      this.attemptBudgets.get(lockId)?.set(current.factor, current.attempts);
+      this.state.saveAttempt(lockId, current.factor, current.attempts);
+      if (current.attempts >= this.maxAttempts) this.state.saveCooldown(lockId, current.factor, now + this.cooldownMs);
+      return cloneSession(session);
+    }
     current.verified = true;
     if (session.factors.every((factor) => factor.verified)) {
       session.complete = true;
-      session.unlockedUntil = unlockExpiry(lock.unlockDuration, at);
+      session.unlockedUntil = unlockExpiry(lock.unlockDuration, now);
+      for (const factor of session.factors) {
+        this.attemptBudgets.get(lockId)?.set(factor.factor, 0);
+        this.state.saveAttempt(lockId, factor.factor, 0);
+        this.state.saveCooldown(lockId, factor.factor, 0);
+      }
     }
     return cloneSession(session);
   }
 
-  isUnlocked(lockId: string, sessionId: string, at = this.now()): boolean {
+  isUnlocked(lockId: string, sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (session?.lockId !== lockId) return false;
     if (!session?.complete) return false;
-    return session.unlockedUntil === null || session.unlockedUntil > at;
+    return session.unlockedUntil === null || session.unlockedUntil > this.now();
   }
 
   relock(lockId: string, sessionId: string): void {
@@ -203,10 +232,10 @@ export class LockManager {
     this.locks.delete(lockId);
   }
 
-  activate(lockId: string, sessionId: string, action: () => void, at = this.now()): ActivationResult {
+  activate(lockId: string, sessionId: string, action: () => void): ActivationResult {
     const lock = this.requireLock(lockId);
     validateSessionId(sessionId);
-    if (!this.isUnlocked(lockId, sessionId, at)) {
+    if (!this.isUnlocked(lockId, sessionId)) {
       return { kind: "authentication-required", lockId, elementId: lock.elementId };
     }
     action();

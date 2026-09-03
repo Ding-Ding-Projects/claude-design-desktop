@@ -4,7 +4,6 @@ export type TotpOptions = {
   algorithm?: AuthenticatorAlgorithm;
   digits?: 6 | 7 | 8;
   period?: number;
-  timestamp?: number;
   skewSteps?: number;
 };
 
@@ -68,7 +67,7 @@ export function encodeBase32(value: Uint8Array): string {
 export async function hotpCode(secret: string, counter: number, options: TotpOptions = {}): Promise<string> {
   const algorithm = options.algorithm ?? "SHA-1";
   const digits = options.digits ?? 6;
-  if (!Number.isInteger(counter) || counter < 0) throw new Error("HOTP counter must be a non-negative integer");
+  if (!Number.isSafeInteger(counter) || counter < 0) throw new Error("HOTP counter must be a non-negative safe integer");
   if (![6, 7, 8].includes(digits)) throw new Error("HOTP digits must be 6, 7, or 8");
   const key = await globalThis.crypto.subtle.importKey(
     "raw",
@@ -93,18 +92,29 @@ export async function hotpCode(secret: string, counter: number, options: TotpOpt
 }
 
 export async function totpCode(secret: string, options: TotpOptions = {}): Promise<string> {
+  return totpCodeAt(secret, Date.now(), options);
+}
+
+/** Deterministic clock seam for tests and server-owned clock adapters. */
+export async function totpCodeAt(secret: string, timestamp: number, options: TotpOptions = {}): Promise<string> {
   const period = options.period ?? 30;
   if (!Number.isInteger(period) || period < 1 || period > 86_400) throw new Error("TOTP period is out of bounds");
-  const timestamp = options.timestamp ?? Date.now();
+  if (!Number.isFinite(timestamp) || timestamp < 0) throw new Error("TOTP timestamp is out of bounds");
   return hotpCode(secret, Math.floor(timestamp / 1000 / period), options);
 }
 
 export async function verifyTotpCode(secret: string, candidate: string, options: TotpOptions = {}): Promise<boolean> {
+  return verifyTotpCodeAt(secret, candidate, Date.now(), options);
+}
+
+export async function verifyTotpCodeAt(secret: string, candidate: string, timestamp: number, options: TotpOptions = {}): Promise<boolean> {
   const digits = options.digits ?? 6;
+  if (![6, 7, 8].includes(digits)) return false;
   if (!new RegExp(`^\\d{${digits}}$`).test(candidate)) return false;
   const period = options.period ?? 30;
-  const timestamp = options.timestamp ?? Date.now();
   const skewSteps = options.skewSteps ?? 1;
+  if (!Number.isInteger(period) || period < 1 || period > 86_400) return false;
+  if (!Number.isInteger(skewSteps) || skewSteps < 0 || skewSteps > 2 || !Number.isFinite(timestamp) || timestamp < 0) return false;
   const counter = Math.floor(timestamp / 1000 / period);
   for (let offset = -skewSteps; offset <= skewSteps; offset += 1) {
     if (counter + offset >= 0 && await hotpCode(secret, counter + offset, options) === candidate) return true;
@@ -137,15 +147,23 @@ export function parseOtpAuthUri(value: string): TotpUri {
     throw new Error("Authenticator input is not a valid otpauth URI");
   }
   if (url.protocol !== "otpauth:" || url.hostname !== "totp") throw new Error("Only otpauth://totp URIs are supported");
-  const secret = normalizeBase32(url.searchParams.get("secret") ?? "");
-  const label = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  const secret = normalizeBase32(uniqueQueryParam(url, "secret") ?? "");
+  let label: string;
+  try {
+    label = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  } catch {
+    throw new Error("Authenticator URI label is malformed");
+  }
   const separator = label.indexOf(":");
   const account = separator >= 0 ? label.slice(separator + 1) : label;
-  const issuer = url.searchParams.get("issuer") ?? (separator >= 0 ? label.slice(0, separator) : "");
+  const issuerParam = uniqueQueryParam(url, "issuer");
+  const labelIssuer = separator >= 0 ? label.slice(0, separator) : "";
+  if (issuerParam && labelIssuer && issuerParam !== labelIssuer) throw new Error("Authenticator issuer does not match its URI label");
+  const issuer = issuerParam ?? labelIssuer;
   if (!issuer || !account) throw new Error("Authenticator URI must include issuer and account");
-  const algorithm = normalizeAlgorithm(url.searchParams.get("algorithm") ?? "SHA1");
-  const digits = Number(url.searchParams.get("digits") ?? "6");
-  const period = Number(url.searchParams.get("period") ?? "30");
+  const algorithm = normalizeAlgorithm(uniqueQueryParam(url, "algorithm") ?? "SHA1");
+  const digits = Number(uniqueQueryParam(url, "digits") ?? "6");
+  const period = Number(uniqueQueryParam(url, "period") ?? "30");
   if (![6, 7, 8].includes(digits) || !Number.isInteger(digits)) throw new Error("Authenticator digits must be 6, 7, or 8");
   if (!Number.isInteger(period) || period < 1 || period > 86_400) throw new Error("Authenticator period is out of bounds");
   return { issuer, account, secret, algorithm, digits: digits as 6 | 7 | 8, period };
@@ -159,18 +177,24 @@ function normalizeAlgorithm(value: string): AuthenticatorAlgorithm {
   throw new Error("Authenticator algorithm must be SHA-1, SHA-256, or SHA-512");
 }
 
+function uniqueQueryParam(url: URL, name: string): string | undefined {
+  const values = url.searchParams.getAll(name);
+  if (values.length > 1) throw new Error(`Authenticator URI repeats ${name}`);
+  return values[0];
+}
+
 /** A local, renderer-neutral QR contract. The desktop renderer supplies the actual QR encoder. */
 export type LocalQrModel = {
-  uri: string;
   textAlternative: string;
   revealRequired: true;
   networkRequired: false;
 };
 
+export type PrivilegedQrRenderer = (uri: string) => LocalQrModel;
+
 export function localQrModel(input: TotpUri): LocalQrModel {
-  const uri = buildOtpAuthUri(input);
+  buildOtpAuthUri(input);
   return {
-    uri,
     textAlternative: `Authenticator QR pairing for ${input.issuer}, ${input.account}. Manual secret is available through an explicit reveal action.`,
     revealRequired: true,
     networkRequired: false
@@ -202,8 +226,9 @@ export class TotpPairingSession {
     };
   }
 
-  qr(): LocalQrModel {
-    return localQrModel(this.requireLiveInput());
+  qr(renderer: PrivilegedQrRenderer): LocalQrModel {
+    const input = this.requireLiveInput();
+    return renderer(buildOtpAuthUri(input));
   }
 
   revealManualSecret(): { secret: string; algorithm: AuthenticatorAlgorithm; digits: 6 | 7 | 8; period: number } {
@@ -212,10 +237,10 @@ export class TotpPairingSession {
     return { secret: input.secret, algorithm: input.algorithm, digits: input.digits, period: input.period };
   }
 
-  async confirm(code: string, timestamp = Date.now()): Promise<boolean> {
+  async confirm(code: string): Promise<boolean> {
     const input = this.input;
     if (!input || this.now() >= this.expiresAt) { this.dispose(); return false; }
-    this.armed = await verifyTotpCode(input.secret, code, { ...input, timestamp, skewSteps: 0 });
+    this.armed = await verifyTotpCodeAt(input.secret, code, this.now(), { ...input, skewSteps: 0 });
     return this.armed;
   }
 

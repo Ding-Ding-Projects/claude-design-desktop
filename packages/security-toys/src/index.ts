@@ -7,3 +7,4 @@ export * from "./history";
 export * from "./support-tickets";
 export * from "./super-confirmation";
 export * from "./unlock-ladder";
+export * from "./activation";

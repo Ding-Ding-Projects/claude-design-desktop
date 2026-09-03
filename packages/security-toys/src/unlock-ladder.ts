@@ -31,6 +31,7 @@ type ActiveChallenge = LadderChallenge & { userId: string; sessionId: string };
 export interface LadderAuthorityAdapter {
   readBudget(userId: string): number[];
   writeBudget(userId: string, starts: number[]): void;
+  authorizeLadderStart(userId: string, sessionId: string, lockout: { waitingUntil: number; attemptsRemaining: number; maxAttempts: number }, now: number, maxSkipsPerHour: number, challenge: ActiveChallenge): boolean;
   readChallenge(nonce: string): ActiveChallenge | undefined;
   writeChallenge(challenge: ActiveChallenge): void;
   deleteChallenge(nonce: string): void;
@@ -39,8 +40,20 @@ export interface LadderAuthorityAdapter {
 export class MemoryLadderAuthority implements LadderAuthorityAdapter {
   private readonly budgets = new Map<string, number[]>();
   private readonly challenges = new Map<string, ActiveChallenge>();
+  private readonly usedSessions = new Set<string>();
   readBudget(userId: string): number[] { return [...(this.budgets.get(userId) ?? [])]; }
   writeBudget(userId: string, starts: number[]): void { this.budgets.set(userId, [...starts]); }
+  authorizeLadderStart(userId: string, sessionId: string, lockout: Lockout, now: number, maxSkipsPerHour: number, challenge: ActiveChallenge): boolean {
+    if (lockout.waitingUntil <= now || lockout.attemptsRemaining < 1 || lockout.attemptsRemaining > lockout.maxAttempts) return false;
+    if (this.usedSessions.has(sessionId)) return false;
+    const current = this.budgets.get(userId) ?? [];
+    const live = current.filter((value) => value > now - 60 * 60 * 1000);
+    if (live.length >= maxSkipsPerHour) return false;
+    this.budgets.set(userId, [...live, now]);
+    this.challenges.set(challenge.nonce, structuredClone(challenge));
+    this.usedSessions.add(sessionId);
+    return true;
+  }
   readChallenge(nonce: string): ActiveChallenge | undefined { const value = this.challenges.get(nonce); return value ? structuredClone(value) : undefined; }
   writeChallenge(challenge: ActiveChallenge): void { this.challenges.set(challenge.nonce, structuredClone(challenge)); }
   deleteChallenge(nonce: string): void { this.challenges.delete(nonce); }
@@ -62,10 +75,10 @@ export class UnlockLadderServer {
   begin(userId: string, sessionId: string, lockout: Lockout, schoolMode = false): LadderChallenge | undefined {
     validateSessionId(sessionId);
     const now = this.now();
-    if (lockout.waitingUntil <= now || !this.canSkip(userId, now)) return undefined;
+    if (lockout.waitingUntil <= now) return undefined;
     const rung: LadderRung = schoolMode ? "sums" : "dish";
-    const challenge = this.issue(userId, sessionId, rung, now, 0);
-    this.authority.writeBudget(userId, [...this.authority.readBudget(userId), now]);
+    const challenge = this.issue(userId, sessionId, rung, now, 0, false);
+    if (!this.authority.authorizeLadderStart(userId, sessionId, lockout, now, this.maxSkipsPerHour, challenge)) return undefined;
     return publicChallenge(challenge);
   }
 
@@ -115,13 +128,7 @@ export class UnlockLadderServer {
     return Math.max(0, this.maxSkipsPerHour - current.length);
   }
 
-  private canSkip(userId: string, now: number): boolean {
-    const current = this.authority.readBudget(userId).filter((value) => value > now - 60 * 60 * 1000);
-    this.authority.writeBudget(userId, current);
-    return current.length < this.maxSkipsPerHour;
-  }
-
-  private issue(userId: string, sessionId: string, rung: LadderRung, now: number, wrongDishes: number): ActiveChallenge {
+  private issue(userId: string, sessionId: string, rung: LadderRung, now: number, wrongDishes: number, persist = true): ActiveChallenge {
     const nonce = randomId("ladder");
     const challenge: ActiveChallenge = { userId, sessionId, nonce, rung, expiresAt: now + 120_000 };
     if (rung === "dish") {
@@ -140,7 +147,7 @@ export class UnlockLadderServer {
         moles: Array.from({ length: 5 }, (_, index) => ({ id: `${nonce}_mole_${index}`, cell: index, visibleAt: start + index * 1_500, hiddenAt: start + index * 1_500 + 4_000 }))
       };
     }
-    this.authority.writeChallenge(challenge);
+    if (persist) this.authority.writeChallenge(challenge);
     return challenge;
   }
 

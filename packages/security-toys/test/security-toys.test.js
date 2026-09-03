@@ -10,7 +10,14 @@ test("RFC 6238 vectors cover SHA-1, SHA-256, and SHA-512", async () => {
   ];
   for (const [raw, algorithm, expected] of vectors) {
     const secret = toys.encodeBase32(new TextEncoder().encode(raw));
-    assert.equal(await toys.totpCode(secret, { algorithm, digits: 8, timestamp: 59_000 }), expected);
+    assert.equal(await toys.totpCodeAt(secret, 59_000, { algorithm, digits: 8 }), expected);
+  }
+});
+
+test("RFC 4226 HOTP vector matrix passes all published counters", async () => {
+  const secret = toys.encodeBase32(new TextEncoder().encode("12345678901234567890"));
+  for (const [counter, expected] of [[0, "755224"], [1, "287082"], [2, "359152"], [3, "969429"], [4, "338314"], [5, "254676"], [6, "287922"], [7, "162583"], [8, "399871"], [9, "520489"]]) {
+    assert.equal(await toys.hotpCode(secret, counter, { algorithm: "SHA-1", digits: 6 }), expected);
   }
 });
 
@@ -28,10 +35,10 @@ test("pairing requires an explicit local reveal and code confirmation before arm
   assert.equal(pairing.wasManuallyRevealed(), false);
   const manual = pairing.revealManualSecret();
   assert.equal(pairing.wasManuallyRevealed(), true);
-  const code = await toys.totpCode(manual.secret, { ...manual, timestamp: 30_000 });
-  assert.equal(await pairing.confirm("000000", 30_000), false);
-  assert.equal(await pairing.confirm(code, 30_000), true);
-  assert.equal(pairing.qr().networkRequired, false);
+  const code = await toys.totpCodeAt(manual.secret, Date.now(), manual);
+  assert.equal(await pairing.confirm("000000"), false);
+  assert.equal(await pairing.confirm(code), true);
+  assert.equal(pairing.qr((uri) => ({ textAlternative: uri.startsWith("otpauth://") ? "paired" : "bad", revealRequired: true, networkRequired: false })).networkRequired, false);
   assert.deepEqual(pairing.consumeArmed().issuer, "Example");
   assert.equal(pairing.consumeArmed(), undefined);
 });
@@ -41,10 +48,10 @@ test("pairing expires, purges its secret, and serializes only status", async () 
   const pairing = new toys.TotpPairingSession("Example", "alice", { now: () => now, expiresInMs: 1_000 });
   const manual = pairing.revealManualSecret();
   now = 1_001;
-  assert.throws(() => pairing.qr(), /expired/);
+  assert.throws(() => pairing.qr(() => ({ textAlternative: "", revealRequired: true, networkRequired: false })), /expired/);
   assert.equal(pairing.consumeArmed(), undefined);
   assert.deepEqual(JSON.parse(JSON.stringify(pairing)), { armed: false, expired: true });
-  assert.equal(await toys.verifyTotpCode(manual.secret, "000000", { timestamp: 0 }), false);
+  assert.equal(await toys.verifyTotpCodeAt(manual.secret, "000000", 0), false);
 });
 
 test("authenticator accepts manual and URI imports, exposes countdown and next code, and redacts vault references", async () => {
@@ -52,7 +59,7 @@ test("authenticator accepts manual and URI imports, exposes countdown and next c
   const authenticator = new toys.AuthenticatorManager(vault, () => 59_000);
   const entry = await authenticator.addManual({ issuer: "Example", account: "alice", secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", algorithm: "SHA-1", digits: 6, period: 30 });
   assert.equal("secretRef" in entry, false);
-  const display = await authenticator.code(entry.id, 59_000);
+  const display = await authenticator.code(entry.id);
   assert.equal(display.code, "287082");
   assert.equal(display.secondsRemaining, 1);
   assert.equal(display.nextCode.length, 6);
@@ -75,7 +82,7 @@ test("each lock policy enforces ordered factors, independent records, duration, 
     const session = manager.beginUnlock(lock.id, sessionId);
     assert.equal(session.sessionId, sessionId);
     for (const factor of toys.LOCK_POLICY_FACTORS[policy]) {
-      const value = factor === "pin" ? "1234" : factor === "password" ? "password-123" : await toys.totpCode("JBSWY3DPEHPK3PXP", { timestamp: now });
+      const value = factor === "pin" ? "1234" : factor === "password" ? "password-123" : await toys.totpCodeAt("JBSWY3DPEHPK3PXP", now, {});
       const state = await manager.verifyNextFactor(lock.id, sessionId, value, now);
       assert.equal(state.factors.find((candidate) => candidate.factor === factor).verified, true);
     }
@@ -110,6 +117,26 @@ test("factor attempt budgets survive closing one prompt and reopening another", 
   assert.equal(reopened.factors[0].attempts, 1);
   await manager.verifyNextFactor(lock.id, "session-b", "wrong");
   await assert.rejects(() => manager.verifyNextFactor(lock.id, "session-b", "1234"), /Attempt budget exhausted/);
+});
+
+test("only failed factors consume budget, successful unlock resets it, and cooldown can clear", async () => {
+  let now = 1_000;
+  const manager = new toys.LockManager({ vault: new toys.MemorySecretVault(), maxAttempts: 2, cooldownMs: 1_000, now: () => now });
+  const lock = await manager.createLock({ elementId: "button", policy: "PIN", pin: "1234", recoveryDirectory: "C:/AppData" });
+  manager.beginUnlock(lock.id, "success-01");
+  await manager.verifyNextFactor(lock.id, "success-01", "1234");
+  manager.relock(lock.id, "success-01");
+  assert.equal(manager.beginUnlock(lock.id, "success-02").factors[0].attempts, 0);
+  manager.relock(lock.id, "success-02");
+  manager.beginUnlock(lock.id, "failed-01");
+  await manager.verifyNextFactor(lock.id, "failed-01", "wrong");
+  await manager.verifyNextFactor(lock.id, "failed-01", "wrong");
+  manager.relock(lock.id, "failed-01");
+  manager.beginUnlock(lock.id, "failed-02");
+  await assert.rejects(() => manager.verifyNextFactor(lock.id, "failed-02", "1234"), /cooldown/);
+  now += 1_001;
+  const afterCooldown = await manager.verifyNextFactor(lock.id, "failed-02", "1234");
+  assert.equal(afterCooldown.complete, true);
 });
 
 test("password vault records are versioned, salted, and reject tampered records", async () => {
@@ -208,4 +235,13 @@ test("negative regression proves disabling the independent factor list turns the
   assert.throws(() => checkPolicyInventory(broken), /missing policy PIN_TOTP/);
   assert.match(source, /PASSWORD_PIN_TOTP: \["password", "pin", "totp"\]/);
   assert.equal(toys.LOCK_POLICY_FACTORS.PASSWORD_PIN_TOTP.join(","), "password,pin,totp");
+});
+
+test("authoritative activation route executes unlocked actions and never executes locked actions", () => {
+  let activated = 0;
+  let unlockRequests = 0;
+  toys.routeActivation(false, () => { activated += 1; }, () => { unlockRequests += 1; });
+  toys.routeActivation(true, () => { activated += 1; }, () => { unlockRequests += 1; });
+  assert.equal(activated, 1);
+  assert.equal(unlockRequests, 1);
 });

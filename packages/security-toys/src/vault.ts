@@ -67,12 +67,8 @@ export class MemorySecretVault implements SecretVault {
 
 export function randomId(prefix = "id"): string {
   const bytes = new Uint8Array(16);
-  globalThis.crypto?.getRandomValues(bytes);
-  if (bytes.every((byte) => byte === 0)) {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
+  if (!globalThis.crypto?.getRandomValues) throw new Error("Secure randomness is unavailable");
+  globalThis.crypto.getRandomValues(bytes);
   return `${prefix}_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
@@ -101,7 +97,8 @@ export async function verifySecret(vault: SecretVault, ref: string, candidate: s
 export async function storeHashedSecret(vault: SecretVault, ref: string, secret: string): Promise<void> {
   if (!secret) throw new Error("Secret must not be empty");
   const salt = new Uint8Array(16);
-  globalThis.crypto?.getRandomValues(salt);
+  if (!globalThis.crypto?.getRandomValues) throw new Error("Secure randomness is unavailable");
+  globalThis.crypto.getRandomValues(salt);
   const memoryBytes = 64 * 1024;
   const rounds = 3;
   const hash = await memoryHardDigest(secret, salt, memoryBytes, rounds);
