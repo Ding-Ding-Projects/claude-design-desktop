@@ -9,14 +9,14 @@ export interface JsonRpcResponse { id: JsonRpcId; result?: unknown; error?: { co
 export interface JsonRpcNotification { method: string; params?: Record<string, unknown>; id?: JsonRpcId; }
 export interface SpawnOptions { env: NodeJS.ProcessEnv; stdio: ["pipe", "pipe", "pipe"]; }
 export type SpawnFn = (file: string, args: string[], options: SpawnOptions) => ChildProcess;
-type State = "new" | "starting" | "ready" | "closed" | "failed";
+type State = "new" | "starting" | "ready" | "closing" | "closed" | "failed";
 interface Pending { resolve: (value: unknown) => void; reject: (reason?: unknown) => void; timer: NodeJS.Timeout; }
 const STABLE_METHODS = new Set(["account/read", "account/login/start", "account/login/cancel", "account/logout", "account/rateLimits/read", "model/list", "thread/start", "thread/resume", "thread/read", "thread/inject_items", "turn/start", "turn/interrupt"]);
-export interface AppServerClientOptions { codexExecutable: string; codexHome: string; appVersion?: string; requestTimeoutMs?: number; spawn?: SpawnFn; environment?: NodeJS.ProcessEnv; }
+export interface AppServerClientOptions { codexExecutable: string; codexHome: string; appVersion?: string; requestTimeoutMs?: number; closeTimeoutMs?: number; spawn?: SpawnFn; environment?: NodeJS.ProcessEnv; }
 
 /** JSONL JSON-RPC client for one isolated app-server process. */
 export class AppServerClient extends EventEmitter {
-  private readonly options: AppServerClientOptions & { appVersion: string; requestTimeoutMs: number };
+  private readonly options: AppServerClientOptions & { appVersion: string; requestTimeoutMs: number; closeTimeoutMs: number };
   private child: ChildProcess | undefined;
   private state: State = "new";
   private nextId = 1;
@@ -24,7 +24,8 @@ export class AppServerClient extends EventEmitter {
   private readonly completedIds = new Set<JsonRpcId>();
   private outputBuffer = Buffer.alloc(0);
   private exitPromise: Promise<void> = Promise.resolve();
-  constructor(options: AppServerClientOptions) { super(); this.options = { ...options, appVersion: options.appVersion ?? "0.1.0", requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS }; }
+  private exitConfirmed = false;
+  constructor(options: AppServerClientOptions) { super(); this.options = { ...options, appVersion: options.appVersion ?? "0.1.0", requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, closeTimeoutMs: options.closeTimeoutMs ?? 2_000 }; }
   get ready(): boolean { return this.state === "ready"; }
   async start(): Promise<void> {
     if (this.state !== "new") throw new Error("App-server client has already started");
@@ -35,11 +36,12 @@ export class AppServerClient extends EventEmitter {
     } catch (error) { this.state = "failed"; throw sanitizeError(error); }
     if (!this.child.stdin || !this.child.stdout) { this.state = "failed"; throw new Error("App-server stdio transport is unavailable"); }
     const child = this.child;
+    this.exitConfirmed = false;
     this.exitPromise = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     this.child.stdout.on("data", (chunk: Buffer | string) => this.handleData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     this.child.stderr?.resume();
     this.child.on("error", (error) => this.fail(sanitizeError(error)));
-    this.child.on("exit", (code, signal) => this.fail(new Error(`App-server exited (${code ?? "null"}, ${signal ?? "none"})`)));
+    this.child.on("exit", (code, signal) => this.handleExit(code, signal));
     try {
       const response = await this.sendRequest("initialize", { clientInfo: { name: CLIENT_NAME, title: CLIENT_TITLE, version: this.options.appVersion || CODEX_PACKAGE_VERSION } }, true) as JsonRpcResponse;
       if (response.error || !Object.prototype.hasOwnProperty.call(response, "result")) throw new Error(response.error?.message || "App-server initialization returned no result");
@@ -60,12 +62,16 @@ export class AppServerClient extends EventEmitter {
   }
   async close(): Promise<void> {
     if (!this.child) { this.state = "closed"; return; }
-    this.state = "closed";
+    if (this.state === "closed") return;
+    if (this.exitConfirmed) { this.state = "closed"; this.child = undefined; return; }
+    this.state = "closing";
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("App-server client closed")); }
     this.pending.clear();
     this.child.stdin?.end();
     if (!this.child.killed) this.child.kill();
-    await Promise.race([this.exitPromise, new Promise<void>((resolve) => setTimeout(resolve, 2_000))]);
+    const exited = await Promise.race([this.exitPromise.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), this.options.closeTimeoutMs))]);
+    if (!exited || !this.exitConfirmed) throw new Error("App-server process did not confirm exit");
+    this.state = "closed";
     this.child = undefined;
   }
   private sendRequest(method: string, params: Record<string, unknown> | undefined, initializing: boolean): Promise<unknown> {
@@ -114,5 +120,6 @@ export class AppServerClient extends EventEmitter {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear(); this.emit("errorState", error);
   }
+  private handleExit(code: number | null, signal: NodeJS.Signals | null): void { this.exitConfirmed = true; if (this.state === "closing") { this.state = "closed"; return; } this.fail(new Error(`App-server exited (${code ?? "null"}, ${signal ?? "none"})`)); }
   private sendError(id: JsonRpcId, code: number, message: string): void { if (!this.child?.stdin || this.state === "closed" || this.state === "failed") return; this.child.stdin.write(`${JSON.stringify({ id, error: { code, message } })}\n`); }
 }

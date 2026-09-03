@@ -13,7 +13,7 @@ class FakeChild extends EventEmitter {
   readonly messages: Array<{ id?: number; method?: string; params?: Record<string, unknown>; error?: { code: number } }> = [];
   readonly stdin = new Writable({ write: (chunk, _encoding, callback) => { const message = JSON.parse(String(chunk).trim()) as { id?: number; method?: string; params?: Record<string, unknown>; error?: { code: number } }; this.messages.push(message); if (message.method) this.handle(message as { id?: number; method: string; params?: Record<string, unknown> }); callback(); } });
   killed = false;
-  constructor(private readonly respondToRequests = true) { super(); }
+  constructor(private readonly respondToRequests = true, private readonly exitOnKill = true) { super(); }
   private handle(request: { id?: number; method: string; params?: Record<string, unknown> }): void {
     const send = (result: unknown): void => { if (request.id !== undefined) this.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`); };
     if (request.method === "initialize") return send({ platformFamily: "windows" });
@@ -26,11 +26,12 @@ class FakeChild extends EventEmitter {
     if (request.method === "turn/start") return send({ turn: { id: "turn_1", status: "inProgress" } });
     return send({});
   }
-  kill(): boolean { this.killed = true; this.emit("exit", 0, null); return true; }
+  kill(): boolean { this.killed = true; if (this.exitOnKill) this.emit("exit", 0, null); return true; }
   notify(method: string, params: Record<string, unknown> = {}): void { this.stdout.write(`${JSON.stringify({ method, params })}\n`); }
   notifyRequest(id: number, method: string, params: Record<string, unknown> = {}): void { this.stdout.write(`${JSON.stringify({ id, method, params })}\n`); }
+  raw(line: string): void { this.stdout.write(`${line}\n`); }
 }
-function fakeSpawn(respondToRequests = true): { spawn: SpawnFn; children: FakeChild[] } { const children: FakeChild[] = []; const spawn: SpawnFn = () => { const child = new FakeChild(respondToRequests); children.push(child); return child as never; }; return { spawn, children }; }
+function fakeSpawn(respondToRequests = true, exitOnKill = true): { spawn: SpawnFn; children: FakeChild[] } { const children: FakeChild[] = []; const spawn: SpawnFn = () => { const child = new FakeChild(respondToRequests, exitOnKill); children.push(child); return child as never; }; return { spawn, children }; }
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
@@ -67,6 +68,17 @@ describe("account host", () => {
   });
   it("replies to a server request without treating its id as a stale response", async () => {
     const fake = fakeSpawn(); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn }); await client.start(); fake.children[0]!.notifyRequest(991, "server/request"); await new Promise((resolve) => setImmediate(resolve)); assert.equal(fake.children[0]!.messages.some((message) => message.error?.code === -32601), true); await client.close();
+  });
+  it("rejects an unconfirmed child close instead of pretending replacement is safe", async () => {
+    const fake = fakeSpawn(true, false); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn, closeTimeoutMs: 10 }); await client.start(); await assert.rejects(() => client.close(), /did not confirm exit/); assert.equal(client.ready, false); await client.close().catch(() => undefined);
+  });
+  it("rejects missing, conflicting, and malformed JSON-RPC response envelopes", async () => {
+    for (const line of [JSON.stringify({ id: 2 }), JSON.stringify({ id: 2, result: {}, error: { code: -1, message: "no" } }), JSON.stringify({ id: 2, error: { message: "missing code" } })]) {
+      const fake = fakeSpawn(false); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn, requestTimeoutMs: 100 }); await client.start(); const pending = client.request("account/read", { refreshToken: false }); fake.children[0]!.raw(line); await assert.rejects(() => pending); await client.close().catch(() => undefined);
+    }
+  });
+  it("rejects stale and duplicate ids while accepting a valid response", async () => {
+    const fake = fakeSpawn(); const client = new AppServerClient({ codexExecutable: "codex.exe", codexHome: "C:\\accounts\\slot\\codex-home", appVersion: "1.0.0", spawn: fake.spawn }); await client.start(); await client.request("account/read", { refreshToken: false }); fake.children[0]!.raw(JSON.stringify({ id: 2, result: {} })); await new Promise((resolve) => setImmediate(resolve)); assert.equal(client.ready, false); await client.close().catch(() => undefined);
   });
   it("rejects stale login ids and removes a slot only after owner preflight and logout", async () => {
     const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn, prepareRemoval: async (slotId) => ({ slotId, ownedProjectIds: [], sharedProjectIds: [], canRemove: true }) });

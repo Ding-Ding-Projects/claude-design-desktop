@@ -4,9 +4,9 @@ import { AccountSlotStore, type StoredAccountSlot } from "./slot-store.js";
 import { createSafeChildEnvironment, resolveBundledRuntime } from "./bundled-runtime.js";
 import type { AccountEvent, AccountRemovalImpact, AccountSlotSummary, DesignOperationEvent, LoginChallenge, ModelSummary, RateLimitSnapshot, ThreadSnapshot, ThreadStartInput, ThreadInjectionItem, TurnInput, TurnSnapshot, AccountHostApi } from "./types.js";
 
-export interface AccountHostOptions { accountsRoot: string; appVersion: string; resourcesRoot?: string; codexExecutable?: string; openExternal?: (url: string) => Promise<void> | void; spawn?: SpawnFn; requestTimeoutMs?: number; environment?: NodeJS.ProcessEnv; prepareRemoval?: (slotId: string) => Promise<AccountRemovalImpact>; resolveProjectFileHandle?: (handle: string) => Promise<string>; }
+export interface AccountHostOptions { accountsRoot: string; appVersion: string; resourcesRoot?: string; codexExecutable?: string; openExternal?: (url: string) => Promise<void> | void; spawn?: SpawnFn; requestTimeoutMs?: number; closeTimeoutMs?: number; environment?: NodeJS.ProcessEnv; prepareRemoval?: (slotId: string) => Promise<AccountRemovalImpact>; resolveProjectFileHandle?: (handle: string) => Promise<string>; }
 interface ActiveOperation { threadId: string; turnId: string; interruptRequested: boolean; terminal: Promise<void>; resolveTerminal: () => void; }
-interface ActiveSession { slotId: string; generation: number; client: AppServerClient; operations: Map<string, ActiveOperation>; completedTurnIds: Set<string>; }
+interface ActiveSession { slotId: string; generation: number; client: AppServerClient; operations: Map<string, ActiveOperation>; completedTurnIds: Set<string>; closing: boolean; }
 interface LoginSession { slotId: string; loginId: string; generation: number; client: AppServerClient; timer: NodeJS.Timeout; completed: boolean; success: boolean | null; accountUpdated: boolean; completing: boolean; }
 
 /** Account and app-server lifecycle host. Renderer code only receives sanitized domain DTOs. */
@@ -52,7 +52,7 @@ export class AccountHost implements AccountHostApi {
   async activate(slotId: string): Promise<AccountSlotSummary> {
     await this.initialize(); const id = validateSlotId(slotId);
     if (this.login?.slotId === id) throw new AccountHostError("busy", "The account is busy with another operation.");
-    if (this.active?.slotId !== id) { this.assertNoActiveOperations(); await this.closeActive(); const slot = this.store.get(id); const client = await this.createClient(slot); try { const account = await this.readAccount(client); if (!account) { throw new Error("Account is not authenticated"); } this.active = { slotId: id, generation: this.generationOf(client), client, operations: new Map(), completedTurnIds: new Set() }; this.updateSlot(id, { ...account, state: "ready", lastVerifiedAt: new Date().toISOString() }); } catch (error) { await client.close(); this.updateSlot(id, { state: "error" }); throw sanitizeError(error); } }
+    if (this.active?.slotId !== id) { if (this.active?.closing) throw new AccountHostError("busy", "The previous account process has not confirmed exit."); this.assertNoActiveOperations(); await this.closeActive(); const slot = this.store.get(id); const client = await this.createClient(slot); try { const account = await this.readAccount(client); if (!account) { throw new Error("Account is not authenticated"); } this.active = { slotId: id, generation: this.generationOf(client), client, operations: new Map(), completedTurnIds: new Set(), closing: false }; this.updateSlot(id, { ...account, state: "ready", lastVerifiedAt: new Date().toISOString() }); } catch (error) { await client.close(); this.updateSlot(id, { state: "error" }); throw sanitizeError(error); } }
     return toSummary(this.store.get(id));
   }
   async logout(slotId: string): Promise<void> {
@@ -77,7 +77,7 @@ export class AccountHost implements AccountHostApi {
     try { await ensureCodexHome(slot.home); } catch (error) { throw sanitizeError(error); }
     let runtime: Awaited<ReturnType<typeof resolveBundledRuntime>> | undefined;
     try { runtime = this.options.spawn ? undefined : await resolveBundledRuntime(this.options.resourcesRoot ?? ""); } catch (error) { throw sanitizeError(error); }
-    const client = new AppServerClient({ codexExecutable: runtime?.executablePath ?? this.options.codexExecutable ?? "codex.exe", codexHome: slot.home, appVersion: this.options.appVersion, requestTimeoutMs: this.options.requestTimeoutMs, spawn: this.options.spawn, environment: createSafeChildEnvironment(this.options.environment, slot.home) });
+    const client = new AppServerClient({ codexExecutable: runtime?.executablePath ?? this.options.codexExecutable ?? "codex.exe", codexHome: slot.home, appVersion: this.options.appVersion, requestTimeoutMs: this.options.requestTimeoutMs, closeTimeoutMs: this.options.closeTimeoutMs, spawn: this.options.spawn, environment: createSafeChildEnvironment(this.options.environment, slot.home) });
     const generation = this.nextGeneration++;
     this.generations.set(client, generation);
     client.on("notification", (message: { method: string; params?: Record<string, unknown> }) => { void this.handleNotification(slot.slotId, client, generation, message.method, message.params ?? {}); });
@@ -105,8 +105,8 @@ export class AccountHost implements AccountHostApi {
   private async clientFor(slotId: string): Promise<AppServerClient> { const id = validateSlotId(slotId); if (this.active?.slotId !== id) await this.activate(id); return this.requireActive(); }
   private requireActive(): AppServerClient { return this.requireActiveSession().client; }
   private requireActiveSession(): ActiveSession { if (!this.active) throw new Error("No active authenticated account"); return this.active; }
-  private assertNoActiveOperations(): void { if (this.active && [...this.active.operations.values()].some((operation) => !operation.interruptRequested)) throw new AccountHostError("busy", "The account is busy with another operation."); }
-  private async closeActive(): Promise<void> { const current = this.active; this.active = undefined; if (current) await current.client.close(); }
+  private assertNoActiveOperations(): void { if (this.active && this.active.operations.size > 0) throw new AccountHostError("busy", "The account is busy with another operation."); }
+  private async closeActive(): Promise<void> { const current = this.active; if (!current) return; this.updateSlot(current.slotId, { state: "unavailable" }); try { await current.client.close(); this.active = undefined; } catch (error) { current.closing = true; throw sanitizeError(error); } }
   private generationOf(client: AppServerClient): number { const generation = this.generations.get(client); if (generation === undefined) throw new Error("Missing app-server process generation"); return generation; }
   private async readAccount(client: AppServerClient): Promise<{ email: string | null; planType: string | null } | undefined> { const result = asRecord(await client.request("account/read", { refreshToken: false })); const account = asRecord(result.account); if (account.type !== "chatgpt") return undefined; return { email: typeof account.email === "string" ? account.email.slice(0, 320) : null, planType: typeof account.planType === "string" ? account.planType.slice(0, 80) : null }; }
   private updateSlot(slotId: string, patch: Parameters<AccountSlotStore["update"]>[1]): void { const slot = this.store.update(slotId, { ...patch, appServerVersion: CODEX_PACKAGE_VERSION }); this.saveQueue = this.saveQueue.then(() => this.store.save()).catch(() => { this.emit({ type: "persistenceFailed", slot: toSummary(slot), errorCode: "persistence_failed" }); }); this.emit({ type: "slotUpdated", slot: toSummary(slot) }); }

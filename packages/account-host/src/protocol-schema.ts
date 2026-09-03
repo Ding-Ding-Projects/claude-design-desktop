@@ -58,6 +58,13 @@ function validateInjectedItem(value: unknown): void {
 export function validateResponseEnvelope(value: unknown): asserts value is { id?: number; result?: unknown; error?: { code?: number; message?: string } } {
   assertValue(value, 0);
   const message = value as Record<string, unknown>;
+  const hasMethod = typeof message.method === "string";
+  const hasId = Object.prototype.hasOwnProperty.call(message, "id");
+  const hasResult = Object.prototype.hasOwnProperty.call(message, "result");
+  const hasError = Object.prototype.hasOwnProperty.call(message, "error");
+  if (!hasMethod && !hasId) throw new Error("JSON-RPC message is missing id or method");
+  if (hasMethod && (hasResult || hasError)) throw new Error("JSON-RPC notification cannot carry result or error");
+  if (!hasMethod && hasResult === hasError) throw new Error("JSON-RPC response must carry exactly one result or error");
   if (message.id !== undefined && (typeof message.id !== "number" || !Number.isSafeInteger(message.id) || message.id < 0)) throw new Error("Invalid JSON-RPC id");
   if (message.method !== undefined && (typeof message.method !== "string" || message.method.length > 200)) throw new Error("Invalid app-server notification method");
   if (message.params !== undefined && (!message.params || typeof message.params !== "object" || Array.isArray(message.params))) throw new Error("Invalid notification params");
@@ -65,8 +72,9 @@ export function validateResponseEnvelope(value: unknown): asserts value is { id?
     const error = message.error;
     if (!error || typeof error !== "object" || Array.isArray(error)) throw new Error("Invalid JSON-RPC error");
     const record = error as Record<string, unknown>;
-    if (record.code !== undefined && typeof record.code !== "number") throw new Error("Invalid JSON-RPC error code");
-    if (record.message !== undefined && typeof record.message !== "string") throw new Error("Invalid JSON-RPC error message");
+    if (typeof record.code !== "number" || !Number.isSafeInteger(record.code)) throw new Error("Invalid JSON-RPC error code");
+    if (typeof record.message !== "string" || record.message.length === 0 || record.message.length > 2000) throw new Error("Invalid JSON-RPC error message");
+    if (Object.keys(record).some((key) => !["code", "message", "data"].includes(key))) throw new Error("Invalid JSON-RPC error fields");
   }
 }
 
