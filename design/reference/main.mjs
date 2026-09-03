@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRouteParser } from "./route.mjs";
+import { resolveProtocolResponse } from "./protocol-response.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dataPath = resolve(here, "screens.json");
@@ -25,13 +26,11 @@ function routeFromArgs() {
 }
 
 function serveStatic(request) {
-  const url = new URL(request.url);
-  const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
   const files = { "/index.html": [indexPath, "text/html"], "/app.js": [appScriptPath, "text/javascript"], "/styles.css": [stylePath, "text/css"] };
-  const file = files[pathname];
-  if (!file || !existsSync(file[0])) return new Response("Not found", { status: 404 });
-  const route = pathname === "/index.html" && url.search ? parseRoute(request.url) : initialRoute;
-  return new Response(readFileSync(file[0]), { headers: { "content-type": file[1], "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; navigate-to 'none'", "x-reference-screen": route.screen.id } });
+  let response;
+  try { response = resolveProtocolResponse(request.url, { parseRoute, files }); } catch (error) { return new Response(error.message, { status: 400 }); }
+  if (!response || !existsSync(response.path)) return new Response("Not found", { status: 404 });
+  return new Response(readFileSync(response.path), { headers: { "content-type": response.contentType, "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; navigate-to 'none'", "x-reference-screen": response.route.screen.id } });
 }
 
 function sendWindowState() {
