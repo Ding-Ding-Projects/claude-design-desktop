@@ -1,0 +1,13 @@
+# Local model suite core
+
+This package contains the local model-management domain used by the desktop application. It has no catalog fixtures and makes no cloud requests. The transport accepts only numeric loopback HTTP(S) endpoints, rejects credentials, redirects, DNS-rebinding results, encoded traversal, and undocumented paths, bounds response bytes incrementally, and keeps its deadline active through complete JSON or NDJSON body consumption.
+
+The package does not invent or pretend to provide an official model catalog. The documented local API is used only for installed and running models through `/api/tags` and `/api/ps`. `UnavailableCatalogSource` preserves a verified cache as stale and offline while explicitly reporting that no documented exhaustive catalog source is available. Tag reconciliation compares canonical `name:tag` references exactly. Full official catalog delivery remains pending until a documented source can be verified.
+
+Hardware fit is evidence-backed. It requires declared blob and memory metadata plus detected RAM and free disk, and returns `Runs well`, `Runs with limits`, `Unlikely`, or `Unknown`. A model name alone never produces a fit claim.
+
+Pulls use an atomic durable state-store interface, an unlimited metadata queue, bounded worker concurrency, pause/resume/cancel, interrupted-run recovery, duplicate-tag suppression, retry of failed records, and partial outcomes. Chat validates roles and documented options, decodes attachment bytes, verifies image signatures and declared sizes, attaches vision images to the applicable user message, and preserves the streaming `Accept` header. Harness profiles must come from a reviewed product registry whose executable, arguments, working directory, and environment-key schema are exact; shell hosts are refused, split and joined secret arguments are redacted, environment values are filtered, and a failed health check terminates the process and restores the saved profile.
+
+`LocalHardwareDetector` accepts real platform probes, and `createWindowsHardwareProbe` supplies a concrete Windows adapter using fixed `powershell.exe` queries for RAM, GPU, VRAM, driver, free storage, architecture, and context overhead. No model name is treated as hardware evidence. Harness profiles are constructed through the main-process-owned `createProductHarnessRegistry` factory, and failed launch cleanup restores the prior profile even when termination reports an error. Desktop and hosted-site integration, UI wiring, and a live catalog refresh remain pending until the parent lane integrates this core.
+
+Run the focused package checks with `npm test` from this directory. TypeScript validation is `npm run typecheck` when the workspace toolchain is available.
