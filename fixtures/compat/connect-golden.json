@@ -1,0 +1,19 @@
+{
+  "sourceCommit": "4a3c267e7e22f6636a02542554309cd49cd41e9d",
+  "schemaVersion": "claude-design-connect-v1",
+  "contentType": "application/connect+proto",
+  "frame": { "emptyEndStreamBase64": "AgAAAAA=" },
+  "captures": [
+    { "method": "CreateProject", "request": { "name": "Fixture project", "type": "project" }, "responseFields": ["id", "name", "description", "type", "fileCount"] },
+    { "method": "GetProject", "request": { "project_id": "project-fixture" }, "responseFields": ["id", "name", "description", "type", "fileCount"] },
+    { "method": "ListProjects", "request": {}, "responseFields": ["project"] },
+    { "method": "ListOrgProjects", "request": {}, "responseFields": ["project"] },
+    { "method": "ListFiles", "request": { "project_id": "project-fixture", "path": "" }, "responseFields": ["file"] },
+    { "method": "GetFile", "request": { "project_id": "project-fixture", "path": "index.html" }, "responseFields": ["path", "content", "contentType", "version"] },
+    { "method": "WriteFiles", "request": { "project_id": "project-fixture", "files": [{ "path": "index.html", "contentBase64": "PGh0bWw+PC9odG1sPg==", "if_match": "1" }] }, "responseFields": ["file"] },
+    { "method": "DeleteFile", "request": { "project_id": "project-fixture", "path": "index.html", "if_match": "1" }, "responseFields": ["deleted"] },
+    { "method": "DeleteFiles", "request": { "project_id": "project-fixture", "paths": ["index.html"], "if_match": "1" }, "responseFields": ["deleted"] },
+    { "method": "CopyFile", "request": { "project_id": "project-fixture", "src": "index.html", "dest": "copy.html", "if_match": "1" }, "responseFields": ["file"] },
+    { "method": "UpdateSharing", "request": { "project_id": "project-fixture", "scope": "invited", "link_permission": "view" }, "responseFields": ["scope", "linkPermission"] }
+  ]
+}

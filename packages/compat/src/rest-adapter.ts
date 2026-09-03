@@ -17,12 +17,30 @@ export type HttpResponse = {
 };
 
 export type RestAdapterOptions = {
-  accountId: string;
+  accountId?: string;
+  resolveAccount?: (transport: "rest") => Promise<{ accountId: string; authenticated: boolean }>;
   capabilityCheck: (request: HttpRequest) => boolean | Promise<boolean>;
   previewOrigin?: string;
   agents?: Array<Record<string, unknown>>;
   settings?: Record<string, unknown>;
+  readSettings?: (accountId: string) => Promise<Record<string, unknown>>;
+  updateSettings?: (accountId: string, value: Record<string, unknown>) => Promise<Record<string, unknown>>;
 };
+
+const REST_FIELDS = new Set(["agent_id", "agentId", "chat_id", "chatId", "content", "content_type", "contentType", "dashboard_html", "dashboardHtml", "data", "deduplicate", "deletePaths", "description", "encoding", "file_path", "filePath", "files", "filter", "if_match", "initial_message", "intro_text", "introText", "kind", "message", "messages", "mime_type", "mimeType", "model", "model_id", "modelId", "name", "path", "paths", "prompt", "project_id", "project_uuid", "projectId", "projectUuid", "render", "text", "title", "type", "validators"]);
+function validateRestBody(request: HttpRequest, method: string, path: string): void {
+  if (method !== "GET" && method !== "HEAD") {
+    const contentType = header(request, "content-type") || "";
+    if (!contentType.toLowerCase().includes("application/json")) throw new DomainError("This REST route requires application/json.", 415, "unsupported_content_type");
+    if (request.body !== undefined && (!request.body || typeof request.body !== "object" || Array.isArray(request.body))) throw new DomainError("The REST request body must be a JSON object.", 400, "invalid_body");
+    const body = request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {};
+    for (const key of Object.keys(body)) if (!REST_FIELDS.has(key)) throw new DomainError(`Unsupported REST field: ${key}.`, 400, "unknown_field");
+  }
+  if (path.includes("/files") && method === "POST" && request.body && typeof request.body === "object") {
+    const files = Array.isArray((request.body as any).files) ? (request.body as any).files : [request.body];
+    for (const file of files) if (file && typeof file === "object" && !file.if_match && !file.ifMatch) throw new DomainError("if-match is required for every versioned file mutation.", 428, "if_match_required");
+  }
+}
 
 function header(request: HttpRequest, name: string): string | undefined {
   const value = request.headers?.[name.toLowerCase()] ?? request.headers?.[name];
@@ -99,9 +117,12 @@ export function isLoopbackAddress(address: string | undefined): boolean {
 export async function handleRestRequest(domain: DesignDomain, request: HttpRequest, options: RestAdapterOptions): Promise<HttpResponse> {
   if (!isLoopbackAddress(request.remoteAddress)) return json(403, { error: { code: "loopback_required", message: "The compatibility HTTP adapter accepts loopback clients only." } });
   if (!(await options.capabilityCheck(request))) return json(401, { error: { code: "capability_required", message: "A valid local capability is required." } });
-  const ctx: RequestContext = { accountId: options.accountId, capabilityValid: true, transport: "rest" };
+  const account = options.resolveAccount ? await options.resolveAccount("rest") : { accountId: options.accountId || "", authenticated: Boolean(options.accountId) };
+  if (!account.authenticated || !account.accountId) return json(401, { error: { code: "account_required", message: "An authenticated account is required." } });
+  const ctx: RequestContext = { accountId: account.accountId, capabilityValid: true, transport: "rest" };
   const method = request.method.toUpperCase();
   const path = request.path.replace(/\?.*$/, "").replace(/\/$/, "") || "/";
+  try { validateRestBody(request, method, path); } catch (error) { return errorResponse(error); }
   const body = bodyRecord(request);
   const ifMatch = header(request, "if-match");
 
@@ -189,8 +210,8 @@ export async function handleRestRequest(domain: DesignDomain, request: HttpReque
       return { status: 200, headers: { "cache-control": "no-store", "content-type": file.contentType, etag: `"${file.version}"` }, body: method === "HEAD" ? undefined : Buffer.from(file.content) };
     }
 
-    if (method === "GET" && (path === "/v1/design/settings" || path === "/v1/design/model-selection")) return json(200, options.settings || {});
-    if (method === "POST" && (path === "/v1/design/settings" || path === "/v1/design/model-selection")) return json(200, { ok: true, ...(options.settings || {}), ...body });
+    if (method === "GET" && (path === "/v1/design/settings" || path === "/v1/design/model-selection")) return options.readSettings ? json(200, await options.readSettings(ctx.accountId)) : json(501, { error: { code: "settings_unavailable", message: "Settings require the product-owned history service." } });
+    if (method === "POST" && (path === "/v1/design/settings" || path === "/v1/design/model-selection")) return options.updateSettings ? json(200, { ok: true, ...(await options.updateSettings(ctx.accountId, body)) }) : json(501, { error: { code: "settings_unavailable", message: "Settings require the product-owned history service." } });
     if (method === "POST" && path === "/v1/design/turn-title") return json(200, { kind: body.kind || "chat", ok: true, title: String(body.message || body.title || body.prompt || "").trim().slice(0, 80) || "Untitled design" });
   } catch (error) {
     return errorResponse(error);
