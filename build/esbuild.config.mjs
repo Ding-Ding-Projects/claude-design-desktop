@@ -41,6 +41,7 @@ export function cleanDist() {
 export function copyStaticAssets() {
   const source = path.join(root, "apps", "desktop", "assets");
   if (existsSync(source)) cpSync(source, path.join(desktopDistDir, "assets"), { recursive: true });
+  cpSync(requiredFile(path.join(desktopSource, "renderer", "index.html"), "desktop renderer HTML"), path.join(desktopDistDir, "renderer.html"));
 }
 
 export function copyDocumentation() {
@@ -134,7 +135,7 @@ function hashDirectory(directory) {
 export async function buildDesktop({ mode = "production" } = {}) {
   const main = assertStandaloneEntry(requiredFile(path.join(desktopSource, "main.ts"), "desktop main entry"), "desktop main entry");
   const preload = assertStandaloneEntry(requiredFile(path.join(desktopSource, "preload.ts"), "desktop preload entry"), "desktop preload entry");
-  const renderer = assertStandaloneEntry(requiredFile(path.join(desktopSource, "renderer.tsx"), "desktop renderer entry"), "desktop renderer entry");
+  const renderer = assertStandaloneEntry(requiredFile(path.join(desktopSource, "renderer", "main.tsx"), "desktop renderer entry"), "desktop renderer entry");
   await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: { main, preload }, external: ["electron"], format: "cjs", legalComments: "none", minify: mode === "production", outdir: desktopDistDir, outExtension: { ".js": ".cjs" }, platform: "node", sourcemap: mode !== "production", target: "node22" });
   await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: [renderer], format: "esm", jsx: "automatic", legalComments: "none", minify: mode === "production", outfile: path.join(desktopDistDir, "renderer.js"), platform: "browser", sourcemap: mode !== "production", target: "chrome120" });
 }
@@ -142,14 +143,18 @@ export async function buildDesktop({ mode = "production" } = {}) {
 export async function buildSite({ mode = "production" } = {}) {
   const entry = path.join(siteSource, "main.tsx");
   if (!existsSync(entry)) {
-    const fallback = requiredFile(path.join(root, "site", "app.js"), "public site entry or apps/site/src/main.tsx");
-    cpSync(fallback, path.join(siteDistDir, "site.js"));
+    const staticSite = path.join(root, "site");
+    for (const filename of ["index.html", "styles.css", "app.js", "storage.js", "controllers.mjs", "regex-worker.js", "version.json"]) {
+      cpSync(requiredFile(path.join(staticSite, filename), `public site ${filename}`), path.join(siteDistDir, filename));
+    }
+    const socialPreview = path.join(staticSite, "social-preview.png");
+    if (existsSync(socialPreview)) cpSync(socialPreview, path.join(siteDistDir, "social-preview.png"));
     return;
   }
   await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: [entry], format: "esm", jsx: "automatic", legalComments: "none", minify: mode === "production", outfile: path.join(siteDistDir, "site.js"), platform: "browser", sourcemap: mode !== "production", target: "chrome120" });
 }
 
 export function verifyBuildOutputs() {
-  for (const output of [path.join(desktopDistDir, "main.cjs"), path.join(desktopDistDir, "preload.cjs"), path.join(desktopDistDir, "renderer.js")]) requiredFile(output, "desktop build output");
-  requiredFile(path.join(siteDistDir, "site.js"), "public site build output");
+  for (const output of [path.join(desktopDistDir, "main.cjs"), path.join(desktopDistDir, "preload.cjs"), path.join(desktopDistDir, "renderer.js"), path.join(desktopDistDir, "renderer.css"), path.join(desktopDistDir, "renderer.html")]) requiredFile(output, "desktop build output");
+  for (const output of [path.join(siteDistDir, "index.html"), path.join(siteDistDir, "styles.css"), path.join(siteDistDir, "app.js"), path.join(siteDistDir, "storage.js"), path.join(siteDistDir, "controllers.mjs"), path.join(siteDistDir, "regex-worker.js"), path.join(siteDistDir, "version.json")]) requiredFile(output, "public site build output");
 }

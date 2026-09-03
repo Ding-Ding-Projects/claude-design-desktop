@@ -41,7 +41,6 @@
   ],
   "requiredPackagedPaths": [
     "resources/app.asar",
-    "resources/codex",
-    "resources/app-server"
+    "resources/codex/bin/codex.exe"
   ]
 }

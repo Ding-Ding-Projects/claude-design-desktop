@@ -8,9 +8,13 @@
     "buildResources": "build/resources"
   },
   "files": [
-    "dist/**",
-    "packages/electron/dist/**",
-    "packages/ui/dist/**",
+    "dist/main.cjs",
+    "dist/preload.cjs",
+    "dist/renderer.js",
+    "dist/renderer.css",
+    "dist/renderer.html",
+    "dist/assets/**",
+    "dist/site/**",
     "package.json"
   ],
   "extraResources": [

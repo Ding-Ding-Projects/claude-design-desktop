@@ -21,8 +21,10 @@ for (const [file, label] of [
   ["package-lock.json", "root lockfile"],
   ["apps/desktop/src/main.ts", "desktop main source"],
   ["apps/desktop/src/preload.ts", "desktop preload source"],
-  ["apps/desktop/src/renderer.tsx", "desktop renderer source"],
-  ["apps/site/src/main.tsx", "public site source"]
+  ["apps/desktop/src/renderer/main.tsx", "desktop renderer source"],
+  ["apps/desktop/src/renderer/index.html", "desktop renderer HTML"],
+  ["site/index.html", "public site HTML"],
+  ["site/app.js", "public site source"]
 ]) await assertFile(file, `${label} is absent; test the merged application inputs before release.`);
 
 assert(manifest.node.version === "22.14.0", "Node bootstrap is not pinned to the declared version.");
@@ -41,6 +43,6 @@ assert(!/^\s+- name:.*\b(test|lint|type-?check|coverage|screenshot)\b/im.test(wo
 assert(!/forceCodeSigning\s*:\s*true|sign(AndEdit)?Executable\s*:\s*true/i.test(workflow), "Release workflow enables code signing.");
 assert(/gh release create/.test(workflow) && /gh release edit/.test(workflow), "Release workflow does not create and finalize one published release.");
 assert(buildEntry.includes("buildDesktop") && buildEntry.includes("buildSite"), "Standalone desktop and site build entries are not registered.");
-assert(buildConfig.includes("apps") && buildConfig.includes("desktop") && buildConfig.includes("main.ts") && buildConfig.includes("preload.ts") && buildConfig.includes("renderer.tsx"), "Standalone desktop entry paths are missing.");
+assert(buildConfig.includes("apps") && buildConfig.includes("desktop") && buildConfig.includes("main.ts") && buildConfig.includes("preload.ts") && buildConfig.includes('"renderer", "main.tsx"'), "Standalone desktop entry paths are missing.");
 assert(buildConfig.includes("assertStandaloneEntry") && buildConfig.includes("ccrdesk\\.top"), "Retired hosted and router input guard is missing.");
 console.log("Release tooling contract checks passed.");

@@ -53,6 +53,7 @@ The following are intentionally not claimed as complete:
 - Real built-artifact screenshots or a screen recording
 - The bundled `@openai/codex` runtime and its release-specific version record
 - The 16,728-line historical extraction module `packages/electron/bundled-plugins/claude-design/index.cjs`; it must be absent from the shipping tip
+- A stable release on the current `electron@42.3.3` pin, which remains blocked by two published high-severity dependency audit findings until the pin is upgraded or explicitly accepted
 
 The root package manifest and focused shell test route now exist. The supported one-click dependency bootstrap, installer script, capture harness, complete host services, and release evidence remain open. The roadmap keeps those items unticked until their implementation and built-product proof land.
 

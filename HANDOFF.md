@@ -52,6 +52,7 @@ The product-record lane added public root records and categorized product docume
 4. The `@openai/codex` runtime notice is recorded, but its exact packaged version and source revision must be added when the runtime lane lands.
 5. The 16,728-line historical module `packages/electron/bundled-plugins/claude-design/index.cjs` is present in the extraction material and must be absent from the shipping tip.
 6. The shipping product still needs a router bridge migration proof followed by bridge removal proof. No router bridge may remain in the 1.0.0 shipping product.
+7. `npm audit` reports two high-severity findings through the exact `electron@42.3.3` pin. The available patched 42.x version is `42.11.1`; no pin change was made because the approved plan names `42.3.3` exactly. Stable release remains blocked pending that product decision.
 
 ## Next owner
 

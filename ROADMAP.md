@@ -39,6 +39,7 @@ This checklist describes the standalone product extraction. A checked item is im
 - [ ] Add the one-click dependency bootstrap.
 - [ ] Add `build.bat` and `build-installer.bat` with reproducible Windows x64 Squirrel.Windows packaging.
 - [ ] Verify unsigned installer output, hashes, release metadata, and the required third-party notices.
+- [ ] Resolve the two high-severity dependency audit findings in the exact `electron@42.3.3` pin before stable release.
 - [ ] Add the real built-artifact capture harness and screen recording route.
 - [ ] Capture the front screen, settings, error and empty states, narrow layout, light theme, and dark theme from the built artifact.
 - [ ] Publish a unique non-draft release with a verified installer and release provenance.
