@@ -21,6 +21,13 @@ function requiredFile(file, label) {
   return file;
 }
 
+function assertStandaloneEntry(file, label) {
+  const source = readFileSync(file, "utf8");
+  const forbidden = /ccrdesk\.top|bundled-plugins|request-log|claude-ship|claude_design|gateway|cdp|browser request interception/i;
+  if (forbidden.test(source)) throw new Error(`${label} contains a retired hosted or router integration: ${path.relative(root, file)}`);
+  return file;
+}
+
 function ensure(directory) {
   mkdirSync(directory, { recursive: true });
 }
@@ -106,9 +113,9 @@ function hashFile(file) {
 }
 
 export async function buildDesktop({ mode = "production" } = {}) {
-  const main = requiredFile(path.join(desktopSource, "main.ts"), "desktop main entry");
-  const preload = requiredFile(path.join(desktopSource, "preload.ts"), "desktop preload entry");
-  const renderer = requiredFile(path.join(desktopSource, "renderer.tsx"), "desktop renderer entry");
+  const main = assertStandaloneEntry(requiredFile(path.join(desktopSource, "main.ts"), "desktop main entry"), "desktop main entry");
+  const preload = assertStandaloneEntry(requiredFile(path.join(desktopSource, "preload.ts"), "desktop preload entry"), "desktop preload entry");
+  const renderer = assertStandaloneEntry(requiredFile(path.join(desktopSource, "renderer.tsx"), "desktop renderer entry"), "desktop renderer entry");
   await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: { main, preload }, external: ["electron"], format: "cjs", legalComments: "none", minify: mode === "production", outdir: desktopDistDir, outExtension: { ".js": ".cjs" }, platform: "node", sourcemap: mode !== "production", target: "node22" });
   await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: [renderer], format: "esm", jsx: "automatic", legalComments: "none", minify: mode === "production", outfile: path.join(desktopDistDir, "renderer.js"), platform: "browser", sourcemap: mode !== "production", target: "chrome120" });
 }
