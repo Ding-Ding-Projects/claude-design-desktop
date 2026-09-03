@@ -1,6 +1,9 @@
-import { mkdir, opendir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, opendir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { spawn } from "node:child_process";
 
 export const CONVERTER_CATEGORIES = [
   "Documents/PDF",
@@ -40,6 +43,7 @@ export type ByteSignature = {
   bytes: Uint8Array;
   offset?: number;
   mask?: Uint8Array;
+  container?: { offset: number; bytes: Uint8Array };
 };
 
 export type LossinessDisclosure = {
@@ -51,6 +55,18 @@ export type LossinessDisclosure = {
 export type PackagedProof = {
   artifactPath: string;
   sha256: string;
+  identity: string;
+  kind: "native-executable" | "native-library" | "data";
+};
+
+export type ExecutableDescriptor = {
+  adapterId: string;
+  executableId: string;
+  absolutePath: string;
+  sha256: string;
+  kind: "native-executable" | "script-host";
+  allowedArguments: readonly string[];
+  allowedEnvironmentKeys: readonly string[];
 };
 
 export type OutputValidation = {
@@ -69,6 +85,7 @@ export type Adapter = {
   sourceSignatures: readonly ByteSignature[];
   bundled: boolean;
   packagedProof?: PackagedProof;
+  executable?: ExecutableDescriptor;
   unavailableReason?: string;
   metadataBehavior: "preserve" | "preserve-when-supported" | "discard";
   encodingBehavior: "preserve" | "normalize" | "transcode";
@@ -94,7 +111,13 @@ export type SandboxContract = {
 const SHA256 = /^[0-9a-f]{64}$/i;
 
 function validPackagedProof(proof: PackagedProof | undefined): proof is PackagedProof {
-  return Boolean(proof && proof.artifactPath.trim() && SHA256.test(proof.sha256));
+  return Boolean(
+    proof &&
+    proof.artifactPath.trim() &&
+    SHA256.test(proof.sha256) &&
+    proof.identity.trim() &&
+    ["native-executable", "native-library", "data"].includes(proof.kind)
+  );
 }
 
 export function adapterAvailability(adapter: Adapter): { enabled: boolean; reason?: string } {
@@ -104,10 +127,7 @@ export function adapterAvailability(adapter: Adapter): { enabled: boolean; reaso
   if (!validPackagedProof(adapter.packagedProof)) {
     return { enabled: false, reason: "Adapter is bundled without packaged-artifact proof." };
   }
-  if (!adapter.sandbox.isolatedProcess || adapter.sandbox.networkAccess !== "none") {
-    return { enabled: false, reason: "Adapter does not satisfy the isolated offline runner contract." };
-  }
-  return { enabled: true };
+  return { enabled: false, reason: "Packaged proof requires asynchronous file, hash, type, and identity verification." };
 }
 
 export type AdapterCatalogEntry = Adapter & {
@@ -117,8 +137,10 @@ export type AdapterCatalogEntry = Adapter & {
 
 export class AdapterRegistry {
   private readonly adapters = new Map<string, Adapter>();
+  readonly packagedRoot: string;
 
-  constructor(adapters: readonly Adapter[] = []) {
+  constructor(adapters: readonly Adapter[] = [], packagedRoot = process.cwd()) {
+    this.packagedRoot = resolve(packagedRoot);
     for (const adapter of adapters) {
       this.register(adapter);
     }
@@ -156,6 +178,23 @@ export class AdapterRegistry {
       (!targetFormat || adapter.targetFormats.includes(targetFormat))
     );
   }
+
+  async verifiedCatalog(): Promise<AdapterCatalogEntry[]> {
+    const entries: AdapterCatalogEntry[] = [];
+    for (const adapter of this.adapters.values()) {
+      const verification = await verifyPackagedAdapter(adapter, this.packagedRoot);
+      entries.push({
+        ...adapter,
+        enabled: verification.enabled,
+        availabilityReason: verification.reason
+      });
+    }
+    return entries;
+  }
+
+  executableFor(adapterId: string): ExecutableDescriptor | undefined {
+    return this.adapters.get(adapterId)?.executable;
+  }
 }
 
 export function validateAdapterRegistry(registry: AdapterRegistry): string[] {
@@ -168,11 +207,11 @@ export function validateAdapterRegistry(registry: AdapterRegistry): string[] {
   }
   for (const adapter of catalog) {
     const availability = adapterAvailability(adapter);
-    if (adapter.enabled !== availability.enabled) {
-      issues.push(`Adapter availability drift: ${adapter.id}`);
+    if (adapter.enabled) {
+      issues.push(`Adapter is marked enabled before packaged verification: ${adapter.id}`);
     }
-    if (adapter.enabled && !validPackagedProof(adapter.packagedProof)) {
-      issues.push(`Enabled adapter has no packaged proof: ${adapter.id}`);
+    if (validPackagedProof(adapter.packagedProof) && adapter.packagedProof.identity !== adapter.id) {
+      issues.push(`Packaged proof identity does not match adapter id: ${adapter.id}`);
     }
     if (adapter.sandbox.networkAccess !== "none") {
       issues.push(`Adapter has ambient network access: ${adapter.id}`);
@@ -181,13 +220,66 @@ export function validateAdapterRegistry(registry: AdapterRegistry): string[] {
   return issues;
 }
 
+export type PackagedVerification = { enabled: boolean; reason?: string; resolvedPath?: string; sha256?: string };
+
+export async function verifyPackagedAdapter(adapter: Adapter, packagedRoot: string): Promise<PackagedVerification> {
+  const structural = adapterAvailability({ ...adapter, bundled: adapter.bundled });
+  if (adapter.bundled === false) {
+    return structural;
+  }
+  const proof = adapter.packagedProof;
+  if (!validPackagedProof(proof)) {
+    return { enabled: false, reason: "Adapter is bundled without complete packaged proof." };
+  }
+  if (proof.identity !== adapter.id) {
+    return { enabled: false, reason: "Packaged proof identity does not match adapter identity." };
+  }
+  const resolvedPath = isAbsolute(proof.artifactPath) ? resolve(proof.artifactPath) : resolve(packagedRoot, proof.artifactPath);
+  if (!pathWithinRoots(resolvedPath, [packagedRoot])) {
+    return { enabled: false, reason: "Packaged proof path escapes the product package root.", resolvedPath };
+  }
+  let bytes: Uint8Array;
+  try {
+    const information = await stat(resolvedPath);
+    if (!information.isFile()) {
+      return { enabled: false, reason: "Packaged proof path is not a regular file.", resolvedPath };
+    }
+    bytes = new Uint8Array(await readFile(resolvedPath));
+  } catch {
+    return { enabled: false, reason: "Packaged proof file is missing or unreadable.", resolvedPath };
+  }
+  const actualHash = sha256(bytes);
+  if (actualHash.toLowerCase() !== proof.sha256.toLowerCase()) {
+    return { enabled: false, reason: "Packaged proof SHA-256 does not match the file.", resolvedPath, sha256: actualHash };
+  }
+  if (proof.kind === "native-executable" && !looksLikeNativeExecutable(bytes)) {
+    return { enabled: false, reason: "Packaged proof file is not a recognized native executable.", resolvedPath, sha256: actualHash };
+  }
+  if (adapter.executable) {
+    if (adapter.executable.adapterId !== adapter.id || adapter.executable.executableId !== proof.identity) {
+      return { enabled: false, reason: "Executable registry identity does not match the adapter proof.", resolvedPath, sha256: actualHash };
+    }
+    if (resolve(adapter.executable.absolutePath) !== resolvedPath || adapter.executable.sha256.toLowerCase() !== actualHash.toLowerCase() || adapter.executable.kind !== "native-executable") {
+      return { enabled: false, reason: "Executable registry path, hash, or type does not match packaged proof.", resolvedPath, sha256: actualHash };
+    }
+  }
+  return { enabled: true, resolvedPath, sha256: actualHash };
+}
+
+function looksLikeNativeExecutable(bytes: Uint8Array): boolean {
+  const windowsPe = bytes.length >= 2 && bytes[0] === 0x4d && bytes[1] === 0x5a;
+  const elf = bytes.length >= 4 && bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46;
+  const macho = bytes.length >= 4 && ((bytes[0] === 0xfe && bytes[1] === 0xed && bytes[2] === 0xfa) || (bytes[0] === 0xcf && bytes[1] === 0xfa && bytes[2] === 0xed));
+  return windowsPe || elf || macho;
+}
+
 const signatures = {
   pdf: [{ format: "pdf", bytes: Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d]) }],
   png: [{ format: "png", bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) }],
   jpeg: [{ format: "jpeg", bytes: Uint8Array.from([0xff, 0xd8, 0xff]) }],
-  webp: [{ format: "webp", bytes: Uint8Array.from([0x52, 0x49, 0x46, 0x46]), offset: 0 }],
+  webp: [{ format: "webp", bytes: Uint8Array.from([0x52, 0x49, 0x46, 0x46]), offset: 0, container: { offset: 8, bytes: Uint8Array.from([0x57, 0x45, 0x42, 0x50]) } }],
   mp3: [{ format: "mp3", bytes: Uint8Array.from([0x49, 0x44, 0x33]) }],
-  wav: [{ format: "wav", bytes: Uint8Array.from([0x52, 0x49, 0x46, 0x46]) }],
+  wav: [{ format: "wav", bytes: Uint8Array.from([0x52, 0x49, 0x46, 0x46]), container: { offset: 8, bytes: Uint8Array.from([0x57, 0x41, 0x56, 0x45]) } }],
   mp4: [{ format: "mp4", bytes: Uint8Array.from([0x66, 0x74, 0x79, 0x70]), offset: 4 }],
   zip: [{ format: "zip", bytes: Uint8Array.from([0x50, 0x4b, 0x03, 0x04]) }],
   gzip: [{ format: "gzip", bytes: Uint8Array.from([0x1f, 0x8b]) }],
@@ -279,6 +371,17 @@ export function matchesSignature(prefix: Uint8Array, signature: ByteSignature): 
       return false;
     }
   }
+  if (signature.container) {
+    const container = signature.container;
+    if (prefix.byteLength < container.offset + container.bytes.byteLength) {
+      return false;
+    }
+    for (let index = 0; index < container.bytes.byteLength; index += 1) {
+      if (prefix[container.offset + index] !== container.bytes[index]) {
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -332,11 +435,20 @@ export async function detectSourceFormats(
   }
   if (formats.size === 0 && prefix.byteLength > 0) {
     const utf8Adapter = registry.catalog().some((adapter) => adapter.sourceFormats.includes("utf8"));
-    if (utf8Adapter) {
+    if (utf8Adapter && isStrictUtf8(prefix)) {
       formats.add("utf8");
     }
   }
   return { formats: [...formats], inspectedBytes: prefix.byteLength };
+}
+
+function isStrictUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function assertResourceBounds(inputBytes: number, limits: ResourceLimits): void {
@@ -364,6 +476,8 @@ export type RunnerRequest = {
   outputPath: string;
   targetFormat: string;
   inputBytes: number;
+  estimatedOutputBytes: number;
+  allowedRoots: readonly string[];
   arguments?: readonly string[];
   environment?: Readonly<Record<string, string>>;
 };
@@ -373,16 +487,17 @@ export type RunnerResult = {
   elapsedMs: number;
 };
 
-export type IsolatedRunner = {
-  run: (request: RunnerRequest, signal: AbortSignal) => Promise<RunnerResult>;
-};
-
 export function validateRunnerRequest(request: RunnerRequest): void {
-  const availability = adapterAvailability(request.adapter);
-  if (!availability.enabled) {
-    throw new Error(`Adapter is unavailable: ${availability.reason}`);
-  }
   assertResourceBounds(request.inputBytes, request.adapter.resourceLimits);
+  assertResourceBounds(request.estimatedOutputBytes, { ...request.adapter.resourceLimits, maxInputBytes: request.adapter.resourceLimits.maxOutputBytes });
+  validateConversionPath(request.inputPath);
+  validateConversionPath(request.outputPath);
+  if (request.allowedRoots.length === 0 || request.allowedRoots.some((root) => !isAbsolute(root))) {
+    throw new Error("Runner requires at least one absolute containment root.");
+  }
+  if (!pathWithinRoots(request.inputPath, request.allowedRoots) || !pathWithinRoots(request.outputPath, request.allowedRoots)) {
+    throw new Error("Input and output paths must remain inside the configured containment roots.");
+  }
   if (request.adapter.sandbox.networkAccess !== "none" || !request.adapter.sandbox.isolatedProcess) {
     throw new Error("Runner must be isolated and offline.");
   }
@@ -396,12 +511,94 @@ export function validateRunnerRequest(request: RunnerRequest): void {
   }
 }
 
+export class ProductOwnedIsolatedRunner {
+  private readonly registry: AdapterRegistry;
+
+  constructor(registry: AdapterRegistry) {
+    this.registry = registry;
+  }
+
+  async run(request: RunnerRequest, signal: AbortSignal): Promise<RunnerResult> {
+    validateRunnerRequest(request);
+    const verification = await verifyPackagedAdapter(request.adapter, this.registry.packagedRoot);
+    if (!verification.enabled || !verification.resolvedPath) {
+      throw new Error(`Adapter is unavailable: ${verification.reason || "packaged proof verification failed"}`);
+    }
+    await assertCanonicalContainment(request.inputPath, request.outputPath, request.allowedRoots);
+    const executable = this.registry.executableFor(request.adapter.id);
+    if (!executable || executable.kind !== "native-executable") {
+      throw new Error("No product-owned native executable is registered for this adapter.");
+    }
+    if (resolve(executable.absolutePath) !== verification.resolvedPath || executable.sha256.toLowerCase() !== verification.sha256?.toLowerCase()) {
+      throw new Error("Product-owned executable registry does not match the verified packaged file.");
+    }
+    const args = request.arguments || [];
+    if (args.some((argument) => !executable.allowedArguments.includes(argument))) {
+      throw new Error("Runner arguments are not in the product-owned executable registry.");
+    }
+    const environment = request.environment || {};
+    if (Object.keys(environment).some((key) => !executable.allowedEnvironmentKeys.includes(key))) {
+      throw new Error("Runner environment keys are not in the product-owned executable registry.");
+    }
+    if (signal.aborted) {
+      throw new Error("Conversion was cancelled before process start.");
+    }
+    const startedAt = Date.now();
+    const child = spawn(executable.absolutePath, args, {
+      cwd: dirname(request.outputPath),
+      env: environment,
+      shell: false,
+      stdio: "ignore",
+      windowsHide: true
+    });
+    return new Promise<RunnerResult>((resolveResult, rejectResult) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        child.kill();
+        settleReject(new Error("Conversion exceeded the CPU-time limit."));
+      }, request.adapter.resourceLimits.maxCpuMs);
+      const cancel = () => {
+        child.kill();
+        settleReject(new Error("Conversion was cancelled."));
+      };
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", cancel);
+        rejectResult(error);
+      };
+      signal.addEventListener("abort", cancel, { once: true });
+      child.once("error", (error) => settleReject(error));
+      child.once("exit", async (code) => {
+        if (code !== 0) {
+          settleReject(new Error(`Adapter process exited with code ${code ?? "unknown"}.`));
+          return;
+        }
+        try {
+          const outputInformation = await stat(request.outputPath);
+          if (!outputInformation.isFile() || outputInformation.size > request.adapter.resourceLimits.maxOutputBytes) {
+            throw new Error("Adapter output is missing or exceeds the output-byte limit.");
+          }
+          const output = new Uint8Array(await readFile(request.outputPath));
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal.removeEventListener("abort", cancel);
+          resolveResult({ output, elapsedMs: Date.now() - startedAt });
+        } catch (error) {
+          settleReject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    });
+  }
+}
+
 export async function convertWithIsolatedRunner(
   request: RunnerRequest,
-  runner: IsolatedRunner,
+  runner: ProductOwnedIsolatedRunner,
   options: { confirmedLossiness?: boolean; signal?: AbortSignal } = {}
 ): Promise<Uint8Array> {
-  validateRunnerRequest(request);
   requireLossyConfirmation(request.adapter, options.confirmedLossiness === true);
   const result = await runner.run(request, options.signal || new AbortController().signal);
   if (!Number.isFinite(result.elapsedMs) || result.elapsedMs > request.adapter.resourceLimits.maxCpuMs) {
@@ -455,9 +652,7 @@ export async function writeValidatedOutput(
   validator: (bytes: Uint8Array) => OutputValidation,
   fileSystem: AtomicFileSystem = defaultFileSystem
 ): Promise<OutputValidation> {
-  if (!isAbsolute(destination)) {
-    throw new Error("Destination must be an absolute path.");
-  }
+  validateConversionPath(destination);
   const initialValidation = validator(output);
   if (!initialValidation.valid) {
     throw new Error(initialValidation.reason || "Output validation failed before write.");
@@ -472,11 +667,40 @@ export async function writeValidatedOutput(
     if (!writtenValidation.valid || written.byteLength !== output.byteLength) {
       throw new Error(writtenValidation.reason || "Written output failed validation.");
     }
-    await fileSystem.rename(temporaryPath, destination);
-    return writtenValidation;
+    await renameWithRetry(fileSystem.rename, temporaryPath, destination);
+    const reopened = new Uint8Array(await fileSystem.readFile(destination));
+    const reopenedValidation = validator(reopened);
+    if (!reopenedValidation.valid || reopened.byteLength !== output.byteLength) {
+      throw new Error(reopenedValidation.reason || "Reopened output failed validation.");
+    }
+    return reopenedValidation;
   } catch (error) {
     await fileSystem.rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
+  }
+}
+
+export async function renameWithRetry(
+  renameFile: AtomicFileSystem["rename"],
+  source: string,
+  destination: string,
+  attempts = 5
+): Promise<void> {
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 10) {
+    throw new Error("Rename retry attempts must be between 1 and 10.");
+  }
+  const transient = new Set(["EPERM", "EACCES", "EBUSY"]);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await renameFile(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!code || !transient.has(code) || attempt === attempts - 1) {
+        throw error;
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 25 * (attempt + 1)));
+    }
   }
 }
 
@@ -508,15 +732,13 @@ export type PdfOperationPlan = {
 };
 
 function assertPdfPages(pages: readonly number[], pageCount: number): void {
-  if (pages.length === 0 || pages.some((page) => !Number.isSafeInteger(page) || page < 1 || page > pageCount)) {
+  if (pages.length === 0 || new Set(pages).size !== pages.length || pages.some((page) => !Number.isSafeInteger(page) || page < 1 || page > pageCount)) {
     throw new Error("PDF page selection is outside the document bounds.");
   }
 }
 
 export function createPdfOperationPlan(document: PdfDocumentState, operation: PdfOperation): PdfOperationPlan {
-  if (!Number.isSafeInteger(document.pageCount) || document.pageCount < 1 || document.pageOrder.length !== document.pageCount || document.rotations.length !== document.pageCount) {
-    throw new Error("PDF document state is inconsistent.");
-  }
+  assertValidPdfDocument(document);
   if (document.encrypted || document.signed) {
     throw new Error("Encrypted or signed PDF capabilities are opaque and require an adapter that explicitly supports them.");
   }
@@ -531,8 +753,9 @@ export function createPdfOperationPlan(document: PdfDocumentState, operation: Pd
       if (operation.documents.length < 2 || operation.documents.some((item) => item.encrypted || item.signed)) {
         throw new Error("PDF merge requires at least two supported, unsigned documents.");
       }
+      operation.documents.forEach(assertValidPdfDocument);
       const pageCount = operation.documents.reduce((total, item) => total + item.pageCount, 0);
-      return { operation, writesOutput: true, expectedPageCount: pageCount };
+      return { operation, writesOutput: true, expectedPageCount: pageCount, expectedMetadata: operation.documents[0]?.metadata };
     }
     case "reorder":
       if (operation.pageOrder.length !== document.pageCount || new Set(operation.pageOrder).size !== document.pageCount || operation.pageOrder.some((page) => page < 1 || page > document.pageCount)) {
@@ -566,10 +789,81 @@ export function validatePdfPostWrite(plan: PdfOperationPlan, output: PdfDocument
   if (plan.expectedRotations && output.rotations.join(",") !== plan.expectedRotations.join(",")) {
     return { valid: false, format: "pdf", reason: "PDF rotations do not match the requested operation." };
   }
-  if (plan.expectedMetadata && JSON.stringify(output.metadata) !== JSON.stringify(plan.expectedMetadata)) {
+  if (plan.expectedMetadata && !sameStringRecord(output.metadata, plan.expectedMetadata)) {
     return { valid: false, format: "pdf", reason: "PDF metadata does not match the requested operation." };
   }
   return { valid: true, format: "pdf" };
+}
+
+function sameStringRecord(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length && leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+}
+
+export type PdfReader = {
+  read: (input: Uint8Array, limits: ResourceLimits) => Promise<PdfDocumentState>;
+};
+
+export type PdfWriter = {
+  write: (plan: PdfOperationPlan, limits: ResourceLimits) => Promise<Uint8Array>;
+};
+
+/**
+ * Product-owned PDF boundary. The reader and writer are the only format
+ * specific seams. Every source is parsed before planning, and the generated
+ * bytes are parsed again before they can be returned to the caller.
+ */
+export class ProductOwnedPdfAdapter {
+  private readonly reader: PdfReader;
+  private readonly writer: PdfWriter;
+  private readonly limits: ResourceLimits;
+
+  constructor(reader: PdfReader, writer: PdfWriter, limits: ResourceLimits = DEFAULT_RESOURCE_LIMITS) {
+    this.reader = reader;
+    this.writer = writer;
+    this.limits = limits;
+  }
+
+  async execute(inputs: readonly Uint8Array[], operation: PdfOperation): Promise<{ output?: Uint8Array; state: PdfDocumentState }> {
+    if (inputs.length < 1 || inputs.length > this.limits.maxItems) {
+      throw new Error("PDF input count exceeds the adapter limit.");
+    }
+    const documents: PdfDocumentState[] = [];
+    for (const input of inputs) {
+      assertResourceBounds(input.byteLength, this.limits);
+      const document = await this.reader.read(input, this.limits);
+      assertValidPdfDocument(document);
+      documents.push(document);
+    }
+    const actualOperation: PdfOperation = operation.kind === "merge"
+      ? { kind: "merge", documents }
+      : operation;
+    const plan = createPdfOperationPlan(documents[0], actualOperation);
+    if (!plan.writesOutput) return { state: documents[0] };
+    const output = await this.writer.write(plan, this.limits);
+    assertResourceBounds(output.byteLength, { ...this.limits, maxInputBytes: this.limits.maxOutputBytes });
+    const reopened = await this.reader.read(output, this.limits);
+    assertValidPdfDocument(reopened);
+    const validation = validatePdfPostWrite(plan, reopened);
+    if (!validation.valid) throw new Error(validation.reason || "Reopened PDF output failed validation.");
+    return { output, state: reopened };
+  }
+}
+
+function assertValidPdfDocument(document: PdfDocumentState): void {
+  if (!Number.isSafeInteger(document.pageCount) || document.pageCount < 1 || document.pageCount > DEFAULT_RESOURCE_LIMITS.maxItems) {
+    throw new Error("PDF page count is outside the supported bounds.");
+  }
+  if (document.pageOrder.length !== document.pageCount || new Set(document.pageOrder).size !== document.pageCount || document.pageOrder.some((page) => page < 1 || page > document.pageCount)) {
+    throw new Error("PDF page order is invalid.");
+  }
+  if (document.rotations.length !== document.pageCount || document.rotations.some((rotation) => ![0, 90, 180, 270].includes(rotation))) {
+    throw new Error("PDF rotation metadata is invalid.");
+  }
+  if (Object.entries(document.metadata).some(([key, value]) => key.length > 256 || value.length > 4_096)) {
+    throw new Error("PDF metadata exceeds the supported bounds.");
+  }
 }
 
 export type QueueState = "queued" | "processing" | "completed" | "skipped" | "cancelled" | "failed";
@@ -581,6 +875,10 @@ export type ConversionJob = {
   adapterId: string;
   targetFormat: string;
   sourceBytes: number;
+  estimatedOutputBytes: number;
+  destinationFreeBytes: number;
+  destinationReserveBytes: number;
+  freeSpaceCheckedAt: string;
   state: QueueState;
   attempts: number;
   error?: string;
@@ -602,6 +900,7 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
   private readonly jobs = new Map<string, ConversionJob>();
 
   async append(job: ConversionJob): Promise<void> {
+    if (!isValidQueueJob(job)) throw new Error("Queue record does not satisfy the runtime schema.");
     this.jobs.set(job.id, { ...job });
   }
 
@@ -620,7 +919,9 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
     if (!existing) {
       throw new Error(`Unknown queue item: ${id}`);
     }
-    this.jobs.set(id, { ...existing, ...update, updatedAt: new Date().toISOString() });
+    const next = { ...existing, ...update, updatedAt: new Date().toISOString() };
+    if (!isValidQueueJob(next)) throw new Error("Queue update does not satisfy the runtime schema.");
+    this.jobs.set(id, next);
   }
 
   async listPage(cursor: string | undefined, limit: number): Promise<QueuePage> {
@@ -653,19 +954,24 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
  * is therefore not coupled to one giant JSON document or an in-memory array.
  */
 export class FileDurableQueueStore implements DurableQueueStore {
-  private claimChain: Promise<void> = Promise.resolve();
   private readonly directory: string;
+  private readonly indexPath: string;
 
   constructor(directory: string) {
     this.directory = directory;
+    this.indexPath = resolve(directory, "queue.index");
     if (!isAbsolute(directory)) {
       throw new Error("Queue directory must be an absolute path.");
     }
   }
 
   async append(job: ConversionJob): Promise<void> {
+    if (!isValidQueueJob(job)) throw new Error("Queue record does not satisfy the runtime schema.");
     await mkdir(this.directory, { recursive: true });
-    await writeFile(this.recordPath(job.id), JSON.stringify(job), { encoding: "utf8", flag: "wx" });
+    await withFileLock(this.directory, async () => {
+      await writeFile(this.recordPath(job.id), JSON.stringify(job), { encoding: "utf8", flag: "wx" });
+      await writeFile(this.indexPath, `${job.id}\n`, { encoding: "utf8", flag: "a" });
+    });
   }
 
   async claimNext(): Promise<ConversionJob | undefined> {
@@ -700,7 +1006,9 @@ export class FileDurableQueueStore implements DurableQueueStore {
     if (!existing) {
       throw new Error(`Unknown queue item: ${id}`);
     }
-    await this.writeRecord({ ...existing, ...update, updatedAt: new Date().toISOString() });
+    const next = { ...existing, ...update, updatedAt: new Date().toISOString() };
+    if (!isValidQueueJob(next)) throw new Error("Queue update does not satisfy the runtime schema.");
+    await this.writeRecord(next);
   }
 
   async listPage(cursor: string | undefined, limit: number): Promise<QueuePage> {
@@ -710,19 +1018,19 @@ export class FileDurableQueueStore implements DurableQueueStore {
     const items: ConversionJob[] = [];
     let foundCursor = cursor === undefined;
     let nextCursor: string | undefined;
-    const directory = await this.openDirectory();
-    if (!directory) {
-      return { items };
+    let indexStream;
+    try {
+      indexStream = createInterface({ input: createReadStream(this.indexPath, { encoding: "utf8" }), crlfDelay: Infinity });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { items };
+      throw error;
     }
     try {
-      for await (const entry of directory) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) {
-          continue;
-        }
-        const job = await this.readRecord(entry.name);
-        if (!job) {
-          continue;
-        }
+      for await (const line of indexStream) {
+        const id = String(line).trim();
+        if (!/^[0-9a-f-]{36}$/i.test(id)) continue;
+        const job = await this.readRecord(`${id}.json`);
+        if (!job) continue;
         if (!foundCursor) {
           foundCursor = job.id === cursor;
           continue;
@@ -735,32 +1043,34 @@ export class FileDurableQueueStore implements DurableQueueStore {
         }
       }
     } finally {
-      await directory.close().catch(() => undefined);
+      indexStream.close();
     }
     return { items, nextCursor };
   }
 
   async recoverProcessing(): Promise<number> {
-    let recovered = 0;
-    const directory = await this.openDirectory();
-    if (!directory) {
-      return recovered;
-    }
-    try {
-      for await (const entry of directory) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) {
-          continue;
-        }
-        const job = await this.readRecord(entry.name);
-        if (job?.state === "processing") {
-          await this.writeRecord({ ...job, state: "queued", updatedAt: new Date().toISOString() });
-          recovered += 1;
-        }
+    return withFileLock(this.directory, async () => {
+      let recovered = 0;
+      const directory = await this.openDirectory();
+      if (!directory) {
+        return recovered;
       }
-    } finally {
-      await directory.close().catch(() => undefined);
-    }
-    return recovered;
+      try {
+        for await (const entry of directory) {
+          if (!entry.isFile() || !entry.name.endsWith(".json")) {
+            continue;
+          }
+          const job = await this.readRecord(entry.name);
+          if (job?.state === "processing") {
+            await this.writeRecord({ ...job, state: "queued", updatedAt: new Date().toISOString() });
+            recovered += 1;
+          }
+        }
+      } finally {
+        await directory.close().catch(() => undefined);
+      }
+      return recovered;
+    });
   }
 
   private recordPath(id: string): string {
@@ -785,7 +1095,11 @@ export class FileDurableQueueStore implements DurableQueueStore {
     try {
       const text = await readFile(resolve(this.directory, fileName), "utf8");
       const record = JSON.parse(text) as ConversionJob;
-      return record && typeof record.id === "string" ? record : undefined;
+      const expectedId = fileName.slice(0, -5);
+      if (!isValidQueueJob(record) || record.id !== expectedId) {
+        throw new Error("record schema mismatch");
+      }
+      return record;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return undefined;
@@ -807,17 +1121,39 @@ export class FileDurableQueueStore implements DurableQueueStore {
   }
 
   private async withClaimLock<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.claimChain;
-    let release!: () => void;
-    this.claimChain = new Promise<void>((resolveRelease) => {
-      release = resolveRelease;
-    });
-    await previous;
+    return withFileLock(this.directory, operation);
+  }
+}
+
+async function withFileLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+  await mkdir(directory, { recursive: true });
+  const lockPath = resolve(directory, ".queue.lock");
+  let handle;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      return await operation();
-    } finally {
-      release();
+      handle = await open(lockPath, "wx");
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" || attempt === 39) throw error;
+      try {
+        const lockInformation = await stat(lockPath);
+        if (Date.now() - lockInformation.mtimeMs > 10_000) {
+          await rm(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        // Another process may have released the lease between stat and rm.
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
     }
+  }
+  if (!handle) throw new Error("Queue lock could not be acquired.");
+  try {
+    return await operation();
+  } finally {
+    await handle.close();
+    await rm(lockPath, { force: true }).catch(() => undefined);
   }
 }
 
@@ -829,10 +1165,12 @@ export class DurableConversionQueue {
   private readonly running = new Map<string, AbortController>();
   private readonly store: DurableQueueStore;
   private readonly concurrency: number;
+  private readonly freeSpaceProbe?: (directory: string) => Promise<number>;
 
-  constructor(store: DurableQueueStore, concurrency = 2) {
+  constructor(store: DurableQueueStore, concurrency = 2, freeSpaceProbe?: (directory: string) => Promise<number>) {
     this.store = store;
     this.concurrency = concurrency;
+    this.freeSpaceProbe = freeSpaceProbe;
     if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
       throw new Error("Queue concurrency must be between 1 and 32.");
     }
@@ -840,9 +1178,17 @@ export class DurableConversionQueue {
 
   async enqueue(input: Omit<ConversionJob, "id" | "state" | "attempts" | "createdAt" | "updatedAt">): Promise<string> {
     assertPathPair(input.sourcePath, input.destinationPath);
+    validateConversionPath(input.sourcePath);
+    validateConversionPath(input.destinationPath);
     if (!Number.isSafeInteger(input.sourceBytes) || input.sourceBytes < 0) {
       throw new Error("Queue source byte count must be a non-negative safe integer.");
     }
+    const storage = preflightDestinationStorage({
+      requiredBytes: input.estimatedOutputBytes,
+      freeBytes: input.destinationFreeBytes,
+      safetyReserveBytes: input.destinationReserveBytes
+    });
+    if (!storage.accepted) throw new Error(storage.reason || "Destination storage preflight failed.");
     const now = new Date().toISOString();
     const id = randomUUID();
     await this.store.append({ ...input, id, state: "queued", attempts: 0, createdAt: now, updatedAt: now });
@@ -903,6 +1249,16 @@ export class DurableConversionQueue {
       const controller = new AbortController();
       this.running.set(job.id, controller);
       try {
+        const freeBytes = this.freeSpaceProbe ? await this.freeSpaceProbe(dirname(job.destinationPath)) : job.destinationFreeBytes;
+        const storage = preflightDestinationStorage({
+          requiredBytes: job.estimatedOutputBytes,
+          freeBytes,
+          safetyReserveBytes: job.destinationReserveBytes
+        });
+        if (!storage.accepted) {
+          await this.store.update(job.id, { state: "failed", error: storage.reason || "Destination storage preflight failed." });
+          continue;
+        }
         const outcome = await processor(job, controller.signal);
         await this.store.update(job.id, { state: controller.signal.aborted || this.cancelled ? "cancelled" : outcome });
       } catch (error) {
@@ -915,6 +1271,31 @@ export class DurableConversionQueue {
   }
 }
 
+const QUEUE_JOB_KEYS = new Set([
+  "id", "sourcePath", "destinationPath", "adapterId", "targetFormat", "sourceBytes",
+  "estimatedOutputBytes", "destinationFreeBytes", "destinationReserveBytes", "freeSpaceCheckedAt",
+  "state", "attempts", "error", "createdAt", "updatedAt"
+]);
+
+function isValidQueueJob(value: unknown): value is ConversionJob {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !QUEUE_JOB_KEYS.has(key))) return false;
+  const requiredStrings = ["id", "sourcePath", "destinationPath", "adapterId", "targetFormat", "freeSpaceCheckedAt", "createdAt", "updatedAt"];
+  if (requiredStrings.some((key) => typeof record[key] !== "string")) return false;
+  if (!/^[0-9a-f-]{36}$/i.test(record.id as string)) return false;
+  if (!isAbsolute(record.sourcePath as string) || !isAbsolute(record.destinationPath as string)) return false;
+  try {
+    validateConversionPath(record.sourcePath as string);
+    validateConversionPath(record.destinationPath as string);
+  } catch {
+    return false;
+  }
+  if (!["queued", "processing", "completed", "skipped", "cancelled", "failed"].includes(record.state as string)) return false;
+  if (record.error !== undefined && typeof record.error !== "string") return false;
+  return ["sourceBytes", "estimatedOutputBytes", "destinationFreeBytes", "destinationReserveBytes", "attempts"].every((key) => Number.isSafeInteger(record[key]) && (record[key] as number) >= 0);
+}
+
 function assertPathPair(sourcePath: string, destinationPath: string): void {
   if (!isAbsolute(sourcePath) || !isAbsolute(destinationPath)) {
     throw new Error("Queue paths must be absolute.");
@@ -923,6 +1304,54 @@ function assertPathPair(sourcePath: string, destinationPath: string): void {
   const destination = resolve(destinationPath);
   if (!source || !destination || source === sep || destination === sep) {
     throw new Error("Queue paths are not valid file paths.");
+  }
+}
+
+export function validateConversionPath(filePath: string): void {
+  if (!isAbsolute(filePath) || !filePath.trim()) {
+    throw new Error("Conversion paths must be absolute.");
+  }
+  const normalized = filePath.replaceAll("/", "\\");
+  if (/^(?:\\\\|\\\\[?.]|\\\\\.\\)/.test(normalized) || /^\\\\device\\/i.test(normalized)) {
+    throw new Error("Device and UNC paths are not allowed.");
+  }
+  const afterDrive = /^[A-Za-z]:/.test(normalized) ? normalized.slice(2) : normalized;
+  if (afterDrive.includes(":")) {
+    throw new Error("Alternate data stream paths are not allowed.");
+  }
+  const leaf = normalized.split("\\").at(-1) || "";
+  const stem = leaf.split(".")[0]?.toUpperCase() || "";
+  if (["CON", "PRN", "AUX", "NUL", "CLOCK$", ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`), ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`)].includes(stem)) {
+    throw new Error("Reserved device names are not allowed.");
+  }
+  if (/[. ]$/.test(leaf) || /[<>"|?*]/.test(leaf)) {
+    throw new Error("Conversion path contains an unsupported filename form.");
+  }
+}
+
+export function pathWithinRoots(filePath: string, roots: readonly string[]): boolean {
+  const candidate = resolve(filePath);
+  return roots.some((root) => {
+    const normalizedRoot = resolve(root);
+    const remainder = relative(normalizedRoot, candidate);
+    return remainder === "" || (remainder !== ".." && !remainder.startsWith(`..${sep}`) && !isAbsolute(remainder));
+  });
+}
+
+async function assertCanonicalContainment(inputPath: string, outputPath: string, roots: readonly string[]): Promise<void> {
+  const canonicalRoots = await Promise.all(roots.map((root) => realpath(root)));
+  const canonicalInput = await realpath(inputPath);
+  let canonicalOutput: string;
+  try {
+    canonicalOutput = await realpath(outputPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+    canonicalOutput = resolve(await realpath(dirname(outputPath)), basename(outputPath));
+  }
+  if (!pathWithinRoots(canonicalInput, canonicalRoots) || !pathWithinRoots(canonicalOutput, canonicalRoots)) {
+    throw new Error("Canonical input and output paths must remain inside the configured containment roots.");
   }
 }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,8 @@ import {
   DurableConversionQueue,
   FileDurableQueueStore,
   InMemoryDurableQueueStore,
+  ProductOwnedIsolatedRunner,
+  ProductOwnedPdfAdapter,
   adapterAvailability,
   convertWithIsolatedRunner,
   createDefaultAdapterRegistry,
@@ -17,8 +19,12 @@ import {
   detectSourceFormats,
   preflightDestinationStorage,
   requireLossyConfirmation,
+  renameWithRetry,
+  sha256,
   validateAdapterRegistry,
+  validateConversionPath,
   validatePdfPostWrite,
+  verifyPackagedAdapter,
   writeValidatedOutput,
   type Adapter,
   type ConversionJob,
@@ -34,7 +40,7 @@ function testAdapter(overrides: Partial<Adapter> = {}): Adapter {
     targetFormats: ["txt"],
     sourceSignatures: [],
     bundled: true,
-    packagedProof: { artifactPath: "dist/test-adapter", sha256: "a".repeat(64) },
+    packagedProof: { artifactPath: "dist/test-adapter", sha256: "a".repeat(64), identity: "test-adapter", kind: "data" },
     metadataBehavior: "preserve",
     encodingBehavior: "preserve",
     lossiness: { mode: "lossless", changes: [], requiresConfirmation: false },
@@ -64,6 +70,10 @@ function job(overrides: Partial<ConversionJob> = {}): ConversionJob {
     adapterId: "test-adapter",
     targetFormat: "txt",
     sourceBytes: 4,
+    estimatedOutputBytes: 4,
+    destinationFreeBytes: 100,
+    destinationReserveBytes: 10,
+    freeSpaceCheckedAt: now,
     state: "queued",
     attempts: 0,
     createdAt: now,
@@ -96,6 +106,20 @@ test("packaged proof is required even when a developer marks an adapter bundled"
   assert.ok(validateAdapterRegistry(bundledWithoutProof).length > 0);
 });
 
+test("packaged proof verification reads the real file and rejects caller metadata drift", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-proof-"));
+  const proofPath = join(directory, "adapter.dat");
+  const bytes = Uint8Array.from([1, 2, 3, 4]);
+  await writeFile(proofPath, bytes);
+  try {
+    const adapter = testAdapter({ packagedProof: { artifactPath: proofPath, sha256: sha256(bytes), identity: "test-adapter", kind: "data" } });
+    assert.deepEqual(await verifyPackagedAdapter(adapter, directory), { enabled: true, resolvedPath: proofPath, sha256: sha256(bytes) });
+    assert.equal((await verifyPackagedAdapter(testAdapter({ packagedProof: { artifactPath: proofPath, sha256: "b".repeat(64), identity: "test-adapter", kind: "data" } }), directory)).enabled, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("source detection reads bounded bytes and does not trust a file extension", async () => {
   const registry = createDefaultAdapterRegistry();
   const chunks = (async function* () {
@@ -106,6 +130,13 @@ test("source detection reads bounded bytes and does not trust a file extension",
   const detected = await detectSourceFormats(chunks, registry, 16);
   assert.deepEqual(detected.formats, ["pdf"]);
   assert.equal(detected.inspectedBytes, 16);
+});
+
+test("RIFF detection requires the subtype bytes and invalid UTF-8 is not text", async () => {
+  const registry = createDefaultAdapterRegistry();
+  const riff = Uint8Array.from([0x52, 0x49, 0x46, 0x46, ...new Array(4), 0x57, 0x41, 0x56, 0x45]);
+  assert.deepEqual((await detectSourceFormats(riff, registry)).formats, ["wav"]);
+  assert.deepEqual((await detectSourceFormats(Uint8Array.from([0xff, 0xfe, 0xfd]), registry)).formats, []);
 });
 
 test("lossy conversion requires an explicit disclosure acknowledgement", () => {
@@ -123,13 +154,20 @@ test("isolated runner rejects unavailable adapters and validates the returned ou
     inputPath: "C:\\input.txt",
     outputPath: "C:\\output.txt",
     targetFormat: "txt",
-    inputBytes: 4
+    inputBytes: 4,
+    estimatedOutputBytes: 2,
+    allowedRoots: ["C:\\"],
+    arguments: [],
+    environment: {}
   };
-  const runner = { run: async () => ({ output: Uint8Array.from([1]), elapsedMs: 1 }) };
+  const runner = new ProductOwnedIsolatedRunner(new AdapterRegistry([adapter], "C:\\"));
   await assert.rejects(() => convertWithIsolatedRunner(request, runner), /Adapter is unavailable/);
+});
 
-  const validRunner = { run: async () => ({ output: Uint8Array.from([1, 2]), elapsedMs: 1 }) };
-  assert.deepEqual(await convertWithIsolatedRunner({ ...request, adapter: testAdapter() }, validRunner), Uint8Array.from([1, 2]));
+test("path safety rejects device, UNC, ADS, and reserved names", () => {
+  for (const path of ["\\\\server\\share\\file.txt", "\\\\.\\PhysicalDrive0", "C:\\folder\\file.txt:secret", "C:\\folder\\CON.txt"]) {
+    assert.throws(() => validateConversionPath(path));
+  }
 });
 
 test("destination preflight reports the exact storage shortfall", () => {
@@ -176,6 +214,21 @@ test("atomic output validates bytes before publish and leaves a readable destina
   }
 });
 
+test("atomic replacement retries only transient Windows sharing failures", async () => {
+  let calls = 0;
+  await renameWithRetry(async () => {
+    calls += 1;
+    if (calls < 3) {
+      const error = Object.assign(new Error("sharing violation"), { code: "EPERM" });
+      throw error;
+    }
+  }, "C:\\source.tmp", "C:\\result.bin");
+  assert.equal(calls, 3);
+  await assert.rejects(() => renameWithRetry(async () => {
+    throw Object.assign(new Error("missing"), { code: "ENOENT" });
+  }, "C:\\source.tmp", "C:\\result.bin"), /missing/);
+});
+
 test("in-memory queue is bounded-concurrency, paged, cancellable, and records partial outcomes", async () => {
   const store = new InMemoryDurableQueueStore();
   const queue = new DurableConversionQueue(store, 2);
@@ -185,7 +238,11 @@ test("in-memory queue is bounded-concurrency, paged, cancellable, and records pa
       destinationPath: `C:\\output-${index}.txt`,
       adapterId: "test-adapter",
       targetFormat: "txt",
-      sourceBytes: 1
+      sourceBytes: 1,
+      estimatedOutputBytes: 1,
+      destinationFreeBytes: 100,
+      destinationReserveBytes: 10,
+      freeSpaceCheckedAt: new Date().toISOString()
     });
   }
   let active = 0;
@@ -221,4 +278,39 @@ test("file queue store survives a new instance and recovers processing records a
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("file queue locking prevents two instances from claiming the same item", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-queue-lock-"));
+  try {
+    const first = new FileDurableQueueStore(directory);
+    await first.append(job());
+    await first.append(job({ id: "00000000-0000-4000-8000-000000000002" }));
+    const [left, right] = await Promise.all([first.claimNext(), new FileDurableQueueStore(directory).claimNext()]);
+    assert.ok(left && right);
+    assert.notEqual(left?.id, right?.id);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PDF reader and writer boundary reopens and validates generated output", async () => {
+  const encode = (state: PdfDocumentState) => new TextEncoder().encode(JSON.stringify(state));
+  const decode = async (input: Uint8Array) => JSON.parse(new TextDecoder().decode(input)) as PdfDocumentState;
+  const adapter = new ProductOwnedPdfAdapter(
+    { read: decode },
+    { write: async (plan) => {
+      const pageCount = plan.expectedPageCount || 1;
+      return encode({
+        pageCount,
+        pageOrder: plan.expectedPageOrder || Array.from({ length: pageCount }, (_, index) => index + 1),
+        rotations: plan.expectedRotations || Array.from({ length: pageCount }, () => 0),
+        metadata: plan.expectedMetadata || { title: "Source" }
+      });
+    } }
+  );
+  const result = await adapter.execute([encode(pdf)], { kind: "rotate", pages: [2], degrees: 90 });
+  assert.deepEqual(result.state.rotations, [0, 90, 0]);
+  const merged = await adapter.execute([encode(pdf), encode(pdf)], { kind: "merge", documents: [] });
+  assert.equal(merged.state.pageCount, 6);
 });
