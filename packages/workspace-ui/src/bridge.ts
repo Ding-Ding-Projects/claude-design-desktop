@@ -9,11 +9,12 @@ export type AccountRateLimits = {
 export type AccountSlot = {
   slotId: string;
   label: string;
-  email: string;
-  loginId: string;
+  email?: string | null;
+  plan?: string | null;
+  lastVerified?: string | null;
+  bundledVersion?: string | null;
   state: AccountState;
   expiresAt?: string;
-  isOwner: boolean;
   rateLimits?: AccountRateLimits;
 };
 
@@ -52,7 +53,7 @@ export type PreviewHandle = {
   close(): Promise<void>;
 };
 
-export const PREVIEW_PROTOCOLS = new Set(["https:", "http:"]);
+export const PREVIEW_PROTOCOLS = new Set(["ccr:", "http:"]);
 export const PREVIEW_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export type ChatMessage = {
@@ -73,7 +74,7 @@ export type WorkspaceComment = {
 
 export type ChatStreamEvent = {
   operationId: string;
-  type: "chunk" | "complete" | "error";
+  type: "chunk" | "complete" | "cancelled" | "error";
   chunk?: string;
   message?: string;
 };
@@ -134,7 +135,7 @@ export const ROLE_CAPABILITIES: Record<AccountRole, ReadonlySet<string>> = {
 
 export function can(account: AccountSlot | undefined, capability: string, project?: Project): boolean {
   if (!account || account.state !== "ready") return false;
-  if (capability === "project:create") return account.isOwner;
+  if (capability === "project:create") return true;
   if (capability === "project:open") return true;
   if (!project) return false;
   return ROLE_CAPABILITIES[project.role]?.has(capability) ?? false;

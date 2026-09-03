@@ -3,8 +3,8 @@ import type { AccountLifecycleEvent, AccountSlot, DesignerBridge, Project, Works
 import { createWorkspaceController } from "./controller";
 import { BridgeSchemaError, createDesignerBridge, parseAccountSlot, parsePreviewHandle, parseProject } from "./schema";
 
-const owner: AccountSlot = { slotId: "owner-1", label: "Owner", email: "owner@example.test", loginId: "login-owner", state: "ready", isOwner: true };
-const viewer: AccountSlot = { slotId: "viewer-1", label: "Viewer", email: "viewer@example.test", loginId: "login-viewer", state: "ready", isOwner: false };
+const owner: AccountSlot = { slotId: "owner-1", label: "Owner", email: "owner@example.test", state: "ready" };
+const viewer: AccountSlot = { slotId: "viewer-1", label: "Viewer", email: "viewer@example.test", state: "ready" };
 const project: Project = { id: "project-1", name: "Canvas", description: "A real project", updatedAt: "2026-09-02T20:00:00Z", role: "owner", shared: false };
 
 function fakeBridge(overrides: Partial<DesignerBridge> = {}): DesignerBridge {
@@ -38,7 +38,7 @@ function fakeBridge(overrides: Partial<DesignerBridge> = {}): DesignerBridge {
     shareProject: vi.fn(async () => undefined),
     revokeShare: vi.fn(async () => undefined),
     transferProject: vi.fn(async () => undefined),
-    openPreview: vi.fn(async () => ({ id: "preview-1", title: "Preview", url: "https://example.test/preview", close: vi.fn(async () => undefined) })),
+    openPreview: vi.fn(async () => ({ id: "preview-1", title: "Preview", url: "http://127.0.0.1/preview-unguessable-token-1234", close: vi.fn(async () => undefined) })),
     saveSettings: vi.fn(async () => undefined),
     getSettings: vi.fn(async () => ({})),
     ...overrides
@@ -59,10 +59,10 @@ describe("WorkspaceController", () => {
     const bridge = fakeBridge({ getSession: vi.fn(async () => ({ authenticated: true, activeSlotId: viewer.slotId })) });
     const controller = createWorkspaceController(bridge);
     await controller.bootstrap();
-    expect(controller.has("project:create")).toBe(false);
-    await expect(controller.createProject("Nope", "")).rejects.toThrow("cannot create");
+    expect(controller.has("project:create")).toBe(true);
+    await controller.createProject("Nope", "");
     await expect(controller.saveFile("nope")).rejects.toThrow("cannot edit");
-    expect(bridge.createProject).not.toHaveBeenCalled();
+    expect(bridge.createProject).toHaveBeenCalledWith({ name: "Nope", description: "" });
   });
 
   it("requires a ready account before project open", async () => {
@@ -170,12 +170,12 @@ describe("WorkspaceController", () => {
 
   it("exposes a preview handle and closes it through the host", async () => {
     const close = vi.fn(async () => undefined);
-    const bridge = fakeBridge({ openPreview: vi.fn(async () => ({ id: "preview-1", title: "Preview", url: "https://example.test/preview", close })) });
+    const bridge = fakeBridge({ openPreview: vi.fn(async () => ({ id: "preview-1", title: "Preview", url: "http://127.0.0.1/preview-unguessable-token-1234", close })) });
     const controller = createWorkspaceController(bridge);
     await controller.bootstrap();
     await controller.openProject(project.id);
     await controller.openPreview();
-    expect(controller.getState().preview?.url).toBe("https://example.test/preview");
+    expect(controller.getState().preview?.url).toBe("http://127.0.0.1/preview-unguessable-token-1234");
     await controller.closePreview();
     expect(close).toHaveBeenCalledTimes(1);
   });
@@ -227,15 +227,16 @@ describe("WorkspaceController", () => {
   });
 
   it("keeps callbacks and abort signals out of host request payloads", async () => {
+    let emitChat: ((event: unknown) => void) | undefined;
     const invoke = vi.fn(async (method: string, _payload?: unknown) => {
       if (method === "session.get") return { authenticated: true, activeSlotId: owner.slotId };
       if (method === "accounts.list") return [owner];
       if (method === "settings.get") return {};
       if (method === "projects.list" || method === "designSystems.list") return [];
-      if (method === "chat.start") return { messageId: "m" };
+      if (method === "chat.start") { emitChat?.({ operationId: "chat-1", type: "complete" }); return { messageId: "m" }; }
       return {};
     });
-    const host = { invoke, subscribeAccountEvents: vi.fn(() => () => undefined), subscribeChat: vi.fn(() => () => undefined) };
+    const host = { invoke, subscribeAccountEvents: vi.fn(() => () => undefined), subscribeChat: vi.fn((_operationId: string, listener: (event: unknown) => void) => { emitChat = listener; return () => undefined; }) };
     const bridge = createDesignerBridge(host);
     await bridge.streamChat(owner.slotId, "hello", "chat-1", () => undefined, new AbortController().signal);
     const start = invoke.mock.calls.find(([method]) => method === "chat.start");
@@ -245,5 +246,49 @@ describe("WorkspaceController", () => {
 
   it("rejects preview handles outside approved origins", () => {
     expect(() => parsePreviewHandle({ id: "p", title: "P", url: "file:///secret" }, async () => undefined)).toThrow(BridgeSchemaError);
+  });
+
+  it("keeps the chat subscription through delayed post-ack terminal completion", async () => {
+    let emit: ((event: unknown) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const host = {
+      invoke: vi.fn(async (method: string) => method === "chat.start" ? { messageId: "message-1" } : {}),
+      subscribeAccountEvents: vi.fn(() => () => undefined),
+      subscribeChat: vi.fn((_operationId: string, listener: (event: unknown) => void) => { emit = listener; return unsubscribe; })
+    };
+    const bridge = createDesignerBridge(host);
+    const abort = new AbortController();
+    const pending = bridge.streamChat("project-1", "hello", "chat-1", () => undefined, abort.signal);
+    await Promise.resolve();
+    expect(unsubscribe).not.toHaveBeenCalled();
+    emit?.({ operationId: "chat-1", type: "complete" });
+    await pending;
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let file activity invalidate an active chat operation", async () => {
+    let finish: (() => void) | undefined;
+    let emit: ((event: { operationId: string; type: "chunk" | "complete" }) => void) | undefined;
+    const bridge = fakeBridge({
+      streamChat: vi.fn(async (_id, _prompt, operationId, onEvent) => {
+        emit = onEvent;
+        onEvent({ operationId, type: "chunk", chunk: "partial" });
+        await new Promise<void>((resolve) => { finish = resolve; });
+        onEvent({ operationId, type: "complete" });
+        return { messageId: "message-delayed" };
+      })
+    });
+    const controller = createWorkspaceController(bridge);
+    await controller.bootstrap();
+    await controller.openProject(project.id);
+    const running = controller.sendChat("hello");
+    await Promise.resolve();
+    await controller.openFile("index.html");
+    expect(controller.getState().chatOperation).toBe("streaming");
+    finish?.();
+    emit?.({ operationId: "chat-1", type: "complete" });
+    await running;
+    expect(controller.getState().chatOperation).toBe("success");
+    expect(controller.getState().chat.at(-1)?.text).toBe("partial");
   });
 });
