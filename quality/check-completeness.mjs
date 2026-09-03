@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,8 +39,9 @@ function requireHash(errors, value, expression, label) {
 function fileHash(root, relative) {
   return crypto.createHash("sha256").update(fs.readFileSync(absolute(root, relative))).digest("hex");
 }
-function sourceHash(bytes) {
-  return crypto.createHash("sha1").update(bytes).digest("hex");
+function sourceHash(bytes) { return crypto.createHash("sha256").update(bytes).digest("hex"); }
+function gitCommit(root) {
+  try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; }
 }
 function parseEvidence(root, relative, label, errors) {
   if (!validRelative(relative) || !exists(root, relative)) return null;
@@ -53,6 +55,80 @@ function parseEvidence(root, relative, label, errors) {
     push(errors, `${label} is not valid JSON: ${error.message}`);
     return null;
   }
+}
+function mediaInfo(bytes, format) {
+  if (format === "png" && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20), frames: 1 };
+  }
+  if (format === "webp" && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") {
+    const chunk = bytes.subarray(12, 16).toString("ascii");
+    if (chunk === "VP8X" && bytes.length >= 30) return { width: 1 + bytes.readUIntLE(24, 3), height: 1 + bytes.readUIntLE(27, 3), frames: bytes[20] & 2 ? 2 : 1 };
+    if (chunk === "VP8 " && bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff, frames: 1 };
+  }
+  if (format === "webm" && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) {
+    let width = 0; let height = 0;
+    for (let i = 0; i + 2 < bytes.length; i += 1) {
+      if (bytes[i] !== 0xb0 && bytes[i] !== 0xba) continue;
+      const sizeByte = bytes[i + 1]; if (!sizeByte || (sizeByte & 0x80) === 0) continue;
+      let mask = 0x80; let length = 1; while ((sizeByte & mask) === 0 && length < 8) { mask >>= 1; length += 1; }
+      const size = mask; length = sizeByte & (size - 1);
+      if (length < 1 || length > 4 || i + 2 + length > bytes.length) continue;
+      const value = bytes.readUIntBE(i + 2, length);
+      if (bytes[i] === 0xb0) width = value; else height = value;
+    }
+    const frames = bytes.includes(Buffer.from([0xa3])) || bytes.includes(Buffer.from([0x1f, 0x43, 0xb6, 0x75])) ? 1 : 0;
+    if (width > 0 && height > 0 && frames > 0) return { width, height, frames };
+  }
+  return null;
+}
+function validateMediaFile(root, relative, format, label, errors) {
+  if (!exists(root, relative)) return null;
+  const bytes = fs.readFileSync(absolute(root, relative));
+  const info = mediaInfo(bytes, format);
+  if (!info || info.width < 1 || info.height < 1 || info.frames < 1) push(errors, `${label} must have a valid ${format} signature, dimensions, and frame`);
+  return info;
+}
+function asarPayload(bytes) {
+  if (bytes.subarray(0, 1).toString("utf8") === "{") return bytes.toString("utf8");
+  if (bytes.length < 8) return null;
+  const headerSize = bytes.readUInt32LE(4); if (headerSize < 2 || headerSize > bytes.length - 8) return null;
+  return bytes.subarray(8, 8 + headerSize).toString("utf8");
+}
+function validatePackageEvidence(value, expected, runtimeManifest, root, errors) {
+  if (!value || typeof value !== "object") { push(errors, `${expected.label}.builtInteraction.package must be an object`); return; }
+  for (const field of ["setupExe", "releases", "fullNupkg", "asar", "packageMembership"]) if (!Object.prototype.hasOwnProperty.call(value, field)) push(errors, `${expected.label}.builtInteraction.package is missing ${field}`);
+  for (const field of ["setupExe", "releases", "fullNupkg", "asar"]) { if (typeof value[field] === "string") requirePath(errors, root, value[field], `${expected.label}.package.${field}`, true); }
+  if (Array.isArray(value.deltaNupkg)) for (const [index, item] of value.deltaNupkg.entries()) requirePath(errors, root, item, `${expected.label}.package.deltaNupkg[${index}]`, true);
+  else push(errors, `${expected.label}.builtInteraction.package.deltaNupkg must be a non-empty list`);
+  if (exists(root, value.setupExe)) { const bytes = fs.readFileSync(absolute(root, value.setupExe)); if (bytes.subarray(0, 2).toString("ascii") !== "MZ") push(errors, `${expected.label}.package.setupExe is not a PE executable`); }
+  if (exists(root, value.fullNupkg)) { const bytes = fs.readFileSync(absolute(root, value.fullNupkg)); if (bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) push(errors, `${expected.label}.package.fullNupkg is not a ZIP package`); }
+  for (const item of value.deltaNupkg || []) if (exists(root, item) && fs.readFileSync(absolute(root, item)).subarray(0, 2).toString("ascii") !== "PK") push(errors, `${expected.label}.package.deltaNupkg contains a non-ZIP package`);
+  if (exists(root, value.releases) && exists(root, value.fullNupkg)) { const text = fs.readFileSync(absolute(root, value.releases), "utf8"); if (!text.includes(path.basename(value.fullNupkg))) push(errors, `${expected.label}.package.RELEASES does not reference the full package`); }
+  if (exists(root, value.asar)) { const payload = asarPayload(fs.readFileSync(absolute(root, value.asar))); if (!payload) push(errors, `${expected.label}.package.asar has no readable package header`); else for (const rule of runtimeManifest?.rules || []) for (const pattern of rule.patterns) if (new RegExp(pattern, "m").test(payload)) push(errors, `${expected.label}.package.asar contains retired runtime rule ${rule.id}`); }
+  if (!Array.isArray(value.packageMembership) || value.packageMembership.length === 0) push(errors, `${expected.label}.package.packageMembership must be non-empty`);
+  else for (const item of value.packageMembership) requirePath(errors, root, item, `${expected.label}.package.packageMembership`, true);
+}
+function validatePrivacyEvidence(root, relative, label, errors) {
+  const value = parseEvidence(root, relative, label, errors); if (!value) return;
+  if (value.privacyVerdict !== "verified") push(errors, `${label} privacyVerdict must be verified`);
+  if (!(["local-only", "declared-external"] ).includes(value.boundaryType)) push(errors, `${label} boundaryType must be local-only or declared-external`);
+  if (!(["none", "declared"] ).includes(value.networkAccess)) push(errors, `${label} networkAccess must be none or declared`);
+  if (value.redacted !== true) push(errors, `${label} redacted must be true`);
+}
+function validateAvailabilityEvidence(root, relative, label, expectedState, errors) {
+  const value = parseEvidence(root, relative, label, errors); if (!value) return;
+  if (value.state !== expectedState) push(errors, `${label} state must be ${expectedState}`);
+  requireText(errors, value.reason, `${label}.reason`); requireText(errors, value.recovery, `${label}.recovery`); requireText(errors, value.verifiedAt, `${label}.verifiedAt`);
+}
+function validateDesignAudit(root, relative, label, errors) {
+  const value = parseEvidence(root, relative, label, errors); if (!value) return;
+  if (value.designSystem !== "Material Design 3" || value.primitives !== "verified" || value.controls !== "verified" || value.accessibility !== "verified") push(errors, `${label} must semantically verify the Material Design 3 audit`);
+}
+function validateVisualDiff(root, relative, label, errors) {
+  const value = parseEvidence(root, relative, label, errors); if (!value) return;
+  requireHash(errors, value.referenceSha256, SHA256, `${label}.referenceSha256`); requireHash(errors, value.builtSha256, SHA256, `${label}.builtSha256`);
+  if (!Number.isInteger(value.changedPixels) || value.changedPixels < 0 || !Number.isFinite(value.threshold) || value.threshold < 0) push(errors, `${label} must contain changedPixels and threshold`);
+  if (!["identical", "reviewed-difference"].includes(value.verdict)) push(errors, `${label}.verdict must be identical or reviewed-difference`);
 }
 function exactTuple(value) {
   return JSON.stringify({
@@ -70,7 +146,10 @@ function validateEvidence(value, expected, kind, root, errors) {
   for (const key of FEATURE_INVENTORY.receiptRequirements[kind]) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) push(errors, `${expected.label}.${kind} receipt is missing ${key}`);
   }
-  requireHash(errors, value.sourceSha256, SHA1, `${expected.label}.${kind}.sourceSha256`);
+  requireHash(errors, value.sourceSha256, SHA256, `${expected.label}.${kind}.sourceSha256`);
+  requireHash(errors, value.sourceCommit, SHA1, `${expected.label}.${kind}.sourceCommit`);
+  if (expected.implementationPath && exists(root, expected.implementationPath) && value.sourceSha256 !== fileHash(root, expected.implementationPath)) push(errors, `${expected.label}.${kind}.sourceSha256 does not match implementation bytes`);
+  if (expected.gitCommit && value.sourceCommit !== expected.gitCommit) push(errors, `${expected.label}.${kind}.sourceCommit does not match Git provenance`);
   requireHash(errors, value.packageSha256, SHA256, `${expected.label}.${kind}.packageSha256`);
   if (expected.packageContent && exists(root, expected.packageContent) && value.packageSha256 !== fileHash(root, expected.packageContent)) push(errors, `${expected.label}.${kind}.packageSha256 does not match package content`);
   requireText(errors, value.route, `${expected.label}.${kind}.route`);
@@ -78,15 +157,21 @@ function validateEvidence(value, expected, kind, root, errors) {
   if (!value.viewport || value.viewport.width !== expected.viewport.width || value.viewport.height !== expected.viewport.height) push(errors, `${expected.label}.${kind}.viewport does not match the manifest tuple`);
   if (value.scale !== expected.scale) push(errors, `${expected.label}.${kind}.scale does not match the manifest tuple`);
   if (value.theme !== expected.theme) push(errors, `${expected.label}.${kind}.theme does not match the manifest tuple`);
+  if (!value.tuple || JSON.stringify(value.tuple) !== JSON.stringify(expected.tuple)) push(errors, `${expected.label}.${kind}.tuple does not match the manifest tuple`);
   if (value.privacyVerdict !== "verified") push(errors, `${expected.label}.${kind}.privacyVerdict must be verified`);
   if (kind === "genuineCapture") {
     requireHash(errors, value.captureSha256, SHA256, `${expected.label}.genuineCapture.captureSha256`);
     if (exists(root, expected.capturePath) && value.captureSha256 !== fileHash(root, expected.capturePath)) push(errors, `${expected.label}.genuineCapture.captureSha256 does not match capture bytes`);
+    if (typeof value.format === "string") validateMediaFile(root, expected.capturePath, value.format, `${expected.label}.genuineCapture.capturePath`, errors);
+    else push(errors, `${expected.label}.genuineCapture.format is required`);
   }
   if (kind === "recording") {
     requireHash(errors, value.recordingSha256, SHA256, `${expected.label}.recording.recordingSha256`);
     if (!Number.isFinite(value.durationSeconds) || value.durationSeconds <= 0) push(errors, `${expected.label}.recording.durationSeconds must be positive`);
     if (!Number.isFinite(value.frameRate) || value.frameRate <= 0) push(errors, `${expected.label}.recording.frameRate must be positive`);
+    if (value.format !== "webm") push(errors, `${expected.label}.recording.format must be webm`);
+    const info = validateMediaFile(root, expected.recordingPath, "webm", `${expected.label}.recording.path`, errors);
+    if (info && value.frameCount !== info.frames) push(errors, `${expected.label}.recording.frameCount does not match media frames`);
   }
 }
 function validateSurface(surface, feature, surfaceName, options, errors) {
@@ -132,7 +217,11 @@ function validateSurface(surface, feature, surfaceName, options, errors) {
     requireText(errors, interaction.route, `${label}.builtInteraction.route`);
     requirePath(errors, options.root, interaction.packageContent, `${label}.builtInteraction.packageContent`, options.checkFiles);
     if (typeof interaction.route === "string" && !interaction.route.startsWith(FEATURE_INVENTORY.surfaces[surfaceName].routePrefix)) push(errors, `${label}.builtInteraction.route is outside its surface`);
-    if (options.checkReceipts) validateEvidence(parseEvidence(options.root, interaction.receiptPath, `${label}.builtInteraction.receiptPath`, errors), { label, route: interaction.route, packageContent: interaction.packageContent, viewport: { width: 1280, height: 800 }, scale: 1, theme: "light" }, "builtInteraction", options.root, errors);
+    if (options.checkReceipts) {
+      const receipt = parseEvidence(options.root, interaction.receiptPath, `${label}.builtInteraction.receiptPath`, errors);
+      validateEvidence(receipt, { label, route: interaction.route, packageContent: interaction.packageContent, implementationPath: implementation?.path, gitCommit: options.gitCommit, tuple: FEATURE_INVENTORY.surfaces[surfaceName].tuple, viewport: FEATURE_INVENTORY.surfaces[surfaceName].tuple.viewport, scale: FEATURE_INVENTORY.surfaces[surfaceName].tuple.scale, theme: FEATURE_INVENTORY.surfaces[surfaceName].tuple.theme }, "builtInteraction", options.root, errors);
+      validatePackageEvidence(receipt?.package, { label }, options.retiredManifest, options.root, errors);
+    }
   }
   const capture = surface.genuineCapture;
   if (!capture || typeof capture !== "object") push(errors, `${label}.genuineCapture must be an object`);
@@ -141,7 +230,7 @@ function validateSurface(surface, feature, surfaceName, options, errors) {
     requirePath(errors, options.root, capture.capturePath, `${label}.genuineCapture.capturePath`, options.checkFiles);
     if (options.checkReceipts) {
       const receipt = parseEvidence(options.root, capture.receiptPath, `${label}.genuineCapture.receiptPath`, errors);
-      validateEvidence(receipt, { label, route: interaction?.route, packageContent: interaction?.packageContent, capturePath: capture.capturePath, viewport: { width: 1280, height: 800 }, scale: 1, theme: "light" }, "genuineCapture", options.root, errors);
+      validateEvidence(receipt, { label, route: interaction?.route, packageContent: interaction?.packageContent, implementationPath: implementation?.path, gitCommit: options.gitCommit, capturePath: capture.capturePath, tuple: FEATURE_INVENTORY.surfaces[surfaceName].tuple, viewport: FEATURE_INVENTORY.surfaces[surfaceName].tuple.viewport, scale: FEATURE_INVENTORY.surfaces[surfaceName].tuple.scale, theme: FEATURE_INVENTORY.surfaces[surfaceName].tuple.theme }, "genuineCapture", options.root, errors);
     }
   }
   const recording = surface.recording;
@@ -149,14 +238,14 @@ function validateSurface(surface, feature, surfaceName, options, errors) {
   else if (recording.required) {
     requirePath(errors, options.root, recording.receiptPath, `${label}.recording.receiptPath`, options.checkFiles);
     requirePath(errors, options.root, recording.path, `${label}.recording.path`, options.checkFiles);
-    if (options.checkReceipts) validateEvidence(parseEvidence(options.root, recording.receiptPath, `${label}.recording.receiptPath`, errors), { label, route: interaction?.route, packageContent: interaction?.packageContent, viewport: { width: 1280, height: 800 }, scale: 1, theme: "light" }, "recording", options.root, errors);
+    if (options.checkReceipts) validateEvidence(parseEvidence(options.root, recording.receiptPath, `${label}.recording.receiptPath`, errors), { label, route: interaction?.route, packageContent: interaction?.packageContent, implementationPath: implementation?.path, gitCommit: options.gitCommit, recordingPath: recording.path, tuple: FEATURE_INVENTORY.surfaces[surfaceName].tuple, viewport: FEATURE_INVENTORY.surfaces[surfaceName].tuple.viewport, scale: FEATURE_INVENTORY.surfaces[surfaceName].tuple.scale, theme: FEATURE_INVENTORY.surfaces[surfaceName].tuple.theme }, "recording", options.root, errors);
   } else if (recording.receiptPath !== null || recording.path !== null) push(errors, `${label}.recording must use null paths when not required`);
   const boundary = surface.dataBoundary;
   if (!boundary || typeof boundary !== "object") push(errors, `${label}.dataBoundary must be an object`);
-  else { requireText(errors, boundary.statement, `${label}.dataBoundary.statement`); requirePath(errors, options.root, boundary.assertedBy, `${label}.dataBoundary.assertedBy`, options.checkFiles); }
+  else { requireText(errors, boundary.statement, `${label}.dataBoundary.statement`); requirePath(errors, options.root, boundary.assertedBy, `${label}.dataBoundary.assertedBy`, options.checkFiles); if (options.checkReceipts) validatePrivacyEvidence(options.root, boundary.assertedBy, `${label}.dataBoundary.assertedBy`, errors); }
   const availability = surface.availability;
   if (!availability || typeof availability !== "object") push(errors, `${label}.availability must be an object`);
-  else { requirePath(errors, options.root, availability.supported, `${label}.availability.supported`, options.checkFiles); requirePath(errors, options.root, availability.unavailable, `${label}.availability.unavailable`, options.checkFiles); }
+  else { requirePath(errors, options.root, availability.supported, `${label}.availability.supported`, options.checkFiles); requirePath(errors, options.root, availability.unavailable, `${label}.availability.unavailable`, options.checkFiles); if (options.checkReceipts) { validateAvailabilityEvidence(options.root, availability.supported, `${label}.availability.supported`, "supported", errors); validateAvailabilityEvidence(options.root, availability.unavailable, `${label}.availability.unavailable`, "unavailable", errors); } }
   const negative = surface.negativeCase;
   if (!negative || typeof negative !== "object") push(errors, `${label}.negativeCase must be an object`);
   else { requirePath(errors, options.root, negative.path, `${label}.negativeCase.path`, options.checkFiles); requireText(errors, negative.testName, `${label}.negativeCase.testName`); }
@@ -165,6 +254,7 @@ function validateInventory(inventory, options = {}) {
   const errors = [];
   const root = options.root || repoRoot;
   const checkFiles = options.checkFiles === true;
+  const currentGitCommit = options.gitCommit === undefined ? gitCommit(root) : options.gitCommit;
   if (!inventory || typeof inventory !== "object") return ["inventory must be an object"];
   if (inventory.schemaVersion !== 1) push(errors, "inventory.schemaVersion must be 1");
   if (!Array.isArray(inventory.canonicalFeatureIds) || inventory.canonicalFeatureIds.length !== 30) push(errors, "canonicalFeatureIds must contain exactly 30 entries");
@@ -212,7 +302,7 @@ function validateInventory(inventory, options = {}) {
     if (typeof feature.motionApplies !== "boolean") push(errors, `${feature.id}.motionApplies must be boolean`);
     for (const surfaceName of ["desktop", "site"]) {
       if (!feature[surfaceName] || typeof feature[surfaceName] !== "object") push(errors, `${feature.id}.${surfaceName} is missing`);
-      else validateSurface(feature[surfaceName], feature, surfaceName, { root, checkFiles, checkReceipts: options.checkReceipts === true, checkSourceSymbols: options.checkSourceSymbols === true }, errors);
+      else validateSurface(feature[surfaceName], feature, surfaceName, { root, checkFiles, checkReceipts: options.checkReceipts === true, checkSourceSymbols: options.checkSourceSymbols === true, gitCommit: currentGitCommit, retiredManifest: options.retiredManifest }, errors);
     }
     if (feature.desktop?.recording?.required !== feature.motionApplies || feature.site?.recording?.required !== feature.motionApplies) push(errors, `${feature.id}.recording.required must match motionApplies`);
   }
@@ -248,8 +338,11 @@ function validateDesignParity(inventory, options = {}) {
         if (!exists(root, screen[field])) continue;
         const bytes = fs.readFileSync(absolute(root, screen[field]));
         if (bytes.length === 0) push(errors, `${screen.id}.${field} must not be empty`);
-        if (field === "visualDiff") { try { JSON.parse(bytes.toString("utf8")); } catch (error) { push(errors, `${screen.id}.visualDiff is not valid JSON: ${error.message}`); } }
+        if (field === "visualDiff") validateVisualDiff(root, screen[field], `${screen.id}.visualDiff`, errors);
       }
+      validateDesignAudit(root, screen.materialDesignAudit, `${screen.id}.materialDesignAudit`, errors);
+      validateMediaFile(root, screen.rawReferenceCapture, path.extname(screen.rawReferenceCapture).slice(1).toLowerCase(), `${screen.id}.rawReferenceCapture`, errors);
+      validateMediaFile(root, screen.rawBuiltCapture, path.extname(screen.rawBuiltCapture).slice(1).toLowerCase(), `${screen.id}.rawBuiltCapture`, errors);
       requireHash(errors, screen.referenceCaptureSha256, SHA256, `${screen.id}.referenceCaptureSha256`);
       requireHash(errors, screen.builtCaptureSha256, SHA256, `${screen.id}.builtCaptureSha256`);
       requireHash(errors, screen.visualDiffSha256, SHA256, `${screen.id}.visualDiffSha256`);
@@ -330,19 +423,27 @@ const mutationCases = Object.freeze([
   ["interaction", (root, inventory) => { const p = absolute(root, inventory.features[0].desktop.builtInteraction.receiptPath); const r = readJson(p); r.route = "wrong-route"; fs.writeFileSync(p, JSON.stringify(r), "utf8"); }],
   ["capture", (root, inventory) => { const p = absolute(root, inventory.features[0].desktop.genuineCapture.receiptPath); const r = readJson(p); r.captureSha256 = "f".repeat(64); fs.writeFileSync(p, JSON.stringify(r), "utf8"); }],
   ["package-record", (root, inventory) => { const p = absolute(root, inventory.features[0].desktop.builtInteraction.receiptPath); const r = readJson(p); r.packageSha256 = "e".repeat(64); fs.writeFileSync(p, JSON.stringify(r), "utf8"); }],
+  ["package-signature", (root, inventory) => { const p = absolute(root, path.join(path.dirname(inventory.features[0].desktop.builtInteraction.packageContent), "Setup.exe")); fs.writeFileSync(p, Buffer.from("not-a-pe")); }],
+  ["privacy", (root, inventory) => { const p = absolute(root, inventory.features[0].desktop.dataBoundary.assertedBy); fs.writeFileSync(p, JSON.stringify({ privacyVerdict: "unverified", boundaryType: "local-only", networkAccess: "none", redacted: false }), "utf8"); }],
+  ["availability", (root, inventory) => { const p = absolute(root, inventory.features[0].desktop.availability.supported); fs.writeFileSync(p, JSON.stringify({ state: "unknown", reason: "fixture", recovery: "retry", verifiedAt: "2026-09-02T12:00:00Z" }), "utf8"); }],
+  ["recording-metadata", (root, inventory) => { const p = absolute(root, inventory.features.find((item) => item.motionApplies).desktop.recording.receiptPath); const r = readJson(p); r.frameCount = 0; fs.writeFileSync(p, JSON.stringify(r), "utf8"); }],
   ["provenance", (root, inventory) => { const p = absolute(root, inventory.versionProvenance.receiptPath); const r = readJson(p); r.updatedAt = "not-a-timestamp"; fs.writeFileSync(p, JSON.stringify(r), "utf8"); }],
   ["parity-tuple", (_root, _inventory, parity) => { parity.screens[0].scale = 9; }],
   ["parity-duplicate-tuple", (_root, _inventory, parity) => { parity.screens[1].language = parity.screens[0].language; parity.screens[1].theme = parity.screens[0].theme; parity.screens[1].state = parity.screens[0].state; parity.screens[1].time = parity.screens[0].time; parity.screens[1].motion = parity.screens[0].motion; }],
+  ["parity-visual-diff", (root, _inventory, parity) => { fs.writeFileSync(absolute(root, parity.screens[0].visualDiff), "{}", "utf8"); }],
+  ["parity-hash", (_root, _inventory, parity) => { parity.screens[0].builtCaptureSha256 = "a".repeat(64); }],
   ["retired-package-content", (root) => { const p = absolute(root, "packages/staged-package/package.cjs"); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, "const DEFAULT_ME = {};"); }]
 ]);
 function makeFixtureRoot(inventory, parity, destination = null) {
   const root = destination || fs.mkdtempSync(path.join(os.tmpdir(), "claude-design-guards-"));
   const touch = (relative, body = "fixture") => { const p = absolute(root, relative); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body, "utf8"); };
+  const binary = (relative, bytes) => { const p = absolute(root, relative); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, bytes); };
   const write = (relative, value) => touch(relative, JSON.stringify(value));
   touch(inventory.versionProvenance.versionPath, JSON.stringify({ version: "1.0.0" }));
   touch(inventory.versionProvenance.updatedAtPath, "provenance");
   const now = "2026-09-02T12:00:00Z";
-  write(inventory.versionProvenance.receiptPath, { version: "1.0.0", updatedAt: now, timezone: "UTC", sourceSha256: sourceHash(Buffer.from("provenance")), packageSha256: fileHash(root, inventory.versionProvenance.updatedAtPath) });
+  const fixtureCommit = crypto.createHash("sha1").update("fixture-commit").digest("hex");
+  write(inventory.versionProvenance.receiptPath, { version: "1.0.0", updatedAt: now, timezone: "UTC", sourceSha256: fixtureCommit, packageSha256: fileHash(root, inventory.versionProvenance.updatedAtPath) });
   for (const feature of inventory.features) for (const kind of ["desktop","site"]) {
     const surface = feature[kind]; const source = `// fixture\nfunction ${surface.implementation.symbol}() {}\n${surface.implementation.registration}\n`;
     touch(surface.implementation.path, source); touch(surface.documentation.article, `# ${surface.documentation.heading}`);
@@ -350,21 +451,27 @@ function makeFixtureRoot(inventory, parity, destination = null) {
     touch(surface.persistence.path, "export const state = {};");
     touch(surface.focusedTest.path, "test(\"fixture\", () => {});");
     touch(surface.builtInteraction.packageContent, "package");
-    const base = { sourceSha256: sourceHash(Buffer.from(source)), packageSha256: fileHash(root, surface.builtInteraction.packageContent), route: surface.builtInteraction.route, viewport: { width: 1280, height: 800 }, scale: 1, theme: "light", privacyVerdict: "verified" };
+    const packageDir = path.dirname(surface.builtInteraction.packageContent);
+    const packageFiles = { setupExe: `${packageDir}/Setup.exe`, releases: `${packageDir}/RELEASES`, fullNupkg: `${packageDir}/full.nupkg`, deltaNupkg: [`${packageDir}/delta.nupkg`], asar: `${packageDir}/app.asar`, packageMembership: [surface.builtInteraction.packageContent] };
+    binary(packageFiles.setupExe, Buffer.from([0x4d, 0x5a, 0x00])); binary(packageFiles.fullNupkg, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00])); binary(packageFiles.deltaNupkg[0], Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00])); touch(packageFiles.releases, "full.nupkg\n"); touch(packageFiles.asar, "{\"files\":{\"package\":{}}}");
+    const base = { sourceSha256: sourceHash(Buffer.from(source)), sourceCommit: fixtureCommit, packageSha256: fileHash(root, surface.builtInteraction.packageContent), route: surface.builtInteraction.route, tuple: FEATURE_INVENTORY.surfaces[kind].tuple, viewport: FEATURE_INVENTORY.surfaces[kind].tuple.viewport, scale: 1, theme: "light", privacyVerdict: "verified", package: packageFiles };
     write(surface.builtInteraction.receiptPath, base);
-    const captureBytes = Buffer.from(`capture-${kind}-${feature.id}`);
-    touch(surface.genuineCapture.capturePath, captureBytes.toString("utf8"));
-    write(surface.genuineCapture.receiptPath, { ...base, captureSha256: crypto.createHash("sha256").update(captureBytes).digest("hex") });
-    if (surface.recording.required) { touch(surface.recording.path, "recording"); write(surface.recording.receiptPath, { ...base, recordingSha256: fileHash(root, surface.recording.path), durationSeconds: 1, frameRate: 30 }); }
-    touch(surface.dataBoundary.assertedBy, "{}"); touch(surface.availability.supported, "{}"); touch(surface.availability.unavailable, "{}"); touch(surface.negativeCase.path, "export {};");
+    const format = kind === "desktop" ? "png" : "webp";
+    const captureBytes = format === "png" ? Buffer.from([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1]) : Buffer.from([82,73,70,70,0,0,0,0,87,69,66,80,86,80,56,88,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
+    binary(surface.genuineCapture.capturePath, captureBytes);
+    write(surface.genuineCapture.receiptPath, { ...base, format, captureSha256: crypto.createHash("sha256").update(captureBytes).digest("hex") });
+    if (surface.recording.required) { const recordingBytes = Buffer.from([0x1a,0x45,0xdf,0xa3,0xb0,0x81,0x20,0xba,0x81,0x10,0xa3,0x81,0x00]); binary(surface.recording.path, recordingBytes); write(surface.recording.receiptPath, { ...base, format: "webm", recordingSha256: fileHash(root, surface.recording.path), frameCount: 1, durationSeconds: 1, frameRate: 30 }); }
+    touch(surface.dataBoundary.assertedBy, JSON.stringify({ privacyVerdict: "verified", boundaryType: "local-only", networkAccess: "none", redacted: true }));
+    touch(surface.availability.supported, JSON.stringify({ state: "supported", reason: "fixture support", recovery: "continue", verifiedAt: now }));
+    touch(surface.availability.unavailable, JSON.stringify({ state: "unavailable", reason: "fixture unavailable", recovery: "use the documented fallback", verifiedAt: now }));
+    touch(surface.negativeCase.path, "export {};");
   }
   for (const screen of parity.screens) {
     touch(screen.referenceFile, "<!doctype html>");
-    touch(screen.materialDesignAudit, "{}");
-    touch(screen.rawReferenceCapture, `reference-${screen.id}`);
-    touch(screen.rawBuiltCapture, `built-${screen.id}`);
-    touch(screen.sideBySide, `compare-${screen.id}`);
-    touch(screen.visualDiff, "{}");
+    touch(screen.materialDesignAudit, JSON.stringify({ designSystem: "Material Design 3", primitives: "verified", controls: "verified", accessibility: "verified" }));
+    const parityPng = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1]);
+    binary(screen.rawReferenceCapture, parityPng); binary(screen.rawBuiltCapture, parityPng); binary(screen.sideBySide, parityPng);
+    touch(screen.visualDiff, JSON.stringify({ referenceSha256: fileHash(root, screen.rawReferenceCapture), builtSha256: fileHash(root, screen.rawBuiltCapture), changedPixels: 0, threshold: 0, verdict: "identical" }));
   }
   return root;
 }
@@ -405,7 +512,8 @@ function runSelfTests() {
   hydrateParityHashes(baselineParity, root);
   const index = readJson(path.join(scriptDir, "completeness-inventory.json"));
   if (validateIndexManifest(index).length) throw new Error("JSON index baseline is invalid");
-  if (validateInventory(baselineInventory, { root, checkFiles: true, checkReceipts: true, checkSourceSymbols: true }).length) throw new Error("fixture inventory baseline is invalid");
+  const baselineErrors = validateInventory(baselineInventory, { root, checkFiles: true, checkReceipts: true, checkSourceSymbols: true, retiredManifest: readJson(path.join(scriptDir, "retired-runtime-patterns.json")) });
+  if (baselineErrors.length) throw new Error(`fixture inventory baseline is invalid: ${baselineErrors.slice(0, 20).join("; ")}`);
   if (validateDesignParity(baselineParity, { root, checkFiles: true, checkTupleCoverage: false }).length) throw new Error("fixture design parity baseline is invalid");
   for (const [name, mutate] of mutationCases) {
     const inventory = clone(baselineInventory); const parity = clone(baselineParity);
@@ -413,7 +521,7 @@ function runSelfTests() {
     mutate(root, inventory, parity);
     const after = JSON.stringify({ inventory, parity, files: fixtureFingerprint(root) });
     if (before === after) throw new Error(`mutation did not land: ${name}`);
-    const errors = name.startsWith("parity-") ? validateDesignParity(parity, { root, checkFiles: false }) : name === "retired-package-content" ? validateRetiredRuntime(readJson(path.join(scriptDir, "retired-runtime-patterns.json")), { root, scanFiles: true }) : validateInventory(inventory, { root, checkFiles: true, checkReceipts: true, checkSourceSymbols: true });
+    const errors = name.startsWith("parity-") ? validateDesignParity(parity, { root, checkFiles: true, checkTupleCoverage: false }) : name === "retired-package-content" ? validateRetiredRuntime(readJson(path.join(scriptDir, "retired-runtime-patterns.json")), { root, scanFiles: true }) : validateInventory(inventory, { root, checkFiles: true, checkReceipts: true, checkSourceSymbols: true, retiredManifest: readJson(path.join(scriptDir, "retired-runtime-patterns.json")) });
     if (errors.length === 0) throw new Error(`negative self-test did not turn red: ${name}`);
     fs.rmSync(root, { recursive: true, force: true });
     const restoredRoot = makeFixtureRoot(baselineInventory, baselineParity);
@@ -430,9 +538,9 @@ function main() {
   if (args.has("--self-test")) { runSelfTests(); return; }
   const shapeOnly = args.has("--shape-only");
   const indexErrors = validateIndexManifest(readJson(path.join(scriptDir, "completeness-inventory.json")));
-  const inventoryErrors = validateInventory(FEATURE_INVENTORY, { root: repoRoot, checkFiles: !shapeOnly, checkReceipts: !shapeOnly, checkSourceSymbols: !shapeOnly });
-  const parityErrors = validateDesignParity(DESIGN_PARITY_INVENTORY, { root: repoRoot, checkFiles: !shapeOnly, checkTupleCoverage: !shapeOnly });
   const retiredManifest = readJson(path.join(scriptDir, "retired-runtime-patterns.json"));
+  const inventoryErrors = validateInventory(FEATURE_INVENTORY, { root: repoRoot, checkFiles: !shapeOnly, checkReceipts: !shapeOnly, checkSourceSymbols: !shapeOnly, retiredManifest });
+  const parityErrors = validateDesignParity(DESIGN_PARITY_INVENTORY, { root: repoRoot, checkFiles: !shapeOnly, checkTupleCoverage: !shapeOnly });
   const retiredErrors = validateRetiredRuntime(retiredManifest, { root: repoRoot, scanFiles: !shapeOnly });
   const all = [...indexErrors.map((x) => `COMPLETENESS_INDEX: ${x}`), ...inventoryErrors.map((x) => `COMPLETENESS: ${x}`), ...parityErrors.map((x) => `DESIGN_PARITY: ${x}`), ...retiredErrors.map((x) => `RETIRED_RUNTIME: ${x}`)];
   if (all.length) { console.error(`FAIL: ${all.length} completeness/parity/runtime findings.`); for (const error of all.slice(0, 160)) console.error(` - ${error}`); if (all.length > 160) console.error(` - ... ${all.length - 160} more findings`); process.exitCode = 1; }

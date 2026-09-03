@@ -92,27 +92,34 @@ export const FEATURE_INVENTORY = Object.freeze({
   "surfaces": {
     "desktop": {
       "kind": "desktop application",
-      "routePrefix": "app://claude-design/"
+      "routePrefix": "app://claude-design/",
+      "tuple": { "language": "en", "state": "empty", "theme": "light", "viewport": { "width": 1280, "height": 800 }, "scale": 1, "time": "frozen", "motion": "reduced" }
     },
     "site": {
       "kind": "documentation and landing site",
-      "routePrefix": "/"
+      "routePrefix": "/",
+      "tuple": { "language": "en", "state": "empty", "theme": "light", "viewport": { "width": 1280, "height": 800 }, "scale": 1, "time": "frozen", "motion": "reduced" }
     }
   },
   "receiptRequirements": {
     "builtInteraction": [
       "sourceSha256",
+      "sourceCommit",
       "packageSha256",
       "route",
+      "tuple",
       "viewport",
       "scale",
       "theme",
-      "privacyVerdict"
+      "privacyVerdict",
+      "package"
     ],
     "genuineCapture": [
       "sourceSha256",
+      "sourceCommit",
       "packageSha256",
       "route",
+      "tuple",
       "viewport",
       "scale",
       "theme",
@@ -121,10 +128,12 @@ export const FEATURE_INVENTORY = Object.freeze({
     ],
     "recording": [
       "sourceSha256",
+      "sourceCommit",
       "packageSha256",
       "recordingSha256",
       "durationSeconds",
       "frameRate",
+      "tuple",
       "viewport",
       "privacyVerdict"
     ]

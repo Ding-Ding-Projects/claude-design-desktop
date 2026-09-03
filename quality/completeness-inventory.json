@@ -60,9 +60,15 @@
     "interaction",
     "capture",
     "package-record",
+    "package-signature",
+    "privacy",
+    "availability",
+    "recording-metadata",
     "provenance",
     "parity-tuple",
     "parity-duplicate-tuple",
+    "parity-visual-diff",
+    "parity-hash",
     "retired-package-content"
   ]
 }
