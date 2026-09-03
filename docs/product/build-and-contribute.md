@@ -2,7 +2,7 @@
 
 ## Current state
 
-This checkout is an early Windows x64 extraction. It does not yet include a root package manifest, one-click dependency bootstrap, `build.bat`, `build-installer.bat`, or a packaged application. No build or installer result is claimed from this baseline.
+This checkout is an early Windows x64 extraction. It does not yet include a root package manifest, one-click dependency bootstrap, `build.bat`, `build-installer.bat`, or a packaged application. No build or installer result is claimed from this baseline. The runtime and release lanes contain candidate build records, but those records are not integrated into this product-record tip.
 
 ## Planned supported route
 
@@ -14,6 +14,8 @@ build-installer.bat /s
 ```
 
 The first script will obtain missing toolchain components and produce a runnable build. The second will produce the same unsigned Squirrel.Windows installer family used for release. Both scripts must report exact paths, hashes, versions, and failures without prompting in silent mode.
+
+The shipping build must also prove that it does not contact the hosted shell or legacy router, that the 16,728-line historical module is absent, and that the stable identity fields remain unchanged.
 
 ## Contribution route
 

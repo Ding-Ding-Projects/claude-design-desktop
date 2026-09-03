@@ -4,12 +4,12 @@ This file records third-party software notices that apply to the standalone desk
 
 ## `@openai/codex` runtime
 
-The bundled `@openai/codex` runtime is distributed under the Apache License 2.0. The product does not change that license or imply that the runtime is part of the product's MIT-licensed source. The applicable notice and license text must remain available with every packaged distribution that includes the runtime.
+If a release bundles the `@openai/codex` runtime, that component is distributed under the Apache License 2.0. The product does not change that license or imply that the runtime is part of the product's MIT-licensed source. The applicable notice and license text must remain available with every packaged distribution that actually includes the runtime.
 
 - Upstream project: [openai/codex](https://github.com/openai/codex)
 - License: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 - Package: `@openai/codex`
-- Distribution status: the runtime bundle and its exact version are not yet present in this extraction baseline. Packaging evidence must identify the version, source revision, and included notice before a release is published.
+- Distribution status: the runtime bundle and its exact version are not verified in this product-record baseline. Packaging evidence must identify the version, source revision, package hash, and included notice before a release is published. If the runtime is not packaged, this conditional notice remains attribution guidance only.
 
 ## Notice maintenance
 
