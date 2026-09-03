@@ -15,6 +15,12 @@ function App() {
   const [provenance, setProvenance] = useState<AppProvenance | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [regexOpen, setRegexOpen] = useState(false);
+  const [regexMode, setRegexMode] = useState(false);
+  const [regexPattern, setRegexPattern] = useState("");
+  const [regexFlags, setRegexFlags] = useState("");
+  const [regexError, setRegexError] = useState<string | null>(null);
+  const [activePage, setActivePage] = useState<"home" | "projects" | "settings">("home");
   const [newProject, setNewProject] = useState("");
 
   useEffect(() => {
@@ -33,7 +39,17 @@ function App() {
     });
   }, []);
 
-  const visibleProjects = useMemo(() => projects.filter((project) => project.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [projects, query]);
+  const projectFilter = useMemo(() => {
+    if (!regexMode) return { items: projects.filter((project) => project.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())), error: null };
+    try {
+      const matcher = new RegExp(regexPattern, regexFlags);
+      return { items: projects.filter((project) => matcher.test(project.name)), error: null };
+    } catch (error) {
+      return { items: [], error: error instanceof Error ? error.message : "Invalid regular expression" };
+    }
+  }, [projects, query, regexMode, regexPattern, regexFlags]);
+  const visibleProjects = projectFilter.items;
+  useEffect(() => setRegexError(projectFilter.error), [projectFilter.error]);
   async function createProject() {
     try {
       const project = await window.designer.projects.create({ name: newProject });
@@ -48,16 +64,21 @@ function App() {
       setNotice("Sign-in is provided by the bundled account service and is not available in this foundation build.");
     } catch (error) { setNotice(error instanceof Error ? error.message : "Sign-in is unavailable"); }
   }
+  async function openProject(projectId: string) {
+    try { await window.designer.projects.open(projectId); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Project opening is unavailable"); }
+  }
 
   return <div className="app-shell">
     <TitleBar title="Claude Design Desktop"><span className="connection-chip">Local workspace</span></TitleBar>
     <main className="workspace">
       <aside className="side-rail" aria-label="Primary navigation">
-        <button className="rail-item active" aria-current="page">⌂<span>Home</span></button>
-        <button className="rail-item">▦<span>Projects</span></button>
-        <button className="rail-item">⚙<span>Settings</span></button>
+        <button className={`rail-item ${activePage === "home" ? "active" : ""}`} aria-current={activePage === "home" ? "page" : undefined} onClick={() => setActivePage("home")}>⌂<span>Home</span></button>
+        <button className={`rail-item ${activePage === "projects" ? "active" : ""}`} aria-current={activePage === "projects" ? "page" : undefined} onClick={() => setActivePage("projects")}>▦<span>Projects</span></button>
+        <button className={`rail-item ${activePage === "settings" ? "active" : ""}`} aria-current={activePage === "settings" ? "page" : undefined} onClick={() => setActivePage("settings")}>⚙<span>Settings</span></button>
       </aside>
       <section className="content" aria-labelledby="welcome-heading">
+        <div className="page-context" aria-live="polite">{activePage === "home" ? "Home" : activePage === "projects" ? "Projects" : "Settings"}</div>
         <div className="hero-card">
           <div className="eyebrow">Local design workspace</div>
           <h1 id="welcome-heading">Make something clear.</h1>
@@ -72,8 +93,8 @@ function App() {
           {accounts.length === 0 ? <div className="empty-state"><span className="empty-icon">◎</span><div><strong>No account connected</strong><p>Connect an account to unlock project workspaces. Local settings remain available.</p></div></div> : <ul className="account-list">{accounts.map((account) => <li key={account.slotId}><span className="avatar">{account.label.slice(0, 1).toUpperCase()}</span><span><strong>{account.label}</strong><small>{account.email ?? "Email unavailable"} · {account.state}</small></span><button className="text-button" onClick={() => void window.designer.accounts.activate(account.slotId)}>Use account</button></li>)}</ul>}
         </section>
         <section className="section-card" aria-labelledby="projects-heading">
-          <div className="section-heading"><div><h2 id="projects-heading">Projects</h2><p>Truthful empty state, no sample documents.</p></div><label className="search-field"><span className="sr-only">Search projects</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search projects" /><button aria-label="Open advanced regex builder" title="Advanced regex builder" type="button">.*</button></label></div>
-          {visibleProjects.length === 0 ? <div className="empty-state"><span className="empty-icon">＋</span><div><strong>No projects yet</strong><p>Create a local project when an account is connected.</p></div></div> : <ul className="project-list">{visibleProjects.map((project) => <li key={project.projectId}><span><strong>{project.name}</strong><small>{project.role} · updated {new Date(project.updatedAt).toLocaleString()}</small></span><button className="text-button">Open</button></li>)}</ul>}
+          <div className="section-heading"><div><h2 id="projects-heading">Projects</h2><p>Truthful empty state, no sample documents.</p></div><div><label className="search-field"><span className="sr-only">Search projects</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search projects" /><button aria-label={regexOpen ? "Close advanced regex builder" : "Open advanced regex builder"} title="Advanced regex builder" type="button" onClick={() => setRegexOpen((value) => !value)} aria-expanded={regexOpen}>.*</button></label>{regexOpen && <div className="regex-builder" role="region" aria-label="Advanced regex builder"><div><strong>Advanced regex builder</strong><button type="button" className="text-button" onClick={() => { setRegexOpen(false); setRegexMode(false); }}>Close</button></div><label>Pattern<input value={regexPattern} onChange={(event) => { setRegexPattern(event.target.value); setRegexMode(true); }} placeholder="Project pattern" /></label><label>Flags<input value={regexFlags} onChange={(event) => { setRegexFlags(event.target.value); setRegexMode(true); }} placeholder="gim" /></label>{regexError && <p className="inline-error" role="alert">{regexError}</p>}<p className="builder-help">Plain text remains the default. Regex evaluation stays local to project names.</p></div>}</div></div>
+          {visibleProjects.length === 0 ? <div className="empty-state"><span className="empty-icon">＋</span><div><strong>No projects yet</strong><p>Create a local project when an account is connected.</p></div></div> : <ul className="project-list">{visibleProjects.map((project) => <li key={project.projectId}><span><strong>{project.name}</strong><small>{project.role} · updated {new Date(project.updatedAt).toLocaleString()}</small></span><button className="text-button" onClick={() => void openProject(project.projectId)}>Open</button></li>)}</ul>}
           <div className="create-row"><input value={newProject} onChange={(event) => setNewProject(event.target.value)} placeholder="New project name" aria-label="New project name" /><button className="primary" onClick={() => void createProject()} disabled={!newProject.trim()}>Create project</button></div>
         </section>
       </section>

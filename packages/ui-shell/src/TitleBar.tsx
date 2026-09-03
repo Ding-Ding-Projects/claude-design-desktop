@@ -9,7 +9,7 @@ export function TitleBar({ title, children }: { title: string; children?: ReactN
   }, []);
   return (
     <header className="titlebar" onDoubleClick={() => void window.designer.window.toggleMaximize()}>
-      <button className="titlebar-icon no-drag" aria-label="Show window menu" title="Show window menu" onClick={() => void window.designer.window.showSystemMenu()}>
+      <button className="titlebar-icon no-drag" aria-label="Show window menu" title="Show window menu" onDoubleClick={(event) => event.stopPropagation()} onClick={() => void window.designer.window.showSystemMenu()}>
         <span aria-hidden="true">✦</span>
       </button>
       <div className="titlebar-title" aria-label={title}>{title}</div>

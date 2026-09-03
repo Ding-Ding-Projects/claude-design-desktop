@@ -8,13 +8,9 @@
   "main": "dist/main.cjs",
   "type": "module",
   "scripts": {
-    "build": "node build/build.mjs",
-    "dev": "node build/build.mjs --watch",
-    "start": "npm run build && electron .",
     "typecheck": "tsc --noEmit -p apps/desktop/tsconfig.json",
     "test": "vitest run apps packages/contracts packages/ui-shell",
-    "test:watch": "vitest",
-    "prestart": "npm run build"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@openai/codex": "0.152.1",
