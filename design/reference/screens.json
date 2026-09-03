@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "product": "Claude Design Desktop",
+  "source": "local-data-reference",
+  "defaults": {
+    "screen": "signin",
+    "state": "default",
+    "theme": "light",
+    "locale": "en-US",
+    "width": 1280,
+    "height": 800,
+    "scale": 1,
+    "fixture": "claude-design-desktop-reference-v1",
+    "time": "2026-09-02T12:00:00.000Z",
+    "motion": "frozen",
+    "random": 3003,
+    "network": "disabled"
+  },
+  "screens": [
+    {
+      "id": "signin",
+      "state": "default",
+      "kind": "signin",
+      "en": { "eyebrow": "Account access", "title": "Sign in to Claude Design Desktop", "summary": "Choose a saved account or add a ChatGPT account through the secure browser flow.", "primary": "Add an account", "secondary": "Use device code" },
+      "zh": { "eyebrow": "帳戶登入", "title": "登入 Claude Design Desktop", "summary": "選擇已儲存的帳戶，或透過安全瀏覽器流程加入 ChatGPT 帳戶。", "primary": "加入帳戶", "secondary": "使用裝置代碼" },
+      "items": ["Browser sign-in", "Device-code fallback", "Local account slots", "No project data before authentication"]
+    },
+    {
+      "id": "accounts",
+      "state": "default",
+      "kind": "accounts",
+      "en": { "eyebrow": "Account slots", "title": "Your accounts", "summary": "Each saved account has an isolated profile and can be selected per project.", "primary": "Add account", "secondary": "Refresh status" },
+      "zh": { "eyebrow": "帳戶欄位", "title": "你的帳戶", "summary": "每個已儲存帳戶都有獨立設定檔，可按專案選用。", "primary": "加入帳戶", "secondary": "重新整理狀態" },
+      "items": ["Personal account", "Work account", "Active account", "Offline cached access"]
+    },
+    {
+      "id": "projects",
+      "state": "default",
+      "kind": "projects",
+      "en": { "eyebrow": "Workspace", "title": "Projects", "summary": "Start from a truthful empty state, then create or open a local project.", "primary": "Create project", "secondary": "Import archive" },
+      "zh": { "eyebrow": "工作區", "title": "專案", "summary": "由真實的空白狀態開始，然後建立或開啟本機專案。", "primary": "建立專案", "secondary": "匯入封存檔" },
+      "items": ["No projects yet", "Create a project", "Import legacy data", "Account required to open workspace"]
+    },
+    {
+      "id": "editor",
+      "state": "preview",
+      "kind": "editor",
+      "en": { "eyebrow": "Project editor", "title": "Build a calm design workspace", "summary": "Keep files, conversation, comments, and preview visible without losing the next action.", "primary": "Generate", "secondary": "Open preview" },
+      "zh": { "eyebrow": "專案編輯器", "title": "建立清晰的設計工作區", "summary": "檔案、對話、評論和預覽同時可見，下一步不會走失。", "primary": "產生", "secondary": "開啟預覽" },
+      "items": ["Files", "Conversation", "Comments", "Live preview"]
+    },
+    {
+      "id": "sharing",
+      "state": "roles",
+      "kind": "sharing",
+      "en": { "eyebrow": "Project access", "title": "Share with saved accounts", "summary": "The owner chooses explicit viewer, commenter, or editor access for each local account slot.", "primary": "Add grant", "secondary": "Transfer ownership" },
+      "zh": { "eyebrow": "專案存取權", "title": "與已儲存帳戶分享", "summary": "擁有者為每個本機帳戶欄位選擇檢視者、評論者或編輯者權限。", "primary": "加入授權", "secondary": "轉移擁有權" },
+      "items": ["Owner", "Editor", "Commenter", "Viewer"]
+    },
+    {
+      "id": "settings",
+      "state": "appearance",
+      "kind": "settings",
+      "en": { "eyebrow": "Preferences", "title": "Make the workspace yours", "summary": "Language, theme, density, typography, accessibility, updates, and private local data live here.", "primary": "Save changes", "secondary": "Reset appearance" },
+      "zh": { "eyebrow": "偏好設定", "title": "讓工作區成為你的樣子", "summary": "語言、主題、密度、字體、無障礙、更新和本機私人資料都在這裡。", "primary": "儲存變更", "secondary": "重設外觀" },
+      "items": ["English", "Cantonese", "Bilingual", "Show dialog emojis", "Personal vocabulary JSON"]
+    },
+    {
+      "id": "features",
+      "state": "overview",
+      "kind": "features",
+      "en": { "eyebrow": "Feature hub", "title": "Everything has a place", "summary": "Find the universal capabilities, their status, and the next useful action from one searchable surface.", "primary": "Open command palette", "secondary": "View documentation" },
+      "zh": { "eyebrow": "功能中心", "title": "每件事都有位置", "summary": "在一個可搜尋的介面查看通用功能、狀態和下一個實用動作。", "primary": "開啟命令面板", "secondary": "查看文件" },
+      "items": ["Language modes", "Appearance editor", "Regex builder", "Local history", "File converter", "Ollama manager", "Status hub"]
+    },
+    {
+      "id": "downloads",
+      "state": "progress",
+      "kind": "downloads",
+      "en": { "eyebrow": "Download companion", "title": "Downloading design-export.zip", "summary": "A separate always-on-top surface reports the real transfer, with pause, resume, and cancel.", "primary": "Pause", "secondary": "Cancel" },
+      "zh": { "eyebrow": "下載助手", "title": "正在下載 design-export.zip", "summary": "獨立的置頂介面顯示真實傳輸，支援暫停、繼續和取消。", "primary": "暫停", "secondary": "取消" },
+      "items": ["42.8 MB of 86.4 MB", "18.2 MB/s", "00:03 remaining", "Destination verified"]
+    },
+    {
+      "id": "recovery",
+      "state": "offline",
+      "kind": "recovery",
+      "en": { "eyebrow": "Recovery", "title": "The account service is offline", "summary": "Local projects remain available when the saved account is cached. Generation waits safely until the service returns.", "primary": "Retry connection", "secondary": "Open offline help" },
+      "zh": { "eyebrow": "復原", "title": "帳戶服務目前離線", "summary": "已快取的帳戶仍可開啟本機專案。服務恢復後才會繼續產生工作。", "primary": "重試連線", "secondary": "開啟離線說明" },
+      "items": ["Cached account available", "Generation paused", "No data was lost", "Retry is safe"]
+    }
+  ]
+}
