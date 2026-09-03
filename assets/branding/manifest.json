@@ -1,53 +1,54 @@
 {
   "schemaVersion": 1,
-  "sourceTool": "built-in image_gen",
+  "sourceTool": "built-in image_gen plus deterministic local compositor",
   "inspection": {
     "method": "built-in view_image",
-    "result": "Both generated images were inspected visually. The square mark is text-free, transparent, flat, violet with a small teal accent, and has a clear modular C/D silhouette with an editing cursor. The wide composition is text-free, has safe margins, uses the same identity, and contains abstract design-workspace panels without device framing or third-party marks."
+    "result": "The canonical mark, dedicated tiny source, and wide composition were inspected visually at master scale, 16 pixel scale, and social-preview scale. The canonical mark is text-free, genuinely transparent, flat-filled, violet with one teal inset, and has a simple modular C/D silhouette with no cursor or grid detail. The wide composition uses that exact canonical mark, clean flat geometric workspace panels, generous margins, and no text, device frame, third-party mark, vignette, gradient, or texture."
   },
   "assets": {
     "logoMaster": {
       "path": "assets/branding/logo-master.png",
-      "sha256": "3b4ab9c1bec0dc19c5fa8bffa3be04313b635d0113b26222edd004f9a900ad15",
+      "sha256": "902aea1bbb8354a1abe6115792fbb3a35a3d9bd192c79c88f4fc1f60d90f6e3c",
       "dimensions": { "width": 1254, "height": 1254 },
       "format": "PNG",
       "alpha": "present and non-opaque",
-      "prompt": "Use case: logo-brand\nAsset type: original transparent square product mark for a desktop design application\nPrimary request: Create an original, scalable, minimal flat silhouette that subtly suggests the letters C and D through interlocking modular design panels and a precise editing cursor. The mark should feel like a confident creative workspace identity, with crisp geometry and balanced negative space.\nScene/backdrop: genuinely transparent background\nSubject: one centered abstract emblem, no wordmark\nStyle/medium: flat vector-like bitmap mark with clean hard edges, suitable for app icon and product branding\nComposition/framing: square 1:1 canvas, centered mark with generous clear margin, strong readability at small sizes\nColor palette: expressive violet as the dominant color with a small teal accent\nMaterials/textures: solid flat fills only, no texture\nText (verbatim): none\nConstraints: genuinely transparent alpha background; no text; no gradients; no 3D; no watermark; no drop shadow; no mockup; original design only; must not resemble any existing logo\nAvoid: letters rendered as literal typography, extra symbols, decorative clutter, photographic detail, glossy effects, bevels, metallic treatment, brand marks, signatures"
+      "prompt": "Use case: logo-brand\nAsset type: canonical transparent square product mark for a desktop design application\nPrimary request: Design a genuinely flat-fill, original geometric emblem that suggests a C and D through two interlocking modular panels. Keep the silhouette extremely simple and small-size-safe: one bold violet outer form, one compact teal inset feature, and one clean negative-space cut. Use no cursor, no grid, no micro-details, and no literal typography.\nScene/backdrop: genuinely transparent background\nSubject: one centered abstract emblem, no wordmark\nStyle/medium: crisp flat vector-like bitmap mark with hard edges, scalable branding geometry\nComposition/framing: square 1:1 canvas, centered mark, generous transparent margin, unmistakable at icon size\nColor palette: expressive violet dominant with exactly one small teal accent\nMaterials/textures: uniform solid fills only\nText (verbatim): none\nConstraints: genuinely transparent alpha; flat fills only; no gradients; no shadows; no 3D; no texture; no cursor; no grid; no watermark; no mockup; no extra symbols; original design only; no resemblance to any existing logo\nAvoid: literal letters, thin strokes, tiny details, multiple teal accents, decorative clutter, photographic rendering, glossy or beveled effects"
     },
     "socialPreviewMaster": {
       "path": "assets/branding/social-preview-master.png",
-      "sha256": "3dabf6667af973b3ed31f767f7f3a33a6911cde9b96718ef282771348d382bd5",
+      "sha256": "43a642341b68c1ea06a69e52288317eaead62f504838f661bca8349feacd47d4",
       "dimensions": { "width": 1774, "height": 887 },
       "format": "PNG",
       "alpha": "none",
-      "prompt": "Use case: ads-marketing\nAsset type: wide 2:1 social-preview composition for a desktop design application\nPrimary request: Create a polished wide composition using the same original visual identity as a violet modular C/D emblem with a small teal accent, paired with abstract local design-workspace panels. Include the emblem as the clear focal mark and a restrained arrangement of overlapping geometric panels that suggest a design editor without showing readable interface text.\nScene/backdrop: clean deep violet and charcoal workspace atmosphere with flat abstract panels and generous breathing room\nSubject: the original modular C/D-style product mark, plus abstract local design-workspace panels and a precise editing cursor motif\nStyle/medium: flat vector-like bitmap branding composition, crisp geometric forms, contemporary product identity\nComposition/framing: 2:1 landscape canvas, mark placed with generous safe margins and balanced empty space around it, no edge cropping, readable when shared as a social preview\nLighting/mood: calm, confident, precise, creative\nColor palette: expressive violet dominant, small teal accent, deep neutral supporting panels, high contrast\nMaterials/textures: solid flat fills, subtle opaque panel layering only\nText (verbatim): none\nConstraints: no text; no gradients; no 3D; no watermark; no third-party marks; no device mockup; no signatures; use the same visual identity as the square mark; original design only; no resemblance to any existing logo\nAvoid: interface labels, fake screenshots, browser chrome, laptops, phones, decorative clutter, photographic textures, glossy effects, bevels, metallic treatment",
-      "editPrompt": "Use case: precise-object-edit\nAsset type: final wide 2:1 social-preview composition\nPrimary request: Replace only the smooth tonal gradient in the backdrop with a single deep flat violet field and flat opaque panel fills. Preserve the original modular violet C/D-style mark, teal accent, editing cursor, panel geometry, layout, scale, and generous safe margins exactly.\nConstraints: change only the background treatment from gradient-like tonal variation to flat solid fills; preserve all subject geometry and colors; no text; no gradients; no 3D; no watermark; no third-party marks; no device mockup; no signatures; keep the same visual identity and 2:1 landscape composition"
+      "prompt": "Use case: ads-marketing\nAsset type: wide 2:1 social-preview composition for a desktop design application\nInput images: Image 1: canonical product mark reference; preserve its outer identity\nPrimary request: Build a wide flat-fill composition around the canonical mark, with the emblem as the focal feature and a restrained set of opaque geometric panels suggesting a local design workspace.\nScene/backdrop: one uniform deep violet flat field\nSubject: the supplied canonical mark plus abstract charcoal and violet workspace panels\nStyle/medium: crisp flat vector-like bitmap branding composition, solid fills, clean geometry\nComposition/framing: 2:1 landscape canvas, canonical mark on the left third, panels on the right two-thirds, ample breathing room, no edge cropping\nLighting/mood: calm, precise, creative, no lighting effects\nColor palette: canonical violet and teal plus deep neutral panel fills\nMaterials/textures: flat opaque fills only\nText (verbatim): none\nConstraints: preserve the supplied mark identity; no gradients; no vignette; no texture; no 3D; no shadows; no text; no watermark; no third-party marks; no device mockup; no browser chrome; no signatures\nAvoid: emblem redraw, cursor or grid noise, fake interface labels, photographs, glossy effects, bevels, decorative clutter",
+      "editPrompt": "Use case: precise-object-edit\nAsset type: final wide 2:1 social-preview composition\nPrimary request: Preserve the exact canonical mark as the focal emblem and replace all tonal shading with clean flat fields and opaque geometric workspace panels.\nConstraints: preserve the mark silhouette, proportions, violet fill, teal feature, and safe margins; no gradients; no vignette; no texture; no 3D; no shadows; no text; no watermark; no third-party marks; no device mockup"
     },
     "socialPreviewCopies": [
       {
         "path": "social-preview.png",
-        "sha256": "3dabf6667af973b3ed31f767f7f3a33a6911cde9b96718ef282771348d382bd5",
+        "sha256": "43a642341b68c1ea06a69e52288317eaead62f504838f661bca8349feacd47d4",
         "dimensions": { "width": 1774, "height": 887 },
         "format": "PNG",
         "alpha": "none"
       },
       {
         "path": "site/social-preview.png",
-        "sha256": "3dabf6667af973b3ed31f767f7f3a33a6911cde9b96718ef282771348d382bd5",
+        "sha256": "43a642341b68c1ea06a69e52288317eaead62f504838f661bca8349feacd47d4",
         "dimensions": { "width": 1774, "height": 887 },
         "format": "PNG",
         "alpha": "none"
       }
     ],
     "derivedDisplayAssets": [
-      { "path": "assets/branding/logo-16.png", "sha256": "b0e2736e2d292679d3db0c5792fa34b1c21b7307835d6f64e7a70536bda0b662", "dimensions": { "width": 16, "height": 16 }, "format": "PNG", "alpha": "present" },
-      { "path": "assets/branding/logo-24.png", "sha256": "befc9dbf984f4be5a5898c8a37d9072112a28912a1a93413e69028f53f98bd6f", "dimensions": { "width": 24, "height": 24 }, "format": "PNG", "alpha": "present" },
-      { "path": "assets/branding/logo-32.png", "sha256": "3b9315c013671fa0f742e42466e539d4105c513c264ec52149fe0b9f5d206e59", "dimensions": { "width": 32, "height": 32 }, "format": "PNG", "alpha": "present" },
-      { "path": "assets/branding/logo-48.png", "sha256": "485f6722268cec6994ed905d70f1d91b5c4cb042279b9606aca321925464b09f", "dimensions": { "width": 48, "height": 48 }, "format": "PNG", "alpha": "present" },
-      { "path": "assets/branding/logo-64.png", "sha256": "bc7960e78e3f519bc7fbe1b85507c88484ab92bd9c01c286514d53576627b311", "dimensions": { "width": 64, "height": 64 }, "format": "PNG", "alpha": "present" },
-      { "path": "assets/branding/logo-128.png", "sha256": "c1139e81a8078d01a8b61aba7a81592c3a40fc72073b348ef0acd08cb2db4e53", "dimensions": { "width": 128, "height": 128 }, "format": "PNG", "alpha": "present" },
-      { "path": "assets/branding/logo-256.png", "sha256": "110eda6d79bac0e98420b1c5ca4f9d6b313ef3b2923441e5dd6986055d0eb63f", "dimensions": { "width": 256, "height": 256 }, "format": "PNG", "alpha": "present" },
-      { "path": "assets/branding/app-icon.ico", "sha256": "b60c6a864fb21dd26e29c28f0ea2bfa13ed1ba1ec51e3627f7d586bb628c0d8e", "dimensions": { "width": 256, "height": 256 }, "format": "ICO", "alpha": "present", "sizes": [16, 24, 32, 48, 64, 128, 256], "converter": "Pillow 12.3.0, deterministic LANCZOS resize from logo-master.png" }
+      { "path": "assets/branding/logo-16-source.png", "sha256": "46ae091acb4d6073f159156ebf734822647bbd3debb2a53015983231a4adde95", "dimensions": { "width": 16, "height": 16 }, "format": "PNG", "alpha": "present", "source": "dedicated simplified tiny source generated with built-in image_gen, then flat-fill normalized and resized" },
+      { "path": "assets/branding/logo-16.png", "sha256": "46ae091acb4d6073f159156ebf734822647bbd3debb2a53015983231a4adde95", "dimensions": { "width": 16, "height": 16 }, "format": "PNG", "alpha": "present", "source": "copy of logo-16-source.png" },
+      { "path": "assets/branding/logo-24.png", "sha256": "4a1053dd55e9e684200c0d9fa252f8f74d73b8896c5243e57e05d25324b96ac6", "dimensions": { "width": 24, "height": 24 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-32.png", "sha256": "c4a6edc3625232dd8f50f9b9d97b5b60f660fc48d0e2b9af93ed36beadbe6e2c", "dimensions": { "width": 32, "height": 32 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-48.png", "sha256": "6f6aa7aa47e1cf1f71984b436d2e62f6c6403c932b68e3a3b52aae739ebc5cb7", "dimensions": { "width": 48, "height": 48 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-64.png", "sha256": "1bc706c330a711f66913dd0d6f228cb0c7b66390fb74c2ac2d1174be872b9716", "dimensions": { "width": 64, "height": 64 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-128.png", "sha256": "8fe46d13c61583784b7718903d1d22b6835ce781fb6386ec8415b5febbc22b56", "dimensions": { "width": 128, "height": 128 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/logo-256.png", "sha256": "fcf5aba8168ab5859c7fcd3c691a4c9e46507cd32ec6ad49d54f1a2a9b802ce2", "dimensions": { "width": 256, "height": 256 }, "format": "PNG", "alpha": "present" },
+      { "path": "assets/branding/app-icon.ico", "sha256": "5c26c150a371ed3a11e4cddb76ea8c3a5b849761e286d63970dde8be908824ed", "dimensions": { "width": 256, "height": 256 }, "format": "ICO", "alpha": "present", "sizes": [16, 24, 32, 48, 64, 128, 256], "converter": "Pillow 12.3.0, deterministic LANCZOS resize from logo-master.png" }
     ]
   }
 }
