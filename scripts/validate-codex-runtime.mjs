@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 const contract = JSON.parse(await readFile("release-support/codex-runtime-contract.json", "utf8"));
 const manifest = JSON.parse(await readFile("release-support/dependency-manifest.json", "utf8"));
 const pin = manifest.npmPackages.find((entry) => entry.name === contract.package);
-if (!pin || pin.version !== contract.version || !pin.integrity.startsWith("sha512-")) {
+if (!pin || pin.version !== contract.version || pin.integrity !== "sha512-B8h0/2Kt+rKQv2+vqBhlhWkMEdhf4dsn46FNKMEBTXj3YC5hwSioOcTX2hMgJxMEMtKIMH6Ire1eNrQPvaL9og==") {
   throw new Error(`Codex runtime pin must be ${contract.package}@${contract.version} with npm integrity.`);
 }
 if (contract.platform !== "win32-x64" || contract.binary !== "codex.exe" || contract.transport !== "stdio-jsonl") {

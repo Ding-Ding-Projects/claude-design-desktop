@@ -17,3 +17,5 @@ The package identity is `com.dingdingprojects.claudedesigndesktop`. A valid pack
 `.github/workflows/release.yml` runs on every push and on `workflow_dispatch`, builds only the Windows x64 package, collects safe outputs on failure, creates one unique non-draft release, and records workflow timing, line counts, the commit, the public dim-sum code-name link, and the unsigned verification boundary. The workflow runs no tests, lint, type checks, accessibility checks, or capture jobs. Those checks belong to local development work and are never represented as workflow verification.
 
 The release workflow uses `RELEASE_TOKEN`, then `ORG_TOKEN`, then `GITHUB_TOKEN` through `GH_TOKEN` without printing credentials. It does not attach copied dim-sum photos. Code-name resolution links to published assets in the public `Ding-Ding-Projects/dim-sum-photos` release catalog.
+
+Code-name reuse is prevented from both local history and the published release bodies of this project. Local release tooling may keep `release-history.json` as a cache, while the published release body remains the durable record used by CI and future clean checkouts.

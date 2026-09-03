@@ -31,6 +31,12 @@
       "version": "0.152.1",
       "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.152.1.tgz",
       "integrity": "sha512-dSwQzl6JgsFe8L9i8xUnwRz9Vy8gn4UvXFU9xq2IJ1eC7zsSttqQ2SGq49ZZIjEyZQ0LZjCs6Bvtxort2Iyebg=="
+    },
+    {
+      "name": "@openai/codex-win32-x64",
+      "version": "0.152.1-win32-x64",
+      "tarball": "https://registry.npmjs.org/@openai/codex-win32-x64/-/codex-win32-x64-0.152.1.tgz",
+      "integrity": "sha512-B8h0/2Kt+rKQv2+vqBhlhWkMEdhf4dsn46FNKMEBTXj3YC5hwSioOcTX2hMgJxMEMtKIMH6Ire1eNrQPvaL9og=="
     }
   ],
   "requiredPackagedPaths": [

@@ -13,6 +13,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.ORG_TOKEN || secrets.GITHUB_TOKEN }}
       RELEASE_ROOT: ${{ runner.temp }}\claude-design-desktop-release
+      JOB_STATUS: ${{ job.status }}
     steps:
       - name: Check out the requested commit
         uses: actions/checkout@v4
@@ -81,7 +82,7 @@ jobs:
             Copy-Item -LiteralPath (Join-Path $target 'RELEASES') -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
             Get-ChildItem -LiteralPath $target -Filter '*.nupkg' -File | Copy-Item -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
           }
-          $status = "run=$env:GITHUB_RUN_ID`ncommit=$env:GITHUB_SHA`njob_status=$env:RUNNER_DEBUG`n"
+          $status = "run=$env:GITHUB_RUN_ID`ncommit=$env:GITHUB_SHA`njob_status=$env:JOB_STATUS`n"
           $status | Out-File -FilePath (Join-Path $env:RELEASE_ROOT 'run-context.txt') -Encoding utf8
 
       - name: Upload safe failure and build outputs
@@ -102,13 +103,14 @@ jobs:
           $codeNamePath = Join-Path $env:RELEASE_ROOT 'dim-sum-code-name.json'
           $codeName = if (Test-Path -LiteralPath $codeNamePath) { Get-Content -Raw $codeNamePath | ConvertFrom-Json } else { $null }
           $label = if ($codeName -and $codeName.available) { "$($codeName.name.en) · $($codeName.name.zhHant)" } else { 'No public code name resolved' }
+          $photoLink = if ($codeName -and $codeName.available -and $codeName.photoUrl) { $codeName.photoUrl } else { 'No direct public photo was resolved' }
           $notes = @(
             '# Claude Design Desktop preview release',
             '',
             "Commit: $env:GITHUB_SHA",
             "Platform: Windows x64",
             "Dim-sum code name: $label",
-            'Public photo source: https://github.com/Ding-Ding-Projects/dim-sum-photos/releases',
+            "Public photo source: $photoLink",
             '',
             '## Line count',
             '',
@@ -120,10 +122,13 @@ jobs:
             '',
             'Code signing is prohibited. The operating system may show an unknown-publisher warning.'
           )
-          $notes -join "`n" | Out-File -FilePath (Join-Path $env:RELEASE_ROOT 'release-notes.md') -Encoding utf8
           $assets = @((Join-Path $env:RELEASE_ROOT 'Setup.exe'), (Join-Path $env:RELEASE_ROOT 'RELEASES'))
           $assets += @(Get-ChildItem -LiteralPath $env:RELEASE_ROOT -Filter '*.nupkg' -File | ForEach-Object FullName)
           if ($assets.Count -lt 3) { throw 'Release asset collection did not find Setup.exe, RELEASES, and a full .nupkg.' }
+          $hashLines = @('', '## Installer hashes', '')
+          foreach ($asset in $assets) { $hashLines += "$(Split-Path $asset -Leaf): $((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant())" }
+          $notes += $hashLines
+          $notes -join "`n" | Out-File -FilePath (Join-Path $env:RELEASE_ROOT 'release-notes.md') -Encoding utf8
           gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Claude Design Desktop $tag" --notes-file (Join-Path $env:RELEASE_ROOT 'release-notes.md') @assets
           if ($LASTEXITCODE -ne 0) { throw "gh release create exited with code $LASTEXITCODE." }
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

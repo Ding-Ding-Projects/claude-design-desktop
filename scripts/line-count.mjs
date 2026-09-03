@@ -6,7 +6,8 @@ import process from "node:process";
 const root = process.cwd();
 const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
   .split("\0")
-  .filter(Boolean);
+  .filter(Boolean)
+  .filter((file) => !/^(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock)$/.test(path.basename(file)));
 
 const rows = new Map([
   ["source", []],
@@ -49,7 +50,7 @@ const result = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   command: "node scripts/line-count.mjs",
-  exclusions: ["node_modules", "build output", "dependency lockfiles", "vendored third-party trees"],
+  exclusions: ["node_modules", "build output", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "vendored third-party trees"],
   rows: table,
   projectTotal: {
     total: project.reduce((sum, row) => sum + row.total, 0),
@@ -58,7 +59,14 @@ const result = {
   repositoryTotal: {
     total: table.reduce((sum, row) => sum + row.total, 0),
     nonBlank: table.reduce((sum, row) => sum + row.nonBlank, 0)
-  }
+  },
+  attribution: blameAttribution(files.filter((file) => category(file) !== "generated"))
+};
+const estimatedHours = result.projectTotal.nonBlank / 60 * 1.5;
+result.humanEffortEstimate = {
+  basis: `${result.projectTotal.nonBlank} surviving non-blank project lines / 60 lines per hour × 1.5 complexity multiplier`,
+  hours: Number(estimatedHours.toFixed(1)),
+  statement: "Estimate only. No person was timed writing this project."
 };
 if (process.argv.includes("--json")) {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -68,5 +76,29 @@ if (process.argv.includes("--json")) {
   for (const row of table) console.log(`${row.category} | ${row.files} | ${row.total} | ${row.nonBlank}`);
   console.log(`Project total |  | ${result.projectTotal.total} | ${result.projectTotal.nonBlank}`);
   console.log(`Repository total |  | ${result.repositoryTotal.total} | ${result.repositoryTotal.nonBlank}`);
+  console.log(`Surviving project lines attributed to agents |  | ${result.attribution.agentLines} | `);
+  console.log(`Surviving project lines attributed to people |  | ${result.attribution.personLines} | `);
+  console.log(`Estimated human writing time |  | ${result.humanEffortEstimate.hours} hours | estimate only`);
+  console.log(`Estimate method: ${result.humanEffortEstimate.basis}.`);
   console.log("Excluded from project total: node_modules, build output, dependency lockfiles, and vendored third-party trees.");
+}
+
+function blameAttribution(paths) {
+  const people = new Map();
+  for (const file of paths) {
+    const source = execFileSync("git", ["blame", "--line-porcelain", "HEAD", "--", file], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    let author = "unknown";
+    for (const line of source.split("\n")) {
+      if (line.startsWith("author ")) author = line.slice("author ".length).trim();
+      else if (line.startsWith("\t")) people.set(author, (people.get(author) || 0) + 1);
+    }
+  }
+  const rows = [...people.entries()].map(([author, lines]) => ({ author, lines, kind: /claude|automation|bot|agent/i.test(author) ? "agent" : "person" }));
+  return {
+    rows,
+    agentLines: rows.filter((row) => row.kind === "agent").reduce((sum, row) => sum + row.lines, 0),
+    personLines: rows.filter((row) => row.kind === "person").reduce((sum, row) => sum + row.lines, 0),
+    countedLines: rows.reduce((sum, row) => sum + row.lines, 0),
+    rule: "Surviving lines are attributed from git blame at HEAD; commits by an automation identity are counted as agent-written."
+  };
 }
