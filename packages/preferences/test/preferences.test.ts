@@ -7,7 +7,8 @@ import {
   emptyVocabularyState,
   parseAndCachePersonalVocabulary,
   parsePersonalVocabulary,
-  PREFERENCE_HISTORY_STORAGE_KEY,
+  createPreferenceHistory,
+  createMainProcessGitHistoryAdapter,
   previewBulkAction,
   prepareExport,
   createScheduleRefreshController,
@@ -27,7 +28,9 @@ class MemoryStorage {
 
 test("language, independent funny levels, emoji setting, and School mode are persisted with immediate suppression", () => {
   const storage = new MemoryStorage();
-  const store = createPreferencesStore({ storage, defaults: createDefaultPreferences() });
+  const historyCommits: unknown[] = [];
+  const history = createPreferenceHistory({ executionContext: "main", writeSnapshot: async () => undefined, commit: async (input) => { historyCommits.push(input.metadata); return { revision: String(historyCommits.length) }; }, list: async () => [], diff: async () => "", restore: async () => undefined });
+  const store = createPreferencesStore({ storage, defaults: createDefaultPreferences(), history });
   store.updateLanguage({ mode: "cantonese", englishFunnyLevel: 2, cantoneseFunnyLevel: 4, showDialogEmojis: false });
   store.updateSchool({ enabled: true, displayName: "Quiet study" });
   assert.deepEqual(store.getEffectiveLanguage(), { mode: "english", englishFunnyLevel: 1, cantoneseFunnyLevel: 1, showDialogEmojis: false });
@@ -35,7 +38,7 @@ test("language, independent funny levels, emoji setting, and School mode are per
   const restored = createPreferencesStore({ storage, defaults: createDefaultPreferences() });
   assert.equal(restored.getState().school.displayName, "Quiet study");
   assert.equal(restored.getState().displayName.stableDataDirectoryKey, "claude-design-desktop");
-  assert.ok(JSON.parse(storage.getItem(PREFERENCE_HISTORY_STORAGE_KEY) ?? "[]").length >= 2);
+  assert.ok(historyCommits.length >= 2);
   store.close();
   restored.close();
 });
@@ -50,6 +53,18 @@ test("personal vocabulary is bounded, local, complete, and rejects duplicate and
   assert.equal(state.status, "loaded");
   assert.notEqual(storage.getItem("claude-design.personal-vocabulary.v1"), null);
   assert.deepEqual(emptyVocabularyState(), { status: "empty", schemaVersion: null, entryCount: 0, cache: null, errorCode: null });
+});
+
+test("store-owned vocabulary load, replace, and clear are atomic and resettable", () => {
+  const storage = new MemoryStorage();
+  const store = createPreferencesStore({ storage, broadcast: false });
+  assert.equal(store.loadVocabulary(JSON.stringify({ schemaVersion: 1, entries: [{ key: "one", replacement: "uno" }] })).status, "loaded");
+  assert.equal(store.getState().vocabulary.entryCount, 1);
+  assert.equal(store.loadVocabulary('{"schemaVersion":1,"entries":[{"key":"one"}]}').status, "invalid");
+  assert.equal(store.getState().vocabulary.entryCount, 1);
+  store.clearVocabulary();
+  assert.equal(store.getState().vocabulary.status, "empty");
+  store.close();
 });
 
 test("schedule precedence and cross-midnight windows are deterministic", () => {
@@ -71,7 +86,7 @@ test("schedule treats 24:00 as a valid end-of-day boundary", () => {
 test("schedule transport uses the privileged boundary, vault lookup, deadline, and incremental size bound", async () => {
   let request: { url: string; headers: Record<string, string>; redirect: "error" } | undefined;
   const controller = createScheduleRefreshController({
-    resolveHost: async () => ["203.0.113.8"],
+    resolveHost: async () => ["8.8.8.8"],
     request: async (input) => { request = { url: input.url, headers: input.headers, redirect: input.redirect }; return input.url.includes("/settings") ? { status: 500, text: async () => "{}" } : { status: 200, headers: { "content-length": "16" }, text: async () => "{\"state\":\"off\"}" }; }
   }, { getCredential: async (key) => key === "vault-ha" ? "vault-value-never-returned" : null });
   const result = await controller.refresh({ kind: "home-assistant", baseUrl: "https://ha.example.test", entityId: "input_boolean.focus", credentialKey: "vault-ha" });
@@ -80,11 +95,11 @@ test("schedule transport uses the privileged boundary, vault lookup, deadline, a
   assert.equal(request?.headers.authorization, "Bearer vault-value-never-returned");
   await assert.rejects(() => controller.refresh({ kind: "api", url: "http://192.168.1.5/settings", schemaVersion: 1 }), /https-required/);
   await assert.rejects(() => controller.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /schedule-source-http/);
-  const mixed = createScheduleRefreshController({ resolveHost: async () => ["203.0.113.8", "169.254.169.254"], request: async () => ({ status: 200, text: async () => "{}" }) });
+  const mixed = createScheduleRefreshController({ resolveHost: async () => ["8.8.8.8", "169.254.169.254"], request: async () => ({ status: 200, text: async () => "{}" }) });
   await assert.rejects(() => mixed.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /unsafe-resolved-address/);
   const unbound = createScheduleRefreshController({ request: async () => ({ status: 200, text: async () => "{}" }) });
   await assert.rejects(() => unbound.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /dns-resolution-required/);
-  const hanging = createScheduleRefreshController({ resolveHost: async () => ["203.0.113.8"], request: async () => new Promise(() => undefined) }, { getCredential: async () => null }, { deadlineMs: 250 });
+  const hanging = createScheduleRefreshController({ resolveHost: async () => ["8.8.8.8"], request: async () => new Promise(() => undefined) }, { getCredential: async () => null }, { deadlineMs: 250 });
   await assert.rejects(() => hanging.refresh({ kind: "api", url: "https://public.example.test/settings", schemaVersion: 1 }), /schedule-source-timeout/);
 });
 
@@ -97,6 +112,20 @@ test("School state strips credential keys on load and never persists them", () =
   assert.equal(store.getState().school.credentialKey, null);
   assert.equal(JSON.parse(storage.getItem("claude-design.preferences.v1") ?? "{}").school.credentialKey, null);
   store.close();
+});
+
+test("preference history uses a main-process Git adapter and fails non-fatally", async () => {
+  const calls: string[][] = [];
+  const adapter = createMainProcessGitHistoryAdapter({ executionContext: "main", writeSnapshot: async () => undefined, runGit: async (args) => { calls.push(args); return "abc123"; } });
+  const history = createPreferenceHistory(adapter);
+  const appended = await history.append("updated-theme", ["appearance.theme"]);
+  assert.equal(appended.persisted, true);
+  assert.equal(calls[0]?.[0], "commit");
+  let failure: Error | undefined;
+  const failing = createPreferenceHistory({ executionContext: "main", writeSnapshot: async () => undefined, commit: async () => { throw new Error("disk-unavailable"); }, list: async () => [], diff: async () => "", restore: async () => undefined }, { onWriteFailure: (error) => { failure = error; } });
+  const result = await failing.append("updated-density", ["appearance.density"]);
+  assert.equal(result.persisted, false);
+  assert.equal(failure?.message, "disk-unavailable");
 });
 
 test("narration enumerates voices late and serializes bilingual speech without overlap", async () => {

@@ -3,45 +3,82 @@ export interface PreferenceHistoryRecord {
   timestamp: string;
   action: string;
   fields: string[];
+  persisted: boolean;
 }
 
-export interface PreferenceHistoryStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
+export interface GitHistoryCommitInput {
+  metadata: { id: string; timestamp: string; action: string; fields: string[] };
+  snapshot: string;
 }
 
-export const PREFERENCE_HISTORY_STORAGE_KEY = "claude-design.preferences-history.v1";
-const MAX_HISTORY_RECORDS = 5_000;
+/** Main-process-only adapter. Renderer code can hold this interface but cannot implement it. */
+export interface MainProcessGitHistoryAdapter {
+  readonly executionContext: "main";
+  writeSnapshot(snapshot: string): Promise<void>;
+  commit(input: GitHistoryCommitInput): Promise<{ revision: string }>;
+  list(): Promise<PreferenceHistoryRecord[]>;
+  diff(revisionA: string, revisionB: string): Promise<string>;
+  restore(revision: string): Promise<void>;
+}
 
-export function createPreferenceHistory(storage: PreferenceHistoryStorage): {
-  append(action: string, fields: string[]): PreferenceHistoryRecord;
-  list(): PreferenceHistoryRecord[];
-  reset(): PreferenceHistoryRecord;
-} {
-  const list = (): PreferenceHistoryRecord[] => {
+export interface PreferenceHistoryOptions {
+  onWriteFailure?: (error: Error, record: PreferenceHistoryRecord) => void;
+}
+
+export function createPreferenceHistory(adapter: MainProcessGitHistoryAdapter, options: PreferenceHistoryOptions = {}) {
+  const ensureMain = () => {
+    if (adapter.executionContext !== "main") throw new Error("history-adapter-must-run-in-main-process");
+  };
+  const record = (action: string, fields: string[]): PreferenceHistoryRecord => ({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    timestamp: new Date().toISOString(),
+    action,
+    fields: [...new Set(fields)].slice(0, 100),
+    persisted: false
+  });
+  const append = async (action: string, fields: string[], snapshot = "[redacted preference snapshot]"): Promise<PreferenceHistoryRecord> => {
+    ensureMain();
+    const next = record(action, fields);
     try {
-      const parsed = JSON.parse(storage.getItem(PREFERENCE_HISTORY_STORAGE_KEY) ?? "[]");
-      return Array.isArray(parsed) ? parsed.filter(isRecord).slice(-MAX_HISTORY_RECORDS) as PreferenceHistoryRecord[] : [];
-    } catch {
-      return [];
+      await adapter.commit({ metadata: { id: next.id, timestamp: next.timestamp, action: next.action, fields: next.fields }, snapshot });
+      next.persisted = true;
+    } catch (error) {
+      options.onWriteFailure?.(error instanceof Error ? error : new Error("history-write-failed"), next);
     }
+    return next;
   };
-  const save = (records: PreferenceHistoryRecord[]) => storage.setItem(PREFERENCE_HISTORY_STORAGE_KEY, JSON.stringify(records.slice(-MAX_HISTORY_RECORDS)));
   return {
-    append(action, fields) {
-      const record = { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, timestamp: new Date().toISOString(), action, fields: [...new Set(fields)].slice(0, 100) };
-      save([...list(), record]);
-      return record;
-    },
-    list,
-    reset() {
-      storage.removeItem(PREFERENCE_HISTORY_STORAGE_KEY);
-      return { id: `${Date.now()}-reset`, timestamp: new Date().toISOString(), action: "history-reset", fields: [] };
-    }
+    append,
+    list: async () => { ensureMain(); return adapter.list(); },
+    diff: async (revisionA: string, revisionB: string) => { ensureMain(); return adapter.diff(revisionA, revisionB); },
+    restore: async (revision: string) => { ensureMain(); await adapter.restore(revision); return append("restored", [revision]); },
+    reset: async () => append("history-reset", [])
   };
 }
 
-function isRecord(value: unknown): value is PreferenceHistoryRecord {
-  return Boolean(value && typeof value === "object" && typeof (value as PreferenceHistoryRecord).id === "string" && typeof (value as PreferenceHistoryRecord).action === "string" && Array.isArray((value as PreferenceHistoryRecord).fields));
+export function createMainProcessGitHistoryAdapter(options: {
+  executionContext: "main";
+  runGit: (args: string[]) => Promise<string>;
+  writeSnapshot: (snapshot: string) => Promise<void>;
+}): MainProcessGitHistoryAdapter {
+  if (options.executionContext !== "main") throw new Error("history-adapter-must-run-in-main-process");
+  return {
+    executionContext: "main",
+    writeSnapshot: options.writeSnapshot,
+    async commit(input) {
+      await options.writeSnapshot(input.snapshot);
+      const revision = await options.runGit(["commit", "--allow-empty", "-m", `Preference mutation ${input.metadata.action}`]);
+      return { revision: revision.trim() };
+    },
+    async list() {
+      const raw = await options.runGit(["log", "--format=%H%x00%B"]);
+      return parseHistoryLog(raw);
+    },
+    diff: (revisionA, revisionB) => options.runGit(["diff", revisionA, revisionB]),
+    restore: async (revision) => { await options.runGit(["restore", "--source", revision, "--staged", "--worktree", "--", "preferences.snapshot"]); }
+  };
+}
+
+function parseHistoryLog(raw: string): PreferenceHistoryRecord[] {
+  return raw.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => ({ id: line.slice(0, 80), timestamp: "", action: line.replace(/^.*?Preference mutation\s*/i, ""), fields: [], persisted: true }));
 }

@@ -11,7 +11,7 @@ import {
   type PreferencesState,
   type SchoolModePreferences
 } from "./types.js";
-import { createPreferenceHistory } from "./history.js";
+import type { createPreferenceHistory } from "./history.js";
 
 export const PREFERENCES_STORAGE_KEY = "claude-design.preferences.v1";
 export const SHARED_SCHOOL_STORAGE_KEY = "claude-design.school-mode.v1";
@@ -135,7 +135,7 @@ export function createPreferencesStore(options: {
   state.school = readSharedSchoolMode(storage, state.school);
   state.vocabulary = loadCachedPersonalVocabulary(storage);
   const listeners = new Set<Listener>();
-  const history = options.history ?? createPreferenceHistory(storage);
+  const history = options.history;
   const channel = options.broadcast !== false && typeof BroadcastChannel !== "undefined"
     ? new BroadcastChannel("claude-design-preferences")
     : null;
@@ -150,7 +150,7 @@ export function createPreferencesStore(options: {
     state = cloneState(next);
     persist();
     channel?.postMessage({ state, key });
-    history?.append(`updated:${String(key)}`, [String(key)]);
+    history?.append(`updated:${String(key)}`, [String(key)], JSON.stringify({ changed: [String(key)], privateVocabulary: "[omitted]", credentialMaterial: "[omitted]" }));
     emit(key);
   };
 
@@ -227,12 +227,17 @@ export function createPreferencesStore(options: {
     resetDisplayName() {
       setState({ ...state, displayName: { ...state.displayName, displayName: state.displayName.shippedName } }, "displayName");
     },
+    loadVocabulary(input: string | Uint8Array) {
+      const next = parseAndCachePersonalVocabulary(input, storage);
+      if (next.status === "loaded") setState({ ...state, vocabulary: next }, "vocabulary");
+      return next;
+    },
     clearVocabulary() {
       clearPersonalVocabulary(storage);
       setState({ ...state, vocabulary: emptyVocabularyState() }, "vocabulary");
     },
     resetHistory() {
-      return history.reset();
+      return history?.reset();
     },
     getEffectiveLanguage(): LanguagePreferences {
       return state.school.enabled

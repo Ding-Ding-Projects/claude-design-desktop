@@ -19,4 +19,8 @@ School state is read from the shared local record at startup and refreshed throu
 
 Logo conversion has a decoder and encoder seam. Production code should provide the platform decoder, then use `decodeAndConvertLogo` to enforce decoded bounds and PNG output round-trip checks. Source names are transient only. Export redaction walks nested arrays and records, and narration debounces announcements while applying per-category cooldowns.
 
+Preference history is an injected main-process-only Git adapter. It writes a redacted snapshot before each append-only commit, exposes list, diff, and restore operations, records restore as a new commit, and reports write failure without failing the preference mutation. The renderer never receives a Git executor or credential material.
+
+Preference searches register settings, voice-picker, schedule-source-picker, and menu fields with adjacent bounded regex workbenches. Evaluation runs through a worker with a deadline, plain text is the default, and the `v` flag is refused so unsupported Unicode-set behavior cannot silently change matching.
+
 Run the focused tests with a TypeScript-aware test runner in the owning monorepo. The package has no runtime network requirement and does not include private vocabulary values or credentials.

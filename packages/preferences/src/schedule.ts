@@ -251,11 +251,56 @@ async function assertSafeResolvedUrl(rawUrl: string, transport: PrivilegedSchedu
 }
 
 function isUnsafeAddress(address: string): boolean {
-  if (address === "127.0.0.1" || address === "::1" || address === "localhost") return false;
-  if (address.startsWith("10.") || address.startsWith("192.168.") || /^172\.(1[6-9]|2\d|3[0-1])\./.test(address)) return true;
-  if (address.startsWith("169.254.") || address.startsWith("100.64.")) return true;
-  if (/^(fc|fd|fe8|fe9|fea|feb)/i.test(address.replace(/^\[|\]$/g, ""))) return true;
-  return address === "0.0.0.0" || address === "255.255.255.255";
+  const normalized = address.trim().replace(/^\[|\]$/g, "").toLowerCase();
+  const ipv4 = parseIPv4(normalized);
+  if (ipv4) return isUnsafeIPv4(ipv4);
+  const ipv6 = parseIPv6(normalized);
+  if (!ipv6) return true;
+  const mapped = ipv6.slice(-4);
+  if (ipv6.slice(0, 10).every((part) => part === 0) && ipv6[10] === 0xffff) return isUnsafeIPv4(mapped);
+  const first = ipv6[0] ?? 0;
+  const last = ipv6[15] ?? 0;
+  return ipv6.every((part) => part === 0) || (last === 1 && ipv6.slice(0, 15).every((part) => part === 0)) || (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+}
+
+function parseIPv4(value: string): number[] | null {
+  const parts = value.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return null;
+  const numbers = parts.map(Number);
+  return numbers.every((part) => part >= 0 && part <= 255) ? numbers : null;
+}
+
+function parseIPv6(value: string): number[] | null {
+  if (!value.includes(":")) return null;
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const parseHalf = (half: string): number[] | null => {
+    if (!half) return [];
+    const groups = half.split(":");
+    const output: number[] = [];
+    for (const group of groups) {
+      if (group.includes(".")) {
+        const ipv4 = parseIPv4(group);
+        if (!ipv4) return null;
+        output.push(((ipv4[0] ?? 0) << 8) | (ipv4[1] ?? 0), ((ipv4[2] ?? 0) << 8) | (ipv4[3] ?? 0));
+      } else {
+        if (!/^[0-9a-f]{1,4}$/i.test(group)) return null;
+        output.push(Number.parseInt(group, 16));
+      }
+    }
+    return output;
+  };
+  const left = parseHalf(halves[0] ?? "");
+  const right = parseHalf(halves[1] ?? "");
+  if (!left || !right || (halves.length === 1 && left.length !== 8) || (halves.length === 2 && left.length + right.length >= 8)) return null;
+  return halves.length === 2 ? [...left, ...new Array(8 - left.length - right.length).fill(0), ...right] : left;
+}
+
+function isUnsafeIPv4(ip: number[]): boolean {
+  const a = ip[0] ?? -1;
+  const b = ip[1] ?? -1;
+  const c = ip[2] ?? -1;
+  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168) || a === 192 && b === 0 && c === 2) || (a === 198 && (b === 18 || b === 19 || b === 51)) || (a === 203 && b === 0 && c === 113) || a >= 224;
 }
 
 function unavailableScheduleTransport(): PrivilegedScheduleTransport {

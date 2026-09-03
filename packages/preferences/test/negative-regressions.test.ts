@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { compileBoundedSearch, createSearchRegistry, parsePersonalVocabulary, previewBulkAction, registerPreferenceSearchSurfaces, validateLogoSource } from "../src/index.js";
+import { compileBoundedSearch, createSearchRegistry, evaluateBoundedSearch, parsePersonalVocabulary, previewBulkAction, registerPreferenceSearchSurfaces, validateLogoSource } from "../src/index.js";
 
 test("negative regression turns red for duplicate vocabulary keys", () => {
   const brokenParser = (payload: string) => JSON.parse(payload);
@@ -32,4 +32,10 @@ test("negative regression requires anchored bounded regex workbenches for each p
   assert.deepEqual(registry.list().map((surface) => surface.id), ["settings", "voice-picker", "schedule-source-picker", "menu"]);
   assert.equal(compileBoundedSearch("English", false)?.test("English voice"), true);
   assert.throws(() => compileBoundedSearch("x", true, "z"), /unsupported-regex-flags/);
+  assert.throws(() => compileBoundedSearch("x", true, "v"), /unsupported-regex-flags/);
+});
+
+test("negative regression routes evaluation through a bounded evaluator", async () => {
+  const result = await evaluateBoundedSearch("(a+)+$", "a".repeat(1_000) + "!", true, "", 5);
+  assert.equal(result.timedOut || result.matched === false, true);
 });
