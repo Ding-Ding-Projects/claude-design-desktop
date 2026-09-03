@@ -239,17 +239,32 @@ export async function verifyPackagedAdapter(adapter: Adapter, packagedRoot: stri
   if (!pathWithinRoots(resolvedPath, [packagedRoot])) {
     return { enabled: false, reason: "Packaged proof path escapes the product package root.", resolvedPath };
   }
+  try {
+    await assertNoReparsePath(resolvedPath);
+  } catch {
+    return { enabled: false, reason: "Packaged proof path contains a symlink or reparse component.", resolvedPath };
+  }
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(resolvedPath);
+    const canonicalRoot = await realpath(packagedRoot);
+    if (!pathWithinRoots(canonicalPath, [canonicalRoot])) {
+      return { enabled: false, reason: "Canonical packaged proof path escapes the product package root.", resolvedPath };
+    }
+  } catch {
+    return { enabled: false, reason: "Packaged proof path could not be canonicalized.", resolvedPath };
+  }
   let actualHash: string;
   let head: Uint8Array;
   try {
-    const information = await stat(resolvedPath);
+    const information = await stat(canonicalPath);
     if (!information.isFile()) {
       return { enabled: false, reason: "Packaged proof path is not a regular file.", resolvedPath };
     }
     if (information.size > MAX_PACKAGED_PROOF_BYTES) {
       return { enabled: false, reason: "Packaged proof file exceeds the bounded verification size.", resolvedPath };
     }
-    ({ hash: actualHash, head } = await hashPackagedFile(resolvedPath));
+    ({ hash: actualHash, head } = await hashPackagedFile(canonicalPath));
   } catch {
     return { enabled: false, reason: "Packaged proof file is missing or unreadable.", resolvedPath };
   }
@@ -263,11 +278,11 @@ export async function verifyPackagedAdapter(adapter: Adapter, packagedRoot: stri
     if (adapter.executable.adapterId !== adapter.id || adapter.executable.executableId !== proof.identity) {
       return { enabled: false, reason: "Executable registry identity does not match the adapter proof.", resolvedPath, sha256: actualHash };
     }
-    if (resolve(adapter.executable.absolutePath) !== resolvedPath || adapter.executable.sha256.toLowerCase() !== actualHash.toLowerCase() || adapter.executable.kind !== "native-executable") {
+    if (resolve(adapter.executable.absolutePath) !== canonicalPath || adapter.executable.sha256.toLowerCase() !== actualHash.toLowerCase() || adapter.executable.kind !== "native-executable") {
       return { enabled: false, reason: "Executable registry path, hash, or type does not match packaged proof.", resolvedPath, sha256: actualHash };
     }
   }
-  return { enabled: true, resolvedPath, sha256: actualHash };
+  return { enabled: true, resolvedPath: canonicalPath, sha256: actualHash };
 }
 
 async function hashPackagedFile(filePath: string): Promise<{ hash: string; head: Uint8Array }> {
@@ -523,6 +538,17 @@ export type ProductProcess = {
 
 export type ProductProcessFactory = (executable: string, args: readonly string[], options: { cwd: string; env: Readonly<Record<string, string>> }) => ProductProcess;
 
+export type RestrictedProcessBoundary = {
+  killOnClose: true;
+  networkDenied: true;
+  networkPolicy: "deny-all";
+  maxProcesses: 1;
+  memoryLimitBytes: number;
+  cpuTimeMs: number;
+  temporaryQuotaBytes: number;
+  attach: (child: ProductProcess, limits: ResourceLimits) => Promise<{ release: () => Promise<void> }>;
+};
+
 export function validateRunnerRequest(request: RunnerRequest): void {
   assertResourceBounds(request.inputBytes, request.adapter.resourceLimits);
   assertResourceBounds(request.estimatedOutputBytes, { ...request.adapter.resourceLimits, maxInputBytes: request.adapter.resourceLimits.maxOutputBytes });
@@ -556,15 +582,20 @@ export class ProductOwnedIsolatedRunner {
   private readonly registry: AdapterRegistry;
   private readonly tempRoot: string;
   private readonly processFactory: ProductProcessFactory;
+  private readonly processBoundary?: RestrictedProcessBoundary;
 
-  constructor(registry: AdapterRegistry, tempRoot = resolve(registry.packagedRoot, ".converter-temp"), processFactory: ProductProcessFactory = (executable, args, options) => spawn(executable, [...args], { ...options, shell: false, stdio: "ignore", windowsHide: true })) {
+  constructor(registry: AdapterRegistry, tempRoot = resolve(registry.packagedRoot, ".converter-temp"), processFactory: ProductProcessFactory = (executable, args, options) => spawn(executable, [...args], { ...options, shell: false, stdio: "ignore", windowsHide: true }), processBoundary?: RestrictedProcessBoundary) {
     this.registry = registry;
     this.tempRoot = resolve(tempRoot);
     this.processFactory = processFactory;
+    this.processBoundary = processBoundary;
   }
 
   async run(request: RunnerRequest, signal: AbortSignal): Promise<RunnerResult> {
     validateRunnerRequest(request);
+    const processBoundary = this.processBoundary;
+    assertRestrictedBoundary(processBoundary, request.adapter.resourceLimits);
+    const verifiedProcessBoundary = processBoundary as RestrictedProcessBoundary;
     const verification = await verifyPackagedAdapter(request.adapter, this.registry.packagedRoot);
     if (!verification.enabled || !verification.resolvedPath) {
       throw new Error(`Adapter is unavailable: ${verification.reason || "packaged proof verification failed"}`);
@@ -574,6 +605,9 @@ export class ProductOwnedIsolatedRunner {
       throw new Error("Temporary directory is not product-owned.");
     }
     await mkdir(request.temporaryDirectory, { recursive: true });
+    await assertNoReparsePath(request.inputPath);
+    await assertNoReparsePath(request.outputPath);
+    await assertNoReparsePath(request.publishPath);
     await assertCanonicalContainment(request.inputPath, request.outputPath, request.allowedRoots);
     const canonicalTempRoot = await realpath(this.tempRoot);
     const canonicalTempDirectory = await realpath(request.temporaryDirectory);
@@ -603,8 +637,17 @@ export class ProductOwnedIsolatedRunner {
     }
     const startedAt = Date.now();
     const child = this.processFactory(executable.absolutePath, args, { cwd: canonicalTempDirectory, env: environment });
+    const boundaryHandle = await verifiedProcessBoundary.attach(child, request.adapter.resourceLimits).catch((error) => {
+      child.kill();
+      throw error;
+    });
     return new Promise<RunnerResult>((resolveResult, rejectResult) => {
       let settled = false;
+      let releasePromise: Promise<void> | undefined;
+      const releaseBoundary = () => {
+        releasePromise ||= boundaryHandle.release().catch(() => undefined);
+        return releasePromise;
+      };
       const timer = setTimeout(() => {
         child.kill();
         settleReject(new Error("Conversion exceeded the CPU-time limit."));
@@ -616,6 +659,7 @@ export class ProductOwnedIsolatedRunner {
       const settleReject = (error: Error) => {
         if (settled) return;
         settled = true;
+        void releaseBoundary();
         clearTimeout(timer);
         signal.removeEventListener("abort", cancel);
         rejectResult(error);
@@ -638,6 +682,7 @@ export class ProductOwnedIsolatedRunner {
           await writeValidatedOutput(request.publishPath, output, (bytes) => request.adapter.validateOutput(bytes, request.targetFormat));
           if (settled) return;
           settled = true;
+          await releaseBoundary();
           clearTimeout(timer);
           signal.removeEventListener("abort", cancel);
           resolveResult({ output, elapsedMs: Date.now() - startedAt });
@@ -646,6 +691,15 @@ export class ProductOwnedIsolatedRunner {
         }
       });
     });
+  }
+}
+
+function assertRestrictedBoundary(boundary: RestrictedProcessBoundary | undefined, limits: ResourceLimits): void {
+  if (!boundary || boundary.killOnClose !== true || boundary.networkDenied !== true || boundary.networkPolicy !== "deny-all" || boundary.maxProcesses !== 1 || typeof boundary.attach !== "function") {
+    throw new Error("Native adapter execution is unavailable without an enforceable restricted process boundary.");
+  }
+  if (!Number.isSafeInteger(boundary.memoryLimitBytes) || !Number.isSafeInteger(boundary.cpuTimeMs) || !Number.isSafeInteger(boundary.temporaryQuotaBytes) || boundary.memoryLimitBytes <= 0 || boundary.cpuTimeMs <= 0 || boundary.temporaryQuotaBytes <= 0 || boundary.memoryLimitBytes > limits.maxMemoryBytes || boundary.cpuTimeMs > limits.maxCpuMs || boundary.temporaryQuotaBytes > limits.maxTemporaryBytes) {
+    throw new Error("Restricted process resource limits are invalid.");
   }
 }
 
@@ -718,6 +772,7 @@ export async function writeValidatedOutput(
   fileSystem: AtomicFileSystem = defaultFileSystem
 ): Promise<OutputValidation> {
   validateConversionPath(destination);
+  await assertNoReparsePath(destination);
   const initialValidation = validator(output);
   if (!initialValidation.valid) {
     throw new Error(initialValidation.reason || "Output validation failed before write.");
@@ -963,6 +1018,7 @@ export type DurableQueueStore = {
   claimNext: () => Promise<ConversionJob | undefined>;
   update: (id: string, update: Partial<ConversionJob>, lease?: QueueLease) => Promise<void>;
   heartbeat: (id: string, lease: QueueLease) => Promise<void>;
+  cancelQueued: () => Promise<void>;
   listPage: (cursor: string | undefined, limit: number) => Promise<QueuePage>;
   recoverProcessing: () => Promise<number>;
   loadControl: () => Promise<QueueControl>;
@@ -1015,6 +1071,15 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
     if (!existing) throw new Error(`Unknown queue item: ${id}`);
     assertLease(existing, lease);
     this.jobs.set(id, { ...existing, leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(), updatedAt: new Date().toISOString() });
+  }
+
+  async cancelQueued(): Promise<void> {
+    for (const job of this.jobs.values()) {
+      if (job.state === "queued") {
+        this.jobs.set(job.id, { ...job, state: "cancelled", updatedAt: new Date().toISOString() });
+      }
+    }
+    await this.saveControl({ paused: this.control.paused, cancelled: true, updatedAt: new Date().toISOString() });
   }
 
   async listPage(cursor: string | undefined, limit: number): Promise<QueuePage> {
@@ -1077,7 +1142,7 @@ export class FileDurableQueueStore implements DurableQueueStore {
     await withFileLock(this.directory, async () => {
       await writeFile(this.recordPath(job.id), JSON.stringify(job), { encoding: "utf8", flag: "wx" });
       await writeFile(this.indexPath, `${job.id}\n`, { encoding: "utf8", flag: "a" });
-    });
+    }, this.owner);
   }
 
   async claimNext(): Promise<ConversionJob | undefined> {
@@ -1122,7 +1187,7 @@ export class FileDurableQueueStore implements DurableQueueStore {
       }
       if (!isValidQueueJob(next)) throw new Error("Queue update does not satisfy the runtime schema.");
       await this.writeRecord(next);
-    });
+    }, this.owner);
   }
 
   async heartbeat(id: string, lease: QueueLease): Promise<void> {
@@ -1131,7 +1196,34 @@ export class FileDurableQueueStore implements DurableQueueStore {
       if (!existing) throw new Error(`Unknown queue item: ${id}`);
       assertLease(existing, lease);
       await this.writeRecord({ ...existing, leaseExpiresAt: new Date(Date.now() + this.leaseDurationMs).toISOString(), updatedAt: new Date().toISOString() });
-    });
+    }, this.owner);
+  }
+
+  async cancelQueued(): Promise<void> {
+    await mkdir(this.directory, { recursive: true });
+    await withFileLock(this.directory, async () => {
+      let paused = false;
+      try {
+        const current = JSON.parse(await readFile(this.controlPath, "utf8")) as QueueControl;
+        paused = isValidQueueControl(current) && current.paused;
+      } catch {
+        paused = false;
+      }
+      await this.writeControlUnsafe({ paused, cancelled: true, updatedAt: new Date().toISOString() });
+      const indexStream = createInterface({ input: createReadStream(this.indexPath, { encoding: "utf8" }), crlfDelay: Infinity });
+      try {
+        for await (const line of indexStream) {
+          const id = String(line).trim();
+          if (!/^[0-9a-f-]{36}$/i.test(id)) continue;
+          const job = await this.readRecord(`${id}.json`);
+          if (job?.state === "queued") {
+            await this.writeRecord({ ...job, state: "cancelled", updatedAt: new Date().toISOString() });
+          }
+        }
+      } finally {
+        indexStream.close();
+      }
+    }, this.owner);
   }
 
   async listPage(cursor: string | undefined, limit: number): Promise<QueuePage> {
@@ -1193,7 +1285,7 @@ export class FileDurableQueueStore implements DurableQueueStore {
         await directory.close().catch(() => undefined);
       }
       return recovered;
-    });
+    }, this.owner);
   }
 
   async loadControl(): Promise<QueueControl> {
@@ -1211,15 +1303,19 @@ export class FileDurableQueueStore implements DurableQueueStore {
     if (!isValidQueueControl(control)) throw new Error("Queue control record is invalid.");
     await mkdir(this.directory, { recursive: true });
     await withFileLock(this.directory, async () => {
-      const temporaryPath = `${this.controlPath}.${process.pid}.${randomUUID()}.tmp`;
-      await writeFile(temporaryPath, JSON.stringify({ ...control, updatedAt: new Date().toISOString() }), { encoding: "utf8", flag: "wx" });
-      try {
-        await renameWithRetry(rename, temporaryPath, this.controlPath);
-      } catch (error) {
-        await rm(temporaryPath, { force: true }).catch(() => undefined);
-        throw error;
-      }
-    });
+      await this.writeControlUnsafe(control);
+    }, this.owner);
+  }
+
+  private async writeControlUnsafe(control: QueueControl): Promise<void> {
+    const temporaryPath = `${this.controlPath}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify({ ...control, updatedAt: new Date().toISOString() }), { encoding: "utf8", flag: "wx" });
+    try {
+      await renameWithRetry(rename, temporaryPath, this.controlPath);
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   private recordPath(id: string): string {
@@ -1270,11 +1366,11 @@ export class FileDurableQueueStore implements DurableQueueStore {
   }
 
   private async withClaimLock<T>(operation: () => Promise<T>): Promise<T> {
-    return withFileLock(this.directory, operation);
+    return withFileLock(this.directory, operation, this.owner);
   }
 }
 
-async function withFileLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+async function withFileLock<T>(directory: string, operation: () => Promise<T>, owner = randomUUID()): Promise<T> {
   await mkdir(directory, { recursive: true });
   const lockPath = resolve(directory, ".queue.lock");
   let handle;
@@ -1298,11 +1394,20 @@ async function withFileLock<T>(directory: string, operation: () => Promise<T>): 
     }
   }
   if (!handle) throw new Error("Queue lock could not be acquired.");
+  const nonce = randomUUID();
+  await handle.writeFile(JSON.stringify({ owner, nonce, createdAt: new Date().toISOString() }), "utf8");
   try {
     return await operation();
   } finally {
+    let owned = false;
+    try {
+      const record = JSON.parse(await readFile(lockPath, "utf8")) as { owner?: string; nonce?: string };
+      owned = record.owner === owner && record.nonce === nonce;
+    } catch {
+      owned = false;
+    }
     await handle.close();
-    await rm(lockPath, { force: true }).catch(() => undefined);
+    if (owned) await rm(lockPath, { force: true }).catch(() => undefined);
   }
 }
 
@@ -1363,17 +1468,7 @@ export class DurableConversionQueue {
     for (const controller of this.running.values()) {
       controller.abort();
     }
-    let cursor: string | undefined;
-    do {
-      const page = await this.store.listPage(cursor, 200);
-      for (const item of page.items) {
-        if (item.state === "queued") {
-          await this.store.update(item.id, { state: "cancelled" });
-        }
-      }
-      cursor = page.nextCursor;
-    } while (cursor);
-    await this.store.saveControl({ paused: this.paused, cancelled: true, updatedAt: new Date().toISOString() });
+    await this.store.cancelQueued();
   }
 
   async recoverAfterCrash(): Promise<number> {
@@ -1410,6 +1505,15 @@ export class DurableConversionQueue {
       const heartbeat = lease ? setInterval(() => {
         void this.store.heartbeat(job.id, lease).catch(() => controller.abort());
       }, 1_000) : undefined;
+      const controlWatcher = setInterval(() => {
+        void this.store.loadControl().then((control) => {
+          this.paused = control.paused;
+          if (control.cancelled) {
+            this.cancelled = true;
+            controller.abort();
+          }
+        }).catch(() => undefined);
+      }, 250);
       try {
         const freeBytes = await this.freeSpaceProbe(dirname(job.destinationPath));
         const storage = preflightDestinationStorage({
@@ -1418,16 +1522,17 @@ export class DurableConversionQueue {
           safetyReserveBytes: job.destinationReserveBytes
         });
         if (!storage.accepted) {
-          await this.store.update(job.id, { state: "failed", error: storage.reason || "Destination storage preflight failed." }, lease);
+          await this.store.update(job.id, { state: "failed", error: storage.reason || "Destination storage preflight failed." }, lease).catch(() => undefined);
           continue;
         }
         const outcome = await processor(job, controller.signal);
-        await this.store.update(job.id, { state: controller.signal.aborted || this.cancelled ? "cancelled" : outcome }, lease);
+        await this.store.update(job.id, { state: controller.signal.aborted || this.cancelled ? "cancelled" : outcome }, lease).catch(() => undefined);
       } catch (error) {
         const state: QueueState = controller.signal.aborted || this.cancelled ? "cancelled" : "failed";
-        await this.store.update(job.id, { state, error: error instanceof Error ? error.message : String(error) }, lease);
+        await this.store.update(job.id, { state, error: error instanceof Error ? error.message : String(error) }, lease).catch(() => undefined);
       } finally {
         if (heartbeat) clearInterval(heartbeat);
+        clearInterval(controlWatcher);
         this.running.delete(job.id);
       }
     }

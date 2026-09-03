@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -151,11 +151,36 @@ test("restricted product runner publishes only validated child output", async ()
       exitListener?.(0);
     });
     return fakeProcess;
+  }, {
+    killOnClose: true,
+    networkDenied: true,
+    networkPolicy: "deny-all",
+    maxProcesses: 1,
+    memoryLimitBytes: DEFAULT_RESOURCE_LIMITS.maxMemoryBytes,
+    cpuTimeMs: DEFAULT_RESOURCE_LIMITS.maxCpuMs,
+    temporaryQuotaBytes: DEFAULT_RESOURCE_LIMITS.maxTemporaryBytes,
+    attach: async () => ({ release: async () => undefined })
   });
   try {
     const result = await convertWithIsolatedRunner({ adapter, inputPath, outputPath, publishPath, temporaryDirectory, allowedRoots: [directory], targetFormat: "txt", inputBytes: 5, estimatedOutputBytes: 3, arguments: [], environment: {} }, runner);
     assert.deepEqual(result, Uint8Array.from([7, 8, 9]));
     assert.deepEqual(new Uint8Array(await readFile(publishPath)), Uint8Array.from([7, 8, 9]));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native execution stays unavailable without an enforceable process boundary", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-boundary-"));
+  const executablePath = process.execPath;
+  const executableHash = sha256(new Uint8Array(await readFile(executablePath)));
+  const adapter = testAdapter({
+    packagedProof: { artifactPath: executablePath, sha256: executableHash, identity: "test-adapter", kind: "native-executable" },
+    executable: { adapterId: "test-adapter", executableId: "test-adapter", absolutePath: executablePath, sha256: executableHash, kind: "native-executable", allowedArguments: [], allowedEnvironmentKeys: [] }
+  });
+  try {
+    const runner = new ProductOwnedIsolatedRunner(new AdapterRegistry([adapter], dirname(executablePath)), directory);
+    await assert.rejects(() => convertWithIsolatedRunner({ adapter, inputPath: join(directory, "input.txt"), outputPath: join(directory, "temp.out"), publishPath: join(directory, "published.out"), temporaryDirectory: directory, allowedRoots: [directory], targetFormat: "txt", inputBytes: 1, estimatedOutputBytes: 1, arguments: [], environment: {} }, runner), /restricted process boundary/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -204,7 +229,7 @@ test("isolated runner rejects unavailable adapters and validates the returned ou
     environment: {}
   };
   const runner = new ProductOwnedIsolatedRunner(new AdapterRegistry([adapter], "C:\\"));
-  await assert.rejects(() => convertWithIsolatedRunner(request, runner), /Adapter is unavailable/);
+  await assert.rejects(() => convertWithIsolatedRunner(request, runner), /unavailable/);
 });
 
 test("path safety rejects device, UNC, ADS, and reserved names", () => {
@@ -227,6 +252,29 @@ test("reparse components are refused before queue persistence", async (t) => {
   }
   try {
     await assert.rejects(() => assertNoReparsePath(join(link, "output.txt")), /Symlink|reparse/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("symlinked packaged proof and output destinations are refused", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-symlink-"));
+  const target = join(directory, "target.dat");
+  const proofLink = join(directory, "proof.dat");
+  const outputLink = join(directory, "output.dat");
+  await writeFile(target, Uint8Array.from([1, 2, 3]));
+  try {
+    await symlink(target, proofLink, "file");
+    await symlink(target, outputLink, "file");
+  } catch {
+    t.skip("The host refused creation of a file symlink for this focused probe.");
+    await rm(directory, { recursive: true, force: true });
+    return;
+  }
+  try {
+    const adapter = testAdapter({ packagedProof: { artifactPath: proofLink, sha256: sha256(Uint8Array.from([1, 2, 3])), identity: "test-adapter", kind: "data" } });
+    assert.equal((await verifyPackagedAdapter(adapter, directory)).enabled, false);
+    await assert.rejects(() => writeValidatedOutput(outputLink, Uint8Array.from([1]), (bytes) => ({ valid: bytes.length === 1 })), /symlink|reparse/i);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -371,6 +419,58 @@ test("pause and cancellation controls persist across queue instances", async () 
     assert.equal((await second.loadControl()).paused, true);
     await second.saveControl({ paused: false, cancelled: true, updatedAt: new Date().toISOString() });
     assert.equal((await new FileDurableQueueStore(directory).loadControl()).cancelled, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a stale lock lease is replaceable but a live lock remains owned", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-stale-lock-"));
+  try {
+    await writeFile(join(directory, ".queue.lock"), JSON.stringify({ owner: "old", nonce: "old" }));
+    const stale = new Date(Date.now() - 20_000);
+    await utimes(join(directory, ".queue.lock"), stale, stale);
+    const store = new FileDurableQueueStore(directory);
+    await store.append(job());
+    assert.equal((await store.claimNext())?.state, "processing");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("cancellation coordinates atomically with a concurrent claim", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-cancel-race-"));
+  try {
+    const first = new FileDurableQueueStore(directory);
+    await first.append(job());
+    await Promise.all([first.cancelQueued(), new FileDurableQueueStore(directory).claimNext()]);
+    const state = (await first.listPage(undefined, 10)).items[0]?.state;
+    assert.ok(state === "cancelled" || state === "processing");
+    assert.equal((await new FileDurableQueueStore(directory).loadControl()).cancelled, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a live queue observes another instance's persisted pause and cancellation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-live-control-"));
+  try {
+    const firstStore = new FileDurableQueueStore(directory);
+    const firstQueue = new DurableConversionQueue(firstStore, 1, async () => 100);
+    await firstQueue.enqueue({ sourcePath: "C:\\input.txt", destinationPath: "C:\\output.txt", adapterId: "test-adapter", targetFormat: "txt", sourceBytes: 1, estimatedOutputBytes: 1, destinationReserveBytes: 0 });
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolveStarted) => { started = resolveStarted; });
+    const processing = firstQueue.process(async (_job, signal) => {
+      started();
+      return new Promise<"completed">((resolveOutcome) => {
+        signal.addEventListener("abort", () => resolveOutcome("completed"), { once: true });
+      });
+    });
+    await startedPromise;
+    const secondQueue = new DurableConversionQueue(new FileDurableQueueStore(directory), 1, async () => 100);
+    await secondQueue.cancelQueued();
+    await processing;
+    assert.equal((await firstQueue.page(undefined, 10)).items[0]?.state, "cancelled");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
