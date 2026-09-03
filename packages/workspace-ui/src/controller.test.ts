@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { AccountLifecycleEvent, AccountSlot, DesignerBridge, Project, WorkspaceComment } from "./bridge";
 import { createWorkspaceController } from "./controller";
 import { BridgeSchemaError, createDesignerBridge, parseAccountSlot, parsePreviewHandle, parseProject } from "./schema";
@@ -246,6 +248,23 @@ describe("WorkspaceController", () => {
 
   it("rejects preview handles outside approved origins", () => {
     expect(() => parsePreviewHandle({ id: "p", title: "P", url: "file:///secret" }, async () => undefined)).toThrow(BridgeSchemaError);
+  });
+
+  it("keeps the retired preview protocol out of every package file", () => {
+    const retiredProtocol = ["ccr", ":"].join("");
+    const packageRoot = join(import.meta.dirname, "..");
+    const files: string[] = [];
+    const visit = (directory: string): void => {
+      for (const entry of readdirSync(directory)) {
+        const absolute = join(directory, entry);
+        if (entry === "node_modules" || entry === "dist") continue;
+        if (statSync(absolute).isDirectory()) visit(absolute);
+        else files.push(absolute);
+      }
+    };
+    visit(packageRoot);
+    expect(files.length).toBeGreaterThan(4);
+    for (const file of files) expect(readFileSync(file, "utf8")).not.toContain(retiredProtocol);
   });
 
   it("keeps the chat subscription through delayed post-ack terminal completion", async () => {

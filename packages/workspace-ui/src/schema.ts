@@ -104,7 +104,7 @@ export function parsePreviewHandle(value: unknown, close: () => Promise<void>, p
   assertKnownFields(item, new Set(["id", "title", "url", "expiresAt"]), path);
   const url = boundedString(item.url, `${path}.url`, 2048);
   const parsed = new URL(url);
-  if (!PREVIEW_PROTOCOLS.has(parsed.protocol) || (parsed.protocol === "http:" && (!PREVIEW_LOCAL_HOSTS.has(parsed.hostname) || !/[A-Za-z0-9_-]{16,}/u.test(`${parsed.pathname}${parsed.search}`))) || (parsed.protocol === "ccr:" && !parsed.hostname)) throw new BridgeSchemaError(`${path}.url`, "approved preview origin");
+  if (!PREVIEW_PROTOCOLS.has(parsed.protocol) || (parsed.protocol === "http:" && (!PREVIEW_LOCAL_HOSTS.has(parsed.hostname) || !/[A-Za-z0-9_-]{16,}/u.test(`${parsed.pathname}${parsed.search}`))) || (parsed.protocol === "claude-design-desktop:" && !parsed.hostname)) throw new BridgeSchemaError(`${path}.url`, "approved preview origin");
   return { id: idValue(item.id, `${path}.id`), title: boundedString(item.title, `${path}.title`, 200), url: parsed.href, expiresAt: isoDate(item.expiresAt, `${path}.expiresAt`), close };
 }
 

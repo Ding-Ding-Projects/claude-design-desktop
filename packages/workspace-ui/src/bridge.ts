@@ -53,7 +53,7 @@ export type PreviewHandle = {
   close(): Promise<void>;
 };
 
-export const PREVIEW_PROTOCOLS = new Set(["ccr:", "http:"]);
+export const PREVIEW_PROTOCOLS = new Set(["claude-design-desktop:", "http:"]);
 export const PREVIEW_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export type ChatMessage = {
