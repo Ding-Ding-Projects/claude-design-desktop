@@ -1,8 +1,8 @@
-import { mkdir, opendir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, opendir, open, readFile, realpath, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { createHash, randomUUID } from "node:crypto";
-import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 
 export const CONVERTER_CATEGORIES = [
@@ -109,6 +109,7 @@ export type SandboxContract = {
 };
 
 const SHA256 = /^[0-9a-f]{64}$/i;
+const MAX_PACKAGED_PROOF_BYTES = 256 * 1024 * 1024;
 
 function validPackagedProof(proof: PackagedProof | undefined): proof is PackagedProof {
   return Boolean(
@@ -238,21 +239,24 @@ export async function verifyPackagedAdapter(adapter: Adapter, packagedRoot: stri
   if (!pathWithinRoots(resolvedPath, [packagedRoot])) {
     return { enabled: false, reason: "Packaged proof path escapes the product package root.", resolvedPath };
   }
-  let bytes: Uint8Array;
+  let actualHash: string;
+  let head: Uint8Array;
   try {
     const information = await stat(resolvedPath);
     if (!information.isFile()) {
       return { enabled: false, reason: "Packaged proof path is not a regular file.", resolvedPath };
     }
-    bytes = new Uint8Array(await readFile(resolvedPath));
+    if (information.size > MAX_PACKAGED_PROOF_BYTES) {
+      return { enabled: false, reason: "Packaged proof file exceeds the bounded verification size.", resolvedPath };
+    }
+    ({ hash: actualHash, head } = await hashPackagedFile(resolvedPath));
   } catch {
     return { enabled: false, reason: "Packaged proof file is missing or unreadable.", resolvedPath };
   }
-  const actualHash = sha256(bytes);
   if (actualHash.toLowerCase() !== proof.sha256.toLowerCase()) {
     return { enabled: false, reason: "Packaged proof SHA-256 does not match the file.", resolvedPath, sha256: actualHash };
   }
-  if (proof.kind === "native-executable" && !looksLikeNativeExecutable(bytes)) {
+  if (proof.kind === "native-executable" && !looksLikeNativeExecutable(head)) {
     return { enabled: false, reason: "Packaged proof file is not a recognized native executable.", resolvedPath, sha256: actualHash };
   }
   if (adapter.executable) {
@@ -264,6 +268,29 @@ export async function verifyPackagedAdapter(adapter: Adapter, packagedRoot: stri
     }
   }
   return { enabled: true, resolvedPath, sha256: actualHash };
+}
+
+async function hashPackagedFile(filePath: string): Promise<{ hash: string; head: Uint8Array }> {
+  const digest = createHash("sha256");
+  const headParts: Uint8Array[] = [];
+  let headLength = 0;
+  const stream = createReadStream(filePath, { highWaterMark: 64 * 1024 });
+  for await (const chunk of stream) {
+    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayBuffer);
+    digest.update(bytes);
+    if (headLength < 64) {
+      const part = bytes.slice(0, Math.min(bytes.byteLength, 64 - headLength));
+      headParts.push(part);
+      headLength += part.byteLength;
+    }
+  }
+  const head = new Uint8Array(headLength);
+  let offset = 0;
+  for (const part of headParts) {
+    head.set(part, offset);
+    offset += part.byteLength;
+  }
+  return { hash: digest.digest("hex"), head };
 }
 
 function looksLikeNativeExecutable(bytes: Uint8Array): boolean {
@@ -478,6 +505,8 @@ export type RunnerRequest = {
   inputBytes: number;
   estimatedOutputBytes: number;
   allowedRoots: readonly string[];
+  temporaryDirectory: string;
+  publishPath: string;
   arguments?: readonly string[];
   environment?: Readonly<Record<string, string>>;
 };
@@ -487,16 +516,28 @@ export type RunnerResult = {
   elapsedMs: number;
 };
 
+export type ProductProcess = {
+  once: (event: "error" | "exit", listener: (...args: any[]) => void) => ProductProcess;
+  kill: () => boolean;
+};
+
+export type ProductProcessFactory = (executable: string, args: readonly string[], options: { cwd: string; env: Readonly<Record<string, string>> }) => ProductProcess;
+
 export function validateRunnerRequest(request: RunnerRequest): void {
   assertResourceBounds(request.inputBytes, request.adapter.resourceLimits);
   assertResourceBounds(request.estimatedOutputBytes, { ...request.adapter.resourceLimits, maxInputBytes: request.adapter.resourceLimits.maxOutputBytes });
   validateConversionPath(request.inputPath);
   validateConversionPath(request.outputPath);
+  validateConversionPath(request.temporaryDirectory);
+  validateConversionPath(request.publishPath);
   if (request.allowedRoots.length === 0 || request.allowedRoots.some((root) => !isAbsolute(root))) {
     throw new Error("Runner requires at least one absolute containment root.");
   }
   if (!pathWithinRoots(request.inputPath, request.allowedRoots) || !pathWithinRoots(request.outputPath, request.allowedRoots)) {
     throw new Error("Input and output paths must remain inside the configured containment roots.");
+  }
+  if (!pathWithinRoots(request.temporaryDirectory, request.allowedRoots) || !pathWithinRoots(request.publishPath, request.allowedRoots) || !pathWithinRoots(request.outputPath, [request.temporaryDirectory])) {
+    throw new Error("Child output and publication paths violate product containment.");
   }
   if (request.adapter.sandbox.networkAccess !== "none" || !request.adapter.sandbox.isolatedProcess) {
     throw new Error("Runner must be isolated and offline.");
@@ -513,9 +554,13 @@ export function validateRunnerRequest(request: RunnerRequest): void {
 
 export class ProductOwnedIsolatedRunner {
   private readonly registry: AdapterRegistry;
+  private readonly tempRoot: string;
+  private readonly processFactory: ProductProcessFactory;
 
-  constructor(registry: AdapterRegistry) {
+  constructor(registry: AdapterRegistry, tempRoot = resolve(registry.packagedRoot, ".converter-temp"), processFactory: ProductProcessFactory = (executable, args, options) => spawn(executable, [...args], { ...options, shell: false, stdio: "ignore", windowsHide: true })) {
     this.registry = registry;
+    this.tempRoot = resolve(tempRoot);
+    this.processFactory = processFactory;
   }
 
   async run(request: RunnerRequest, signal: AbortSignal): Promise<RunnerResult> {
@@ -524,7 +569,17 @@ export class ProductOwnedIsolatedRunner {
     if (!verification.enabled || !verification.resolvedPath) {
       throw new Error(`Adapter is unavailable: ${verification.reason || "packaged proof verification failed"}`);
     }
+    await mkdir(this.tempRoot, { recursive: true });
+    if (!pathWithinRoots(request.temporaryDirectory, [this.tempRoot])) {
+      throw new Error("Temporary directory is not product-owned.");
+    }
+    await mkdir(request.temporaryDirectory, { recursive: true });
     await assertCanonicalContainment(request.inputPath, request.outputPath, request.allowedRoots);
+    const canonicalTempRoot = await realpath(this.tempRoot);
+    const canonicalTempDirectory = await realpath(request.temporaryDirectory);
+    if (!pathWithinRoots(canonicalTempDirectory, [canonicalTempRoot]) || !pathWithinRoots(request.outputPath, [canonicalTempDirectory])) {
+      throw new Error("Child output path is outside the canonical product-owned temporary directory.");
+    }
     const executable = this.registry.executableFor(request.adapter.id);
     if (!executable || executable.kind !== "native-executable") {
       throw new Error("No product-owned native executable is registered for this adapter.");
@@ -536,6 +591,9 @@ export class ProductOwnedIsolatedRunner {
     if (args.some((argument) => !executable.allowedArguments.includes(argument))) {
       throw new Error("Runner arguments are not in the product-owned executable registry.");
     }
+    if (args.some((argument) => ["-e", "--eval", "-r", "--require", "-c", "--command"].includes(argument))) {
+      throw new Error("Script-host and command-evaluation arguments are not allowed.");
+    }
     const environment = request.environment || {};
     if (Object.keys(environment).some((key) => !executable.allowedEnvironmentKeys.includes(key))) {
       throw new Error("Runner environment keys are not in the product-owned executable registry.");
@@ -544,13 +602,7 @@ export class ProductOwnedIsolatedRunner {
       throw new Error("Conversion was cancelled before process start.");
     }
     const startedAt = Date.now();
-    const child = spawn(executable.absolutePath, args, {
-      cwd: dirname(request.outputPath),
-      env: environment,
-      shell: false,
-      stdio: "ignore",
-      windowsHide: true
-    });
+    const child = this.processFactory(executable.absolutePath, args, { cwd: canonicalTempDirectory, env: environment });
     return new Promise<RunnerResult>((resolveResult, rejectResult) => {
       let settled = false;
       const timer = setTimeout(() => {
@@ -581,6 +633,9 @@ export class ProductOwnedIsolatedRunner {
             throw new Error("Adapter output is missing or exceeds the output-byte limit.");
           }
           const output = new Uint8Array(await readFile(request.outputPath));
+          const outputValidation = request.adapter.validateOutput(output, request.targetFormat);
+          if (!outputValidation.valid) throw new Error(outputValidation.reason || "Adapter output validation failed.");
+          await writeValidatedOutput(request.publishPath, output, (bytes) => request.adapter.validateOutput(bytes, request.targetFormat));
           if (settled) return;
           settled = true;
           clearTimeout(timer);
@@ -634,6 +689,16 @@ export function preflightDestinationStorage(input: DestinationPreflight): { acce
     };
   }
   return { accepted: true, availableAfterReserve };
+}
+
+export async function measureDestinationFreeBytes(directory: string): Promise<number> {
+  validateConversionPath(resolve(directory, "capacity.probe"));
+  const information = await statfs(directory);
+  const freeBytes = Number(information.bavail) * Number(information.bsize);
+  if (!Number.isSafeInteger(freeBytes) || freeBytes < 0) {
+    throw new Error("Volume capacity could not be measured safely.");
+  }
+  return freeBytes;
 }
 
 export type AtomicFileSystem = {
@@ -884,20 +949,32 @@ export type ConversionJob = {
   error?: string;
   createdAt: string;
   updatedAt: string;
+  leaseOwner?: string;
+  leaseNonce?: string;
+  leaseExpiresAt?: string;
 };
+
+export type QueueLease = { owner: string; nonce: string };
 
 export type QueuePage = { items: ConversionJob[]; nextCursor?: string };
 
 export type DurableQueueStore = {
   append: (job: ConversionJob) => Promise<void>;
   claimNext: () => Promise<ConversionJob | undefined>;
-  update: (id: string, update: Partial<ConversionJob>) => Promise<void>;
+  update: (id: string, update: Partial<ConversionJob>, lease?: QueueLease) => Promise<void>;
+  heartbeat: (id: string, lease: QueueLease) => Promise<void>;
   listPage: (cursor: string | undefined, limit: number) => Promise<QueuePage>;
   recoverProcessing: () => Promise<number>;
+  loadControl: () => Promise<QueueControl>;
+  saveControl: (control: QueueControl) => Promise<void>;
 };
+
+export type QueueControl = { paused: boolean; cancelled: boolean; updatedAt: string };
 
 export class InMemoryDurableQueueStore implements DurableQueueStore {
   private readonly jobs = new Map<string, ConversionJob>();
+  private control: QueueControl = { paused: false, cancelled: false, updatedAt: new Date().toISOString() };
+  private readonly owner = randomUUID();
 
   async append(job: ConversionJob): Promise<void> {
     if (!isValidQueueJob(job)) throw new Error("Queue record does not satisfy the runtime schema.");
@@ -909,19 +986,35 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
     if (!next) {
       return undefined;
     }
-    const claimed = { ...next, state: "processing" as const, attempts: next.attempts + 1, updatedAt: new Date().toISOString() };
+    const claimed: ConversionJob = { ...next, state: "processing", attempts: next.attempts + 1, updatedAt: new Date().toISOString() };
+    claimed.leaseOwner = this.owner;
+    claimed.leaseNonce = randomUUID();
+    claimed.leaseExpiresAt = new Date(Date.now() + 30_000).toISOString();
     this.jobs.set(next.id, claimed);
     return claimed;
   }
 
-  async update(id: string, update: Partial<ConversionJob>): Promise<void> {
+  async update(id: string, update: Partial<ConversionJob>, lease?: QueueLease): Promise<void> {
     const existing = this.jobs.get(id);
     if (!existing) {
       throw new Error(`Unknown queue item: ${id}`);
     }
+    assertLease(existing, lease);
     const next = { ...existing, ...update, updatedAt: new Date().toISOString() };
+    if (next.state !== "processing") {
+      delete next.leaseOwner;
+      delete next.leaseNonce;
+      delete next.leaseExpiresAt;
+    }
     if (!isValidQueueJob(next)) throw new Error("Queue update does not satisfy the runtime schema.");
     this.jobs.set(id, next);
+  }
+
+  async heartbeat(id: string, lease: QueueLease): Promise<void> {
+    const existing = this.jobs.get(id);
+    if (!existing) throw new Error(`Unknown queue item: ${id}`);
+    assertLease(existing, lease);
+    this.jobs.set(id, { ...existing, leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(), updatedAt: new Date().toISOString() });
   }
 
   async listPage(cursor: string | undefined, limit: number): Promise<QueuePage> {
@@ -939,12 +1032,17 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
     let recovered = 0;
     for (const job of this.jobs.values()) {
       if (job.state === "processing") {
-        this.jobs.set(job.id, { ...job, state: "queued", updatedAt: new Date().toISOString() });
-        recovered += 1;
+        if (isLeaseExpired(job)) {
+          this.jobs.set(job.id, { ...job, state: "queued", leaseOwner: undefined, leaseNonce: undefined, leaseExpiresAt: undefined, updatedAt: new Date().toISOString() });
+          recovered += 1;
+        }
       }
     }
     return recovered;
   }
+
+  async loadControl(): Promise<QueueControl> { return { ...this.control }; }
+  async saveControl(control: QueueControl): Promise<void> { this.control = { ...control, updatedAt: new Date().toISOString() }; }
 }
 
 /**
@@ -956,10 +1054,18 @@ export class InMemoryDurableQueueStore implements DurableQueueStore {
 export class FileDurableQueueStore implements DurableQueueStore {
   private readonly directory: string;
   private readonly indexPath: string;
+  private readonly controlPath: string;
+  private readonly owner = randomUUID();
+  private readonly leaseDurationMs: number;
 
-  constructor(directory: string) {
+  constructor(directory: string, leaseDurationMs = 30_000) {
     this.directory = directory;
     this.indexPath = resolve(directory, "queue.index");
+    this.controlPath = resolve(directory, "queue.control.json");
+    this.leaseDurationMs = leaseDurationMs;
+    if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 100 || leaseDurationMs > 86_400_000) {
+      throw new Error("Queue lease duration is outside the supported bounds.");
+    }
     if (!isAbsolute(directory)) {
       throw new Error("Queue directory must be an absolute path.");
     }
@@ -990,7 +1096,7 @@ export class FileDurableQueueStore implements DurableQueueStore {
           if (!job || job.state !== "queued") {
             continue;
           }
-          claimed = { ...job, state: "processing", attempts: job.attempts + 1, updatedAt: new Date().toISOString() };
+          claimed = { ...job, state: "processing", attempts: job.attempts + 1, updatedAt: new Date().toISOString(), leaseOwner: this.owner, leaseNonce: randomUUID(), leaseExpiresAt: new Date(Date.now() + this.leaseDurationMs).toISOString() };
           await this.writeRecord(claimed);
           break;
         }
@@ -1001,14 +1107,31 @@ export class FileDurableQueueStore implements DurableQueueStore {
     return claimed;
   }
 
-  async update(id: string, update: Partial<ConversionJob>): Promise<void> {
-    const existing = await this.readRecord(`${id}.json`);
-    if (!existing) {
-      throw new Error(`Unknown queue item: ${id}`);
-    }
-    const next = { ...existing, ...update, updatedAt: new Date().toISOString() };
-    if (!isValidQueueJob(next)) throw new Error("Queue update does not satisfy the runtime schema.");
-    await this.writeRecord(next);
+  async update(id: string, update: Partial<ConversionJob>, lease?: QueueLease): Promise<void> {
+    await withFileLock(this.directory, async () => {
+      const existing = await this.readRecord(`${id}.json`);
+      if (!existing) {
+        throw new Error(`Unknown queue item: ${id}`);
+      }
+      assertLease(existing, lease);
+      const next = { ...existing, ...update, updatedAt: new Date().toISOString() };
+      if (next.state !== "processing") {
+        delete next.leaseOwner;
+        delete next.leaseNonce;
+        delete next.leaseExpiresAt;
+      }
+      if (!isValidQueueJob(next)) throw new Error("Queue update does not satisfy the runtime schema.");
+      await this.writeRecord(next);
+    });
+  }
+
+  async heartbeat(id: string, lease: QueueLease): Promise<void> {
+    return withFileLock(this.directory, async () => {
+      const existing = await this.readRecord(`${id}.json`);
+      if (!existing) throw new Error(`Unknown queue item: ${id}`);
+      assertLease(existing, lease);
+      await this.writeRecord({ ...existing, leaseExpiresAt: new Date(Date.now() + this.leaseDurationMs).toISOString(), updatedAt: new Date().toISOString() });
+    });
   }
 
   async listPage(cursor: string | undefined, limit: number): Promise<QueuePage> {
@@ -1061,8 +1184,8 @@ export class FileDurableQueueStore implements DurableQueueStore {
             continue;
           }
           const job = await this.readRecord(entry.name);
-          if (job?.state === "processing") {
-            await this.writeRecord({ ...job, state: "queued", updatedAt: new Date().toISOString() });
+          if (job?.state === "processing" && isLeaseExpired(job)) {
+            await this.writeRecord({ ...job, state: "queued", leaseOwner: undefined, leaseNonce: undefined, leaseExpiresAt: undefined, updatedAt: new Date().toISOString() });
             recovered += 1;
           }
         }
@@ -1070,6 +1193,32 @@ export class FileDurableQueueStore implements DurableQueueStore {
         await directory.close().catch(() => undefined);
       }
       return recovered;
+    });
+  }
+
+  async loadControl(): Promise<QueueControl> {
+    try {
+      const value = JSON.parse(await readFile(this.controlPath, "utf8")) as QueueControl;
+      if (!isValidQueueControl(value)) throw new Error("invalid control");
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { paused: false, cancelled: false, updatedAt: new Date().toISOString() };
+      throw new Error("Queue control record is invalid.");
+    }
+  }
+
+  async saveControl(control: QueueControl): Promise<void> {
+    if (!isValidQueueControl(control)) throw new Error("Queue control record is invalid.");
+    await mkdir(this.directory, { recursive: true });
+    await withFileLock(this.directory, async () => {
+      const temporaryPath = `${this.controlPath}.${process.pid}.${randomUUID()}.tmp`;
+      await writeFile(temporaryPath, JSON.stringify({ ...control, updatedAt: new Date().toISOString() }), { encoding: "utf8", flag: "wx" });
+      try {
+        await renameWithRetry(rename, temporaryPath, this.controlPath);
+      } catch (error) {
+        await rm(temporaryPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
     });
   }
 
@@ -1113,7 +1262,7 @@ export class FileDurableQueueStore implements DurableQueueStore {
     const temporaryPath = `${destination}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temporaryPath, JSON.stringify(job), { encoding: "utf8", flag: "wx" });
     try {
-      await rename(temporaryPath, destination);
+      await renameWithRetry(rename, temporaryPath, destination);
     } catch (error) {
       await rm(temporaryPath, { force: true }).catch(() => undefined);
       throw error;
@@ -1165,43 +1314,48 @@ export class DurableConversionQueue {
   private readonly running = new Map<string, AbortController>();
   private readonly store: DurableQueueStore;
   private readonly concurrency: number;
-  private readonly freeSpaceProbe?: (directory: string) => Promise<number>;
+  private readonly freeSpaceProbe: (directory: string) => Promise<number>;
 
   constructor(store: DurableQueueStore, concurrency = 2, freeSpaceProbe?: (directory: string) => Promise<number>) {
     this.store = store;
     this.concurrency = concurrency;
-    this.freeSpaceProbe = freeSpaceProbe;
+    this.freeSpaceProbe = freeSpaceProbe || measureDestinationFreeBytes;
     if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
       throw new Error("Queue concurrency must be between 1 and 32.");
     }
   }
 
-  async enqueue(input: Omit<ConversionJob, "id" | "state" | "attempts" | "createdAt" | "updatedAt">): Promise<string> {
+  async enqueue(input: Omit<ConversionJob, "id" | "state" | "attempts" | "createdAt" | "updatedAt" | "destinationFreeBytes" | "freeSpaceCheckedAt">): Promise<string> {
     assertPathPair(input.sourcePath, input.destinationPath);
     validateConversionPath(input.sourcePath);
     validateConversionPath(input.destinationPath);
+    await assertNoReparsePath(input.sourcePath);
+    await assertNoReparsePath(input.destinationPath);
     if (!Number.isSafeInteger(input.sourceBytes) || input.sourceBytes < 0) {
       throw new Error("Queue source byte count must be a non-negative safe integer.");
     }
+    const measuredFreeBytes = await this.freeSpaceProbe(dirname(input.destinationPath));
     const storage = preflightDestinationStorage({
       requiredBytes: input.estimatedOutputBytes,
-      freeBytes: input.destinationFreeBytes,
+      freeBytes: measuredFreeBytes,
       safetyReserveBytes: input.destinationReserveBytes
     });
     if (!storage.accepted) throw new Error(storage.reason || "Destination storage preflight failed.");
     const now = new Date().toISOString();
     const id = randomUUID();
-    await this.store.append({ ...input, id, state: "queued", attempts: 0, createdAt: now, updatedAt: now });
+    await this.store.append({ ...input, destinationFreeBytes: measuredFreeBytes, freeSpaceCheckedAt: now, id, state: "queued", attempts: 0, createdAt: now, updatedAt: now });
     return id;
   }
 
-  pause(): void {
+  async pause(): Promise<void> {
     this.paused = true;
+    await this.store.saveControl({ paused: true, cancelled: this.cancelled, updatedAt: new Date().toISOString() });
   }
 
-  resume(): void {
+  async resume(): Promise<void> {
     this.paused = false;
     this.cancelled = false;
+    await this.store.saveControl({ paused: false, cancelled: false, updatedAt: new Date().toISOString() });
   }
 
   async cancelQueued(): Promise<void> {
@@ -1219,6 +1373,7 @@ export class DurableConversionQueue {
       }
       cursor = page.nextCursor;
     } while (cursor);
+    await this.store.saveControl({ paused: this.paused, cancelled: true, updatedAt: new Date().toISOString() });
   }
 
   async recoverAfterCrash(): Promise<number> {
@@ -1230,6 +1385,9 @@ export class DurableConversionQueue {
   }
 
   async process(processor: ConversionProcessor): Promise<void> {
+    const control = await this.store.loadControl();
+    this.paused = control.paused;
+    this.cancelled = control.cancelled;
     const workers = Array.from({ length: this.concurrency }, () => this.worker(processor));
     await Promise.all(workers);
   }
@@ -1248,23 +1406,28 @@ export class DurableConversionQueue {
       }
       const controller = new AbortController();
       this.running.set(job.id, controller);
+      const lease = job.leaseOwner && job.leaseNonce ? { owner: job.leaseOwner, nonce: job.leaseNonce } : undefined;
+      const heartbeat = lease ? setInterval(() => {
+        void this.store.heartbeat(job.id, lease).catch(() => controller.abort());
+      }, 1_000) : undefined;
       try {
-        const freeBytes = this.freeSpaceProbe ? await this.freeSpaceProbe(dirname(job.destinationPath)) : job.destinationFreeBytes;
+        const freeBytes = await this.freeSpaceProbe(dirname(job.destinationPath));
         const storage = preflightDestinationStorage({
           requiredBytes: job.estimatedOutputBytes,
           freeBytes,
           safetyReserveBytes: job.destinationReserveBytes
         });
         if (!storage.accepted) {
-          await this.store.update(job.id, { state: "failed", error: storage.reason || "Destination storage preflight failed." });
+          await this.store.update(job.id, { state: "failed", error: storage.reason || "Destination storage preflight failed." }, lease);
           continue;
         }
         const outcome = await processor(job, controller.signal);
-        await this.store.update(job.id, { state: controller.signal.aborted || this.cancelled ? "cancelled" : outcome });
+        await this.store.update(job.id, { state: controller.signal.aborted || this.cancelled ? "cancelled" : outcome }, lease);
       } catch (error) {
         const state: QueueState = controller.signal.aborted || this.cancelled ? "cancelled" : "failed";
-        await this.store.update(job.id, { state, error: error instanceof Error ? error.message : String(error) });
+        await this.store.update(job.id, { state, error: error instanceof Error ? error.message : String(error) }, lease);
       } finally {
+        if (heartbeat) clearInterval(heartbeat);
         this.running.delete(job.id);
       }
     }
@@ -1274,7 +1437,7 @@ export class DurableConversionQueue {
 const QUEUE_JOB_KEYS = new Set([
   "id", "sourcePath", "destinationPath", "adapterId", "targetFormat", "sourceBytes",
   "estimatedOutputBytes", "destinationFreeBytes", "destinationReserveBytes", "freeSpaceCheckedAt",
-  "state", "attempts", "error", "createdAt", "updatedAt"
+  "state", "attempts", "error", "createdAt", "updatedAt", "leaseOwner", "leaseNonce", "leaseExpiresAt"
 ]);
 
 function isValidQueueJob(value: unknown): value is ConversionJob {
@@ -1293,7 +1456,25 @@ function isValidQueueJob(value: unknown): value is ConversionJob {
   }
   if (!["queued", "processing", "completed", "skipped", "cancelled", "failed"].includes(record.state as string)) return false;
   if (record.error !== undefined && typeof record.error !== "string") return false;
+  if (record.leaseOwner !== undefined && typeof record.leaseOwner !== "string") return false;
+  if (record.leaseNonce !== undefined && typeof record.leaseNonce !== "string") return false;
+  if (record.leaseExpiresAt !== undefined && typeof record.leaseExpiresAt !== "string") return false;
   return ["sourceBytes", "estimatedOutputBytes", "destinationFreeBytes", "destinationReserveBytes", "attempts"].every((key) => Number.isSafeInteger(record[key]) && (record[key] as number) >= 0);
+}
+
+function assertLease(job: ConversionJob, lease: QueueLease | undefined): void {
+  if (job.state !== "processing") return;
+  if (!lease || lease.owner !== job.leaseOwner || lease.nonce !== job.leaseNonce || isLeaseExpired(job)) {
+    throw new Error("Queue lease is missing, expired, or owned by another process.");
+  }
+}
+
+function isLeaseExpired(job: ConversionJob): boolean {
+  return typeof job.leaseExpiresAt !== "string" || Date.parse(job.leaseExpiresAt) <= Date.now();
+}
+
+function isValidQueueControl(value: unknown): value is QueueControl {
+  return Boolean(value && typeof value === "object" && typeof (value as QueueControl).paused === "boolean" && typeof (value as QueueControl).cancelled === "boolean" && typeof (value as QueueControl).updatedAt === "string");
 }
 
 function assertPathPair(sourcePath: string, destinationPath: string): void {
@@ -1326,6 +1507,26 @@ export function validateConversionPath(filePath: string): void {
   }
   if (/[. ]$/.test(leaf) || /[<>"|?*]/.test(leaf)) {
     throw new Error("Conversion path contains an unsupported filename form.");
+  }
+}
+
+export async function assertNoReparsePath(filePath: string): Promise<void> {
+  validateConversionPath(filePath);
+  const absolute = resolve(filePath);
+  const root = parse(absolute).root;
+  const parts = relative(root, absolute).split(/[\\/]/).filter(Boolean);
+  let current = root;
+  for (const part of parts) {
+    current = resolve(current, part);
+    try {
+      const information = await lstat(current);
+      if (information.isSymbolicLink()) {
+        throw new Error("Symlink or reparse path components are not allowed.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
   }
 }
 

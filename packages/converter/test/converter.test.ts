@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   AdapterRegistry,
@@ -12,12 +12,14 @@ import {
   InMemoryDurableQueueStore,
   ProductOwnedIsolatedRunner,
   ProductOwnedPdfAdapter,
+  assertNoReparsePath,
   adapterAvailability,
   convertWithIsolatedRunner,
   createDefaultAdapterRegistry,
   createPdfOperationPlan,
   detectSourceFormats,
   preflightDestinationStorage,
+  measureDestinationFreeBytes,
   requireLossyConfirmation,
   renameWithRetry,
   sha256,
@@ -120,6 +122,45 @@ test("packaged proof verification reads the real file and rejects caller metadat
   }
 });
 
+test("restricted product runner publishes only validated child output", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-runner-"));
+  const temporaryDirectory = join(directory, "temp");
+  const inputPath = join(directory, "input.txt");
+  const outputPath = join(temporaryDirectory, "child.out");
+  const publishPath = join(directory, "published.out");
+  await mkdir(temporaryDirectory);
+  await writeFile(inputPath, "input");
+  const executablePath = process.execPath;
+  const executableHash = sha256(new Uint8Array(await readFile(executablePath)));
+  let exitListener: ((code: number) => void) | undefined;
+  const fakeProcess = {
+    once(event: "error" | "exit", listener: (...args: any[]) => void) {
+      if (event === "exit") exitListener = listener as (code: number) => void;
+      return fakeProcess;
+    },
+    kill: () => true
+  };
+  const adapter = testAdapter({
+    packagedProof: { artifactPath: executablePath, sha256: executableHash, identity: "test-adapter", kind: "native-executable" },
+    executable: { adapterId: "test-adapter", executableId: "test-adapter", absolutePath: executablePath, sha256: executableHash, kind: "native-executable", allowedArguments: [], allowedEnvironmentKeys: [] },
+    validateOutput: (bytes, format) => ({ valid: bytes.byteLength === 3, format, bytes: bytes.byteLength })
+  });
+  const runner = new ProductOwnedIsolatedRunner(new AdapterRegistry([adapter], dirname(executablePath)), directory, (_executable, _args, _options) => {
+    queueMicrotask(async () => {
+      await writeFile(outputPath, Uint8Array.from([7, 8, 9]));
+      exitListener?.(0);
+    });
+    return fakeProcess;
+  });
+  try {
+    const result = await convertWithIsolatedRunner({ adapter, inputPath, outputPath, publishPath, temporaryDirectory, allowedRoots: [directory], targetFormat: "txt", inputBytes: 5, estimatedOutputBytes: 3, arguments: [], environment: {} }, runner);
+    assert.deepEqual(result, Uint8Array.from([7, 8, 9]));
+    assert.deepEqual(new Uint8Array(await readFile(publishPath)), Uint8Array.from([7, 8, 9]));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("source detection reads bounded bytes and does not trust a file extension", async () => {
   const registry = createDefaultAdapterRegistry();
   const chunks = (async function* () {
@@ -157,6 +198,8 @@ test("isolated runner rejects unavailable adapters and validates the returned ou
     inputBytes: 4,
     estimatedOutputBytes: 2,
     allowedRoots: ["C:\\"],
+    temporaryDirectory: "C:\\",
+    publishPath: "C:\\output.txt",
     arguments: [],
     environment: {}
   };
@@ -170,6 +213,25 @@ test("path safety rejects device, UNC, ADS, and reserved names", () => {
   }
 });
 
+test("reparse components are refused before queue persistence", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-reparse-"));
+  const target = join(directory, "target");
+  const link = join(directory, "link");
+  await mkdir(target);
+  try {
+    await symlink(target, link, "junction");
+  } catch {
+    t.skip("The host refused creation of a junction for this focused probe.");
+    await rm(directory, { recursive: true, force: true });
+    return;
+  }
+  try {
+    await assert.rejects(() => assertNoReparsePath(join(link, "output.txt")), /Symlink|reparse/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("destination preflight reports the exact storage shortfall", () => {
   assert.deepEqual(preflightDestinationStorage({ requiredBytes: 80, freeBytes: 100, safetyReserveBytes: 30 }), {
     accepted: false,
@@ -177,6 +239,12 @@ test("destination preflight reports the exact storage shortfall", () => {
     reason: "Destination has 70 bytes after reserve, but 80 bytes are required."
   });
   assert.equal(preflightDestinationStorage({ requiredBytes: 70, freeBytes: 100, safetyReserveBytes: 30 }).accepted, true);
+});
+
+test("queue admission uses measured volume capacity rather than caller-supplied free space", async () => {
+  const queue = new DurableConversionQueue(new InMemoryDurableQueueStore(), 1, async () => 4);
+  await assert.rejects(() => queue.enqueue({ sourcePath: "C:\\input.txt", destinationPath: "C:\\output.txt", adapterId: "test-adapter", targetFormat: "txt", sourceBytes: 1, estimatedOutputBytes: 8, destinationReserveBytes: 0 }), /Destination has 4 bytes/);
+  assert.ok((await measureDestinationFreeBytes("C:\\")).toString().length > 0);
 });
 
 const pdf: PdfDocumentState = {
@@ -240,9 +308,7 @@ test("in-memory queue is bounded-concurrency, paged, cancellable, and records pa
       targetFormat: "txt",
       sourceBytes: 1,
       estimatedOutputBytes: 1,
-      destinationFreeBytes: 100,
-      destinationReserveBytes: 10,
-      freeSpaceCheckedAt: new Date().toISOString()
+      destinationReserveBytes: 10
     });
   }
   let active = 0;
@@ -266,11 +332,13 @@ test("in-memory queue is bounded-concurrency, paged, cancellable, and records pa
 test("file queue store survives a new instance and recovers processing records after a crash", async () => {
   const directory = await mkdtemp(join(tmpdir(), "converter-queue-"));
   try {
-    const first = new FileDurableQueueStore(directory);
+    const first = new FileDurableQueueStore(directory, 100);
     const item = job();
     await first.append(item);
     const claimed = await first.claimNext();
     assert.equal(claimed?.state, "processing");
+    await assert.rejects(() => first.update(item.id, { state: "completed" }, { owner: "wrong-owner", nonce: "wrong-nonce" }), /lease/);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 120));
     const second = new FileDurableQueueStore(directory);
     assert.equal(await second.recoverProcessing(), 1);
     const page = await second.listPage(undefined, 10);
@@ -289,6 +357,20 @@ test("file queue locking prevents two instances from claiming the same item", as
     const [left, right] = await Promise.all([first.claimNext(), new FileDurableQueueStore(directory).claimNext()]);
     assert.ok(left && right);
     assert.notEqual(left?.id, right?.id);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("pause and cancellation controls persist across queue instances", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "converter-control-"));
+  try {
+    const first = new FileDurableQueueStore(directory);
+    await first.saveControl({ paused: true, cancelled: false, updatedAt: new Date().toISOString() });
+    const second = new FileDurableQueueStore(directory);
+    assert.equal((await second.loadControl()).paused, true);
+    await second.saveControl({ paused: false, cancelled: true, updatedAt: new Date().toISOString() });
+    assert.equal((await new FileDurableQueueStore(directory).loadControl()).cancelled, true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

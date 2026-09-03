@@ -1,5 +1,5 @@
 {
-  "name": "@ccr/converter",
+  "name": "@claude-design-desktop/converter",
   "private": true,
   "type": "module",
   "engines": {
