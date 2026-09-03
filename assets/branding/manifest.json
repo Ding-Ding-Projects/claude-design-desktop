@@ -16,24 +16,37 @@
     },
     "socialPreviewMaster": {
       "path": "assets/branding/social-preview-master.png",
-      "sha256": "942f32f0b28941ad4f29e8d2f6f9b812758e612f4466d04e157a6fda58b8c86f",
+      "sha256": "800764c2a4a217cbb8eb1b3bbc5c500cd74b5b1966e54ae77986bc3d0905a36c",
       "dimensions": { "width": 1774, "height": 887 },
       "format": "PNG",
       "alpha": "none",
       "prompt": "Use case: ads-marketing\nAsset type: final wide 2:1 social-preview composition\nInput images: Image 1: exact canonical mark reference; use it as the focal emblem while preserving its visual identity\nPrimary request: Create a wide composition around the supplied mark with clean geometric panels suggesting a local design workspace. Keep the emblem dominant and leave generous safe margins.\nScene/backdrop: deep purple product-identity field\nSubject: supplied canonical mark plus abstract workspace panels\nStyle/medium: clean flat product identity composition\nComposition/framing: 2:1 landscape, emblem on the left, panels on the right, no edge cropping\nColor palette: supplied violet and teal identity plus solid charcoal and violet panels\nMaterials/textures: opaque geometric fills only\nText (verbatim): none\nConstraints: no text; no gradients; no vignette; no glow; no texture; no 3D; no shadows; no cursor; no grid; no watermark; no device mockup; no third-party marks; preserve the supplied identity\nAvoid: emblem redraw, tonal background, photographic appearance, glossy effects, bevels, decorative clutter",
       "editPrompt": "Use case: compositing\nAsset type: final wide 2:1 social-preview composition\nInput images: Image 1: exact canonical mark cutout; Image 2: wide layout reference\nPrimary request: Place Image 1 unchanged as the dominant focal emblem on the left side of the wide layout, with flat geometric workspace panels on the right.\nConstraints: preserve Image 1 pixels, silhouette, colors, and transparency; no gradients; no vignette; no glow; no texture; no 3D; no shadows; no cursor; no grid; no text; no watermark; no device mockup; no third-party marks"
     },
+    "socialPreviewBackdrop": {
+      "path": "assets/branding/social-preview-backdrop.png",
+      "sha256": "942f32f0b28941ad4f29e8d2f6f9b812758e612f4466d04e157a6fda58b8c86f",
+      "dimensions": { "width": 1774, "height": 887 },
+      "format": "PNG",
+      "alpha": "none",
+      "source": "preserved generated wide backdrop, unchanged"
+    },
+    "canonicalPlacement": {
+      "source": "assets/branding/logo-master.png",
+      "destination": { "x": 32, "y": 24, "width": 840, "height": 840 },
+      "method": "deterministic nearest-neighbor resize followed by alpha composite in Node"
+    },
     "socialPreviewCopies": [
       {
         "path": "social-preview.png",
-        "sha256": "942f32f0b28941ad4f29e8d2f6f9b812758e612f4466d04e157a6fda58b8c86f",
+        "sha256": "800764c2a4a217cbb8eb1b3bbc5c500cd74b5b1966e54ae77986bc3d0905a36c",
         "dimensions": { "width": 1774, "height": 887 },
         "format": "PNG",
         "alpha": "none"
       },
       {
         "path": "site/social-preview.png",
-        "sha256": "942f32f0b28941ad4f29e8d2f6f9b812758e612f4466d04e157a6fda58b8c86f",
+        "sha256": "800764c2a4a217cbb8eb1b3bbc5c500cd74b5b1966e54ae77986bc3d0905a36c",
         "dimensions": { "width": 1774, "height": 887 },
         "format": "PNG",
         "alpha": "none"

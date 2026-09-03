@@ -85,6 +85,7 @@ const decodePng = (bytes, label) => {
   const rowBytes = width * bytesPerPixel;
   if (scanlines.length !== (rowBytes + 1) * height) fail(`${label}: decoded scanline length mismatch`);
   const rows = [];
+  const pixels = Buffer.alloc(width * height * 4);
   let sourceOffset = 0;
   let previous = Buffer.alloc(rowBytes);
   for (let y = 0; y < height; y += 1) {
@@ -100,6 +101,14 @@ const decodePng = (bytes, label) => {
       row[x] = (source[x] + predictor) & 0xff;
     }
     rows.push(row);
+    for (let x = 0; x < width; x += 1) {
+      const from = x * bytesPerPixel;
+      const to = (y * width + x) * 4;
+      pixels[to] = row[from];
+      pixels[to + 1] = row[from + 1];
+      pixels[to + 2] = row[from + 2];
+      pixels[to + 3] = bytesPerPixel === 4 ? row[from + 3] : 255;
+    }
     previous = row;
     sourceOffset += rowBytes + 1;
   }
@@ -107,7 +116,7 @@ const decodePng = (bytes, label) => {
     for (let x = 3; x < row.length; x += 4) if (row[x] !== 255) return true;
     return false;
   });
-  return { width, height, alpha };
+  return { width, height, alpha, pixels };
 };
 
 const decodeIco = (bytes, label) => {
@@ -140,8 +149,44 @@ const equalHash = (actual, expected, label) => {
   if (a.length !== b.length || !timingSafeEqual(a, b)) fail(`${label}: SHA-256 mismatch, got ${actual}`);
 };
 
+const resizePixels = (source, width, height) => {
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+    const sourceX = Math.min(source.width - 1, Math.floor(x * source.width / width));
+    const sourceY = Math.min(source.height - 1, Math.floor(y * source.height / height));
+    const from = (sourceY * source.width + sourceX) * 4;
+    const to = (y * width + x) * 4;
+    source.pixels.copy(pixels, to, from, from + 4);
+  }
+  return { width, height, pixels };
+};
+
+const compositePixels = (backdrop, overlay, x, y) => {
+  const pixels = Buffer.from(backdrop.pixels);
+  if (x < 0 || y < 0 || x + overlay.width > backdrop.width || y + overlay.height > backdrop.height) fail('canonical placement exceeds backdrop');
+  const base = pixels.subarray(0, 3);
+  for (let oy = 0; oy < overlay.height; oy += 1) for (let ox = 0; ox < overlay.width; ox += 1) pixels.set(base, ((y + oy) * backdrop.width + x + ox) * 4);
+  for (let oy = 0; oy < overlay.height; oy += 1) for (let ox = 0; ox < overlay.width; ox += 1) {
+    const from = (oy * overlay.width + ox) * 4;
+    const to = ((y + oy) * backdrop.width + x + ox) * 4;
+    const alpha = overlay.pixels[from + 3] / 255;
+    if (alpha === 1) pixels.set(overlay.pixels.subarray(from, from + 3), to);
+    else if (alpha > 0) for (let channel = 0; channel < 3; channel += 1) pixels[to + channel] = Math.round(overlay.pixels[from + channel] * alpha + pixels[to + channel] * (1 - alpha));
+  }
+  return pixels;
+};
+
+const assertPlacement = (actual, backdrop, canonical, placement) => {
+  const expected = compositePixels(backdrop, resizePixels(canonical, placement.width, placement.height), placement.x, placement.y);
+  for (let y = placement.y; y < placement.y + placement.height; y += 1) for (let x = placement.x; x < placement.x + placement.width; x += 1) {
+    const at = (y * backdrop.width + x) * 4;
+    for (let channel = 0; channel < 4; channel += 1) if (actual[at + channel] !== expected[at + channel]) fail(`canonical placement pixel mismatch at ${x},${y}`);
+  }
+};
+
 const checked = [];
-const records = [manifest.assets.logoMaster, manifest.assets.socialPreviewMaster, ...manifest.assets.socialPreviewCopies, ...manifest.assets.derivedDisplayAssets];
+const decodedByPath = new Map();
+const records = [manifest.assets.logoMaster, manifest.assets.socialPreviewBackdrop, manifest.assets.socialPreviewMaster, ...manifest.assets.socialPreviewCopies, ...manifest.assets.derivedDisplayAssets];
 for (const record of records) {
   const path = resolve(root, record.path);
   const bytes = await readFile(path);
@@ -151,6 +196,7 @@ for (const record of records) {
   if (decoded.width !== record.dimensions.width || decoded.height !== record.dimensions.height) fail(`${record.path}: dimensions differ from manifest`);
   if (record.alpha.includes('non-opaque') && !decoded.alpha) fail(`${record.path}: manifest requires non-opaque alpha`);
   if (record.alpha === 'none' && decoded.alpha) fail(`${record.path}: manifest requires no alpha`);
+  decodedByPath.set(record.path, decoded);
   checked.push({ path: record.path, sha256: actualHash, dimensions: `${decoded.width}x${decoded.height}`, alpha: decoded.alpha });
 }
 
@@ -160,11 +206,20 @@ for (const copy of manifest.assets.socialPreviewCopies) {
   if (!master.equals(bytes)) fail(`${copy.path}: not byte-identical to ${manifest.assets.socialPreviewMaster.path}`);
 }
 
+const placement = manifest.assets.canonicalPlacement.destination;
+const masterDecoded = decodedByPath.get(manifest.assets.socialPreviewMaster.path);
+const backdropDecoded = decodedByPath.get(manifest.assets.socialPreviewBackdrop.path);
+const canonicalDecoded = decodedByPath.get(manifest.assets.logoMaster.path);
+assertPlacement(masterDecoded.pixels, backdropDecoded, canonicalDecoded, placement);
+
 const ico = manifest.assets.derivedDisplayAssets.find((record) => record.format === 'ICO');
 const icoInfo = decodeIco(await readFile(resolve(root, ico.path)), ico.path);
 for (const expectedSize of ico.sizes) if (!icoInfo.sizes.includes(expectedSize)) fail(`${ico.path}: missing ${expectedSize}px entry`);
 
 let trailingByteRegression = 'not-run';
+let placementPixelRegression = 'not-run';
+let crcRegression = 'not-run';
+let icoDimensionRegression = 'not-run';
 if (selfTest) {
   const logoBytes = await readFile(resolve(root, manifest.assets.logoMaster.path));
   try {
@@ -174,6 +229,36 @@ if (selfTest) {
     if (!String(error.message).includes('trailing bytes after IEND')) throw error;
     trailingByteRegression = 'red-then-green';
   }
+  const mutated = Buffer.from(masterDecoded.pixels);
+  const mutationAt = (placement.y * masterDecoded.width + placement.x) * 4;
+  mutated[mutationAt] ^= 1;
+  try {
+    assertPlacement(mutated, backdropDecoded, canonicalDecoded, placement);
+    fail('self-test placement pixel mutation was accepted');
+  } catch (error) {
+    if (!String(error.message).includes('canonical placement pixel mismatch')) throw error;
+    placementPixelRegression = 'red-then-green';
+  }
+  const crcMutation = Buffer.from(logoBytes);
+  crcMutation[16] ^= 1;
+  try {
+    decodePng(crcMutation, 'self-test CRC mutation');
+    fail('self-test CRC mutation was accepted');
+  } catch (error) {
+    if (!String(error.message).includes('CRC mismatch')) throw error;
+    crcRegression = 'red-then-green';
+  }
+  const icoBytes = await readFile(resolve(root, ico.path));
+  const icoDimensionMutation = Buffer.from(icoBytes);
+  icoDimensionMutation[6] = 17;
+  icoDimensionMutation[7] = 17;
+  try {
+    decodeIco(icoDimensionMutation, 'self-test ICO dimension mutation');
+    fail('self-test ICO dimension mutation was accepted');
+  } catch (error) {
+    if (!String(error.message).includes('embedded dimensions mismatch')) throw error;
+    icoDimensionRegression = 'red-then-green';
+  }
 }
 
-console.log(JSON.stringify({ ok: true, checked, identicalWideCopies: true, icoSizes: icoInfo.sizes, trailingByteRegression }, null, 2));
+console.log(JSON.stringify({ ok: true, checked, identicalWideCopies: true, icoSizes: icoInfo.sizes, canonicalPlacement: placement, trailingByteRegression, placementPixelRegression, crcRegression, icoDimensionRegression }, null, 2));
