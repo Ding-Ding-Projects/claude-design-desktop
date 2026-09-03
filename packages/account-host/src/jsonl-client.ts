@@ -120,6 +120,6 @@ export class AppServerClient extends EventEmitter {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear(); this.emit("errorState", error);
   }
-  private handleExit(code: number | null, signal: NodeJS.Signals | null): void { this.exitConfirmed = true; if (this.state === "closing") { this.state = "closed"; return; } this.fail(new Error(`App-server exited (${code ?? "null"}, ${signal ?? "none"})`)); }
+  private handleExit(code: number | null, signal: NodeJS.Signals | null): void { this.exitConfirmed = true; this.emit("confirmedExit", { code, signal }); if (this.state === "closing") { this.state = "closed"; return; } this.fail(new Error(`App-server exited (${code ?? "null"}, ${signal ?? "none"})`)); }
   private sendError(id: JsonRpcId, code: number, message: string): void { if (!this.child?.stdin || this.state === "closed" || this.state === "failed") return; this.child.stdin.write(`${JSON.stringify({ id, error: { code, message } })}\n`); }
 }

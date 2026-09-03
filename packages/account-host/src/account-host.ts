@@ -51,13 +51,14 @@ export class AccountHost implements AccountHostApi {
   async cancelLogin(loginId: string): Promise<void> { const validId = sanitizeLoginId(loginId); const current = this.login; if (!current || current.loginId !== validId) throw new AccountHostError("invalid_input", "The login challenge is stale or unknown."); await this.finishLogin(current.loginId, false); }
   async activate(slotId: string): Promise<AccountSlotSummary> {
     await this.initialize(); const id = validateSlotId(slotId);
+    if (this.active?.closing) throw new AccountHostError("busy", "The previous account process has not confirmed exit.");
     if (this.login?.slotId === id) throw new AccountHostError("busy", "The account is busy with another operation.");
     if (this.active?.slotId !== id) { if (this.active?.closing) throw new AccountHostError("busy", "The previous account process has not confirmed exit."); this.assertNoActiveOperations(); await this.closeActive(); const slot = this.store.get(id); const client = await this.createClient(slot); try { const account = await this.readAccount(client); if (!account) { throw new Error("Account is not authenticated"); } this.active = { slotId: id, generation: this.generationOf(client), client, operations: new Map(), completedTurnIds: new Set(), closing: false }; this.updateSlot(id, { ...account, state: "ready", lastVerifiedAt: new Date().toISOString() }); } catch (error) { await client.close(); this.updateSlot(id, { state: "error" }); throw sanitizeError(error); } }
     return toSummary(this.store.get(id));
   }
   async logout(slotId: string): Promise<void> {
     await this.initialize(); const id = validateSlotId(slotId);
-    if (this.active?.slotId === id) { this.assertNoActiveOperations(); try { await this.active.client.request("account/logout"); } finally { this.updateSlot(id, { state: "signedOut", email: null, planType: null }); await this.closeActive(); } return; }
+    if (this.active?.slotId === id) { if (this.active.closing) throw new AccountHostError("busy", "The previous account process has not confirmed exit."); this.assertNoActiveOperations(); try { await this.active.client.request("account/logout"); } finally { this.updateSlot(id, { state: "signedOut", email: null, planType: null }); await this.closeActive(); } return; }
     const client = await this.createClient(this.store.get(id)); try { await client.request("account/logout"); this.updateSlot(id, { state: "signedOut", email: null, planType: null }); } finally { await client.close(); }
   }
   async readRateLimits(slotId: string): Promise<RateLimitSnapshot> { this.assertNoActiveOperations(); return toRateLimitSnapshot(await this.clientFor(slotId).then((client) => client.request("account/rateLimits/read"))); }
@@ -72,7 +73,7 @@ export class AccountHost implements AccountHostApi {
   async prepareRemoval(slotId: string): Promise<AccountRemovalImpact> { await this.initialize(); const id = validateSlotId(slotId); const impact = await this.options.prepareRemoval?.(id) ?? { slotId: id, ownedProjectIds: [], sharedProjectIds: [], canRemove: true }; return { slotId: id, ownedProjectIds: impact.ownedProjectIds.filter((value) => typeof value === "string").slice(0, 10_000), sharedProjectIds: impact.sharedProjectIds.filter((value) => typeof value === "string").slice(0, 10_000), canRemove: impact.canRemove === true }; }
   async remove(input: { slotId: string; confirmed: boolean }): Promise<void> { await this.initialize(); const id = validateSlotId(input.slotId); if (input.confirmed !== true) throw new AccountHostError("invalid_input", "Removal requires explicit confirmation."); const impact = await this.prepareRemoval(id); if (!impact.canRemove || impact.ownedProjectIds.length > 0) throw new AccountHostError("busy", "Owned projects must be transferred or removed first."); if (this.login?.slotId === id) await this.finishLogin(this.login.loginId, false); if (this.active?.slotId === id) this.assertNoActiveOperations(); await this.logout(id); await this.store.remove(id); }
   subscribe(listener: (event: AccountEvent | DesignOperationEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  async close(): Promise<void> { if (this.login) await this.finishLogin(this.login.loginId, false); await this.closeActive(); await this.saveQueue; }
+  async close(): Promise<void> { this.assertNoActiveOperations(); if (this.login) await this.finishLogin(this.login.loginId, false); await this.closeActive(); await this.saveQueue; }
   private async createClient(slot: StoredAccountSlot): Promise<AppServerClient> {
     try { await ensureCodexHome(slot.home); } catch (error) { throw sanitizeError(error); }
     let runtime: Awaited<ReturnType<typeof resolveBundledRuntime>> | undefined;
@@ -84,6 +85,9 @@ export class AccountHost implements AccountHostApi {
     client.on("errorState", () => {
       if (this.active?.client === client && this.active.generation === generation) this.updateSlot(slot.slotId, { state: "unavailable" });
       if (this.login?.client === client && this.login.generation === generation && !this.login.completed) void this.finishLogin(this.login.loginId, false);
+    });
+    client.on("confirmedExit", () => {
+      if (this.active?.client === client && this.active.generation === generation && this.active.closing) { this.active = undefined; this.updateSlot(slot.slotId, { state: "signedOut" }); }
     });
     await client.start(); return client;
   }

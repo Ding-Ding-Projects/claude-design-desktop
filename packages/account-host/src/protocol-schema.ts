@@ -4,6 +4,8 @@ export const APP_SERVER_SCHEMA_ADAPTER = Object.freeze({ packageVersion: "0.152.
 export const MAX_PENDING_REQUESTS = 64;
 export const MAX_VALUE_DEPTH = 32;
 const MAX_STRING_LENGTH = 1_000_000;
+const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
 const REQUEST_FIELDS: Record<string, readonly string[]> = {
   initialize: ["clientInfo", "capabilities"],
@@ -33,6 +35,10 @@ export function validateRequestParams(method: string, params: Record<string, unk
   }
   if (method === "initialize" && (!isRecord(params.clientInfo) || typeof params.clientInfo.name !== "string" || typeof params.clientInfo.version !== "string")) throw new Error("Invalid initialize client info");
   if (method === "account/read" && params.refreshToken !== undefined && typeof params.refreshToken !== "boolean") throw new Error("Invalid account refresh flag");
+  if (method === "model/list" && params.includeHidden !== undefined && typeof params.includeHidden !== "boolean") throw new Error("Invalid hidden-model flag");
+  if (method === "thread/read" && params.includeTurns !== undefined && typeof params.includeTurns !== "boolean") throw new Error("Invalid thread-history flag");
+  if ((method === "thread/start" || method === "thread/resume" || method === "turn/start") && params.model !== undefined && (typeof params.model !== "string" || !MODEL_PATTERN.test(params.model))) throw new Error("Invalid model identifier");
+  if (method === "turn/start" && params.effort !== undefined && (typeof params.effort !== "string" || !EFFORTS.has(params.effort))) throw new Error("Invalid turn effort");
   for (const id of ["threadId", "turnId", "loginId"]) if (params[id] !== undefined) assertIdentifier(params[id]);
   if (params.input !== undefined && (!Array.isArray(params.input) || params.input.length > 100)) throw new Error("Invalid turn input");
   if (params.items !== undefined && (!Array.isArray(params.items) || params.items.length > 10_000)) throw new Error("Invalid injected items");
@@ -47,10 +53,12 @@ function validateTurnInputItem(value: unknown): void {
   if (allowed.length === 0 || Object.keys(value).some((key) => !allowed.includes(key))) throw new Error("Unsupported turn input item");
   const field = value.type === "text" ? value.text : value.type === "image" ? value.url : value.path;
   if (typeof field !== "string" || field.length === 0 || field.length > 1_000_000 || /[\r\n]/.test(field) && value.type !== "text") throw new Error("Invalid turn input item value");
+  if (value.type === "image") { let parsed: URL; try { parsed = new URL(field); } catch { throw new Error("Invalid image URL"); } if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw new Error("Image URL must use HTTPS without embedded credentials"); }
+  if (value.type === "localImage" && !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(field)) throw new Error("Local image path must be absolute");
 }
 function validateInjectedItem(value: unknown): void {
   if (!isRecord(value) || typeof value.type !== "string") throw new Error("Invalid injected item");
-  if (value.type === "message") { if (!isRecord(value) || !["type", "role", "content"].every((key) => key in value) || !["user", "assistant", "developer"].includes(String(value.role)) || !Array.isArray(value.content)) throw new Error("Invalid injected message"); return; }
+  if (value.type === "message") { if (!isRecord(value) || !["type", "role", "content"].every((key) => key in value) || !["user", "assistant", "developer"].includes(String(value.role)) || !Array.isArray(value.content) || Object.keys(value).some((key) => !["type", "role", "content"].includes(key))) throw new Error("Invalid injected message"); for (const part of value.content) { if (!isRecord(part) || Object.keys(part).some((key) => !["type", "text"].includes(key)) || (part.type !== "input_text" && part.type !== "output_text") || typeof part.text !== "string" || part.text.length > 1_000_000) throw new Error("Invalid injected message content"); } return; }
   if (value.type === "functionCallOutput") { if (Object.keys(value).some((key) => !["type", "id", "name", "output"].includes(key)) || typeof value.id !== "string" || typeof value.name !== "string" || typeof value.output !== "string") throw new Error("Invalid injected function output"); return; }
   throw new Error("Unsupported injected item");
 }

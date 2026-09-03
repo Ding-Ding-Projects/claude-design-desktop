@@ -27,6 +27,7 @@ class FakeChild extends EventEmitter {
     return send({});
   }
   kill(): boolean { this.killed = true; if (this.exitOnKill) this.emit("exit", 0, null); return true; }
+  confirmExit(): void { this.emit("exit", 0, null); }
   notify(method: string, params: Record<string, unknown> = {}): void { this.stdout.write(`${JSON.stringify({ method, params })}\n`); }
   notifyRequest(id: number, method: string, params: Record<string, unknown> = {}): void { this.stdout.write(`${JSON.stringify({ id, method, params })}\n`); }
   raw(line: string): void { this.stdout.write(`${line}\n`); }
@@ -86,6 +87,13 @@ describe("account host", () => {
   });
   it("maps local image handles through the authorized resolver instead of exposing paths", async () => {
     const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); let seenHandle = ""; const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn, resolveProjectFileHandle: async (handle) => { seenHandle = handle; return "C:\\project\\image.png"; } });
-    const challenge = await host.startLogin({ flow: "deviceCode" }); await host.cancelLogin(challenge.loginId); const slot = (await host.list())[0]!; await host.activate(slot.slotId); await host.startTurn({ threadId: "thr_1", input: [{ type: "localImage", projectFileHandle: "file-handle-1" }] }); assert.equal(seenHandle, "file-handle-1"); await host.close();
+    const challenge = await host.startLogin({ flow: "deviceCode" }); await host.cancelLogin(challenge.loginId); const slot = (await host.list())[0]!; await host.activate(slot.slotId); const turn = await host.startTurn({ threadId: "thr_1", input: [{ type: "localImage", projectFileHandle: "file-handle-1" }] }); assert.equal(seenHandle, "file-handle-1"); fake.children[1]!.notify("turn/completed", { threadId: "thr_1", turn: { id: turn.id, status: "completed" } }); await new Promise((resolve) => setImmediate(resolve)); await host.close();
+  });
+  it("retains an unconfirmed closing session and allows one replacement after delayed exit", async () => {
+    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const children: FakeChild[] = []; let index = 0; const spawn: SpawnFn = () => { const child = new FakeChild(true, index++ !== 1); children.push(child); return child as never; }; const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn, closeTimeoutMs: 10 });
+    const first = await host.startLogin({ flow: "deviceCode" }); await host.cancelLogin(first.loginId); const accountA = (await host.list())[0]!; await host.activate(accountA.slotId); const second = await host.startLogin({ flow: "deviceCode" }); await host.cancelLogin(second.loginId); const accountB = (await host.list())[1]!; await assert.rejects(() => host.activate(accountB.slotId), /confirm|unavailable|operation/i); assert.equal(children.length, 3); children[1]!.confirmExit(); await new Promise((resolve) => setTimeout(resolve, 25)); await host.activate(accountB.slotId); assert.equal(children.length, 4); await host.close();
+  });
+  it("refuses ordinary close while interrupt is awaiting terminal evidence", async () => {
+    const root = await mkdtemp(`${tmpdir()}\\claude-design-account-host-`); roots.push(root); const fake = fakeSpawn(); const host = new AccountHost({ accountsRoot: root, codexExecutable: "codex.exe", appVersion: "1.0.0", spawn: fake.spawn }); const challenge = await host.startLogin({ flow: "deviceCode" }); await host.cancelLogin(challenge.loginId); const account = (await host.list())[0]!; await host.activate(account.slotId); const activeChild = fake.children[1]!; const turn = await host.startTurn({ threadId: "thr_1", input: [{ type: "text", text: "hold" }] }); await assert.rejects(() => host.close(), /busy/); assert.equal(activeChild.killed, false); const interruption = host.interruptTurn("thr_1", turn.id); activeChild.notify("turn/completed", { threadId: "thr_1", turn: { id: turn.id, status: "interrupted" } }); await interruption; await host.close();
   });
 });
