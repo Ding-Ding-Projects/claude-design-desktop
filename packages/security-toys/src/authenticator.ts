@@ -13,21 +13,34 @@ export interface LocalQrInputAdapters {
 export type AuthenticatorGroup = { id: string; name: string; order: number };
 
 export interface AuthenticatorMetadataStore {
-  listEntries(): TotpEntry[];
-  saveEntry(entry: TotpEntry): void;
+  listEntries(): RedactedTotpEntry[];
+  saveEntry(entry: RedactedTotpEntry): void;
   removeEntry(id: string): void;
   listGroups(): AuthenticatorGroup[];
   saveGroup(group: AuthenticatorGroup): void;
 }
 
+export interface AuthenticatorSecretReferenceStore {
+  get(id: string): string | undefined;
+  set(id: string, secretRef: string): void;
+  delete(id: string): void;
+}
+
 export class MemoryAuthenticatorMetadataStore implements AuthenticatorMetadataStore {
-  private readonly entries = new Map<string, TotpEntry>();
+  private readonly entries = new Map<string, RedactedTotpEntry>();
   private readonly groups = new Map<string, AuthenticatorGroup>();
-  listEntries(): TotpEntry[] { return Array.from(this.entries.values(), (entry) => ({ ...entry })); }
-  saveEntry(entry: TotpEntry): void { this.entries.set(entry.id, { ...entry }); }
+  listEntries(): RedactedTotpEntry[] { return Array.from(this.entries.values(), (entry) => ({ ...entry })); }
+  saveEntry(entry: RedactedTotpEntry): void { this.entries.set(entry.id, { ...entry }); }
   removeEntry(id: string): void { this.entries.delete(id); }
   listGroups(): AuthenticatorGroup[] { return Array.from(this.groups.values(), (group) => ({ ...group })); }
   saveGroup(group: AuthenticatorGroup): void { this.groups.set(group.id, { ...group }); }
+}
+
+export class MemoryAuthenticatorSecretReferenceStore implements AuthenticatorSecretReferenceStore {
+  private readonly refs = new Map<string, string>();
+  get(id: string): string | undefined { return this.refs.get(id); }
+  set(id: string, secretRef: string): void { this.refs.set(id, secretRef); }
+  delete(id: string): void { this.refs.delete(id); }
 }
 
 export class AuthenticatorManager {
@@ -35,12 +48,14 @@ export class AuthenticatorManager {
   private readonly vault: SecretVault;
   private readonly now: () => number;
   private readonly metadata: AuthenticatorMetadataStore;
+  private readonly secretRefs: AuthenticatorSecretReferenceStore;
 
-  constructor(vault: SecretVault, now: () => number = () => Date.now(), metadata: AuthenticatorMetadataStore = new MemoryAuthenticatorMetadataStore()) {
+  constructor(vault: SecretVault, now: () => number = () => Date.now(), metadata: AuthenticatorMetadataStore = new MemoryAuthenticatorMetadataStore(), secretRefs: AuthenticatorSecretReferenceStore = new MemoryAuthenticatorSecretReferenceStore()) {
     this.vault = vault;
     this.now = now;
     this.metadata = metadata;
-    for (const entry of metadata.listEntries()) this.entries.set(entry.id, { ...entry });
+    this.secretRefs = secretRefs;
+    for (const entry of metadata.listEntries()) this.entries.set(entry.id, { ...entry, secretRef: secretRefs.get(entry.id) ?? "" });
   }
 
   async add(input: AuthenticatorInput): Promise<RedactedTotpEntry> {
@@ -60,7 +75,8 @@ export class AuthenticatorManager {
       createdAt: this.now()
     };
     this.entries.set(id, entry);
-    this.metadata.saveEntry(entry);
+    this.secretRefs.set(id, secretRef);
+    this.metadata.saveEntry(redact(entry));
     return redact(entry);
   }
 
@@ -136,6 +152,7 @@ export class AuthenticatorManager {
     const entry = this.require(id);
     await this.vault.delete(entry.secretRef);
     this.entries.delete(id);
+    this.secretRefs.delete(id);
     this.metadata.removeEntry(id);
   }
 
@@ -152,7 +169,7 @@ export class AuthenticatorManager {
     const entry = this.require(id);
     if (groupId && !this.groups().some((group) => group.id === groupId)) throw new Error("Unknown authenticator group");
     entry.groupId = groupId;
-    this.metadata.saveEntry(entry);
+    this.metadata.saveEntry(redact(entry));
     return redact(entry);
   }
 
@@ -160,7 +177,7 @@ export class AuthenticatorManager {
     const current = this.list();
     const expected = new Set(current.map((entry) => entry.id));
     if (ids.length !== expected.size || new Set(ids).size !== ids.length || ids.some((id) => !expected.has(id))) throw new Error("Authenticator reorder must name each entry exactly once");
-    ids.forEach((id, order) => { const entry = this.require(id); entry.order = order; this.metadata.saveEntry(entry); });
+    ids.forEach((id, order) => { const entry = this.require(id); entry.order = order; this.metadata.saveEntry(redact(entry)); });
     return this.list().sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
   }
 

@@ -4,13 +4,16 @@ const toys = require("../dist/index.js");
 
 test("RFC 6238 vectors cover SHA-1, SHA-256, and SHA-512", async () => {
   const vectors = [
-    ["12345678901234567890", "SHA-1", "94287082"],
-    ["12345678901234567890123456789012", "SHA-256", "46119246"],
-    ["1234567890123456789012345678901234567890123456789012345678901234", "SHA-512", "90693936"]
+    [59, "12345678901234567890", "SHA-1", "94287082"], [59, "12345678901234567890123456789012", "SHA-256", "46119246"], [59, "1234567890123456789012345678901234567890123456789012345678901234", "SHA-512", "90693936"],
+    [1111111109, "12345678901234567890", "SHA-1", "07081804"], [1111111109, "12345678901234567890123456789012", "SHA-256", "68084774"], [1111111109, "1234567890123456789012345678901234567890123456789012345678901234", "SHA-512", "25091201"],
+    [1111111111, "12345678901234567890", "SHA-1", "14050471"], [1111111111, "12345678901234567890123456789012", "SHA-256", "67062674"], [1111111111, "1234567890123456789012345678901234567890123456789012345678901234", "SHA-512", "99943326"],
+    [1234567890, "12345678901234567890", "SHA-1", "89005924"], [1234567890, "12345678901234567890123456789012", "SHA-256", "91819424"], [1234567890, "1234567890123456789012345678901234567890123456789012345678901234", "SHA-512", "93441116"],
+    [2000000000, "12345678901234567890", "SHA-1", "69279037"], [2000000000, "12345678901234567890123456789012", "SHA-256", "90698825"], [2000000000, "1234567890123456789012345678901234567890123456789012345678901234", "SHA-512", "38618901"],
+    [20000000000, "12345678901234567890", "SHA-1", "65353130"], [20000000000, "12345678901234567890123456789012", "SHA-256", "77737706"], [20000000000, "1234567890123456789012345678901234567890123456789012345678901234", "SHA-512", "47863826"]
   ];
-  for (const [raw, algorithm, expected] of vectors) {
+  for (const [seconds, raw, algorithm, expected] of vectors) {
     const secret = toys.encodeBase32(new TextEncoder().encode(raw));
-    assert.equal(await toys.totpCodeAt(secret, 59_000, { algorithm, digits: 8 }), expected);
+    assert.equal(await toys.totpCodeAt(secret, seconds * 1_000, { algorithm, digits: 8 }), expected);
   }
 });
 
@@ -66,6 +69,17 @@ test("authenticator accepts manual and URI imports, exposes countdown and next c
   assert.equal((await authenticator.addFromClipboard(toys.buildOtpAuthUri({ issuer: "Example", account: "bob", secret: "JBSWY3DPEHPK3PXP", algorithm: "SHA-1", digits: 6, period: 30 }))).issuer, "Example");
   assert.match(authenticator.exportRedacted(), /secretsOmitted/);
   assert.doesNotMatch(authenticator.exportRedacted(), /GEZDGNBVGY3TQOJQ/);
+});
+
+test("durable authenticator metadata is separate from secret references", async () => {
+  const vault = new toys.MemorySecretVault();
+  const metadata = new toys.MemoryAuthenticatorMetadataStore();
+  const references = new toys.MemoryAuthenticatorSecretReferenceStore();
+  const authenticator = new toys.AuthenticatorManager(vault, () => 59_000, metadata, references);
+  await authenticator.addManual({ issuer: "Example", account: "alice", secret: "JBSWY3DPEHPK3PXP", algorithm: "SHA-1", digits: 6, period: 30 });
+  assert.equal("secretRef" in metadata.listEntries()[0], false);
+  assert.equal(metadata.listEntries()[0].secretStored, true);
+  assert.equal(references.get(metadata.listEntries()[0].id)?.startsWith("totp-secret_"), true);
 });
 
 test("each lock policy enforces ordered factors, independent records, duration, relock, and protected activation", async () => {
@@ -143,9 +157,10 @@ test("password vault records are versioned, salted, and reject tampered records"
   const vault = new toys.MemorySecretVault();
   await toys.storeHashedSecret(vault, "password", "correct horse battery staple");
   const record = JSON.parse(await vault.get("password"));
-  assert.equal(record.version, 2);
-  assert.equal(record.algorithm, "memory-sha256");
+  assert.equal(record.version, 3);
+  assert.equal(record.algorithm, "pbkdf2-sha256");
   assert.equal(typeof record.salt, "string");
+  assert.equal(record.iterations, 310_000);
   assert.equal(await toys.verifySecret(vault, "password", "correct horse battery staple"), true);
   assert.equal(await toys.verifySecret(vault, "password", "wrong"), false);
   await vault.put("password", JSON.stringify({ ...record, hash: record.hash.replace(/^../, "ff") }));
@@ -177,7 +192,7 @@ test("super confirmation expires and cannot be replayed", async () => {
 
 test("ladder is server-owned, nonce single-use, budgeted, and School mode starts at sums", () => {
   let now = 10_000;
-  const ladder = new toys.UnlockLadderServer({ now: () => now, random: () => 0 });
+  const ladder = new toys.UnlockLadderServer({ now: () => now, random: () => 0, authority: new toys.MemoryLadderAuthority() });
   const lockout = { waitingUntil: now + 60_000, attemptsRemaining: 2, maxAttempts: 2 };
   const school = ladder.begin("alice", "alice-session", lockout, true);
   assert.equal(school.rung, "sums");
@@ -208,31 +223,33 @@ test("ladder budget survives a fresh server instance through its authority adapt
 
 test("mole hits are one-at-a-time, authority-timestamped, bounded, and replay-safe", () => {
   let now = 1_000;
-  const ladder = new toys.UnlockLadderServer({ now: () => now, random: () => 0 });
+  const ladder = new toys.UnlockLadderServer({ now: () => now, random: () => 0, authority: new toys.MemoryLadderAuthority() });
   const lockout = { waitingUntil: now + 60_000, attemptsRemaining: 1, maxAttempts: 1 };
   const sums = ladder.begin("mole-user", "mole-session", lockout, true);
   const moleChallenge = ladder.submit("mole-user", "mole-session", sums.nonce, { kind: "sums", answers: [] }).next;
   const moles = moleChallenge.moleRound.moles;
   now = 999;
-  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, "bad", 0).reason, "early");
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moleChallenge.revision, "bad", 0).reason, "early");
   now = moles[0].visibleAt;
-  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[0].id, 1).reason, "wrong-cell");
-  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[0].id, moles[0].cell).accepted, true);
-  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[0].id, moles[0].cell).reason, "replay");
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moleChallenge.revision, moles[0].id, 1).reason, "wrong-cell");
+  let revision = ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moleChallenge.revision, moles[0].id, moles[0].cell).revision;
+  assert.equal(typeof revision, "number");
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, revision, moles[0].id, moles[0].cell).reason, "replay");
   for (const mole of moles.slice(1)) {
     now = mole.visibleAt;
-    assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, mole.id, mole.cell).accepted, true);
+    revision = ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, revision, mole.id, mole.cell).revision;
+    assert.equal(typeof revision, "number");
   }
-  assert.equal(ladder.finishMoleRound("mole-user", "mole-session", moleChallenge.nonce).reason, "early");
+  assert.equal(ladder.finishMoleRound("mole-user", "mole-session", moleChallenge.nonce, revision).reason, "early");
   now = moles[4].visibleAt + 10_000;
-  const finished = ladder.finishMoleRound("mole-user", "mole-session", moleChallenge.nonce);
+  const finished = ladder.finishMoleRound("mole-user", "mole-session", moleChallenge.nonce, revision);
   assert.equal(finished.clearedWaiting, true);
   assert.equal(finished.sessionCookieIssued, false);
-  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[4].id, moles[4].cell).reason, "wrong-rung");
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, revision, moles[4].id, moles[4].cell).reason, "wrong-rung");
   const secondSums = ladder.begin("mole-user", "mole-session-2", { waitingUntil: now + 60_000, attemptsRemaining: 1, maxAttempts: 1 }, true);
   const secondMoles = ladder.submit("mole-user", "mole-session-2", secondSums.nonce, { kind: "sums", answers: [] }).next;
   now = secondMoles.expiresAt + 1;
-  assert.equal(ladder.submitMoleHit("mole-user", "mole-session-2", secondMoles.nonce, secondMoles.moleRound.moles[0].id, 0).reason, "late");
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session-2", secondMoles.nonce, secondMoles.revision, secondMoles.moleRound.moles[0].id, 0).reason, "late");
 });
 
 test("support tickets and history exports are local and redacted", async () => {

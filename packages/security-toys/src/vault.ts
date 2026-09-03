@@ -89,8 +89,14 @@ export async function verifySecret(vault: SecretVault, ref: string, candidate: s
   } catch {
     return false;
   }
-  if (record.version !== 2 || record.algorithm !== "memory-sha256" || typeof record.salt !== "string" || typeof record.hash !== "string") return false;
-  const computed = await memoryHardDigest(candidate, hexToBytes(record.salt), record.memoryBytes, record.rounds);
+  if (record.version === 2 && record.algorithm === "memory-sha256") {
+    const computed = await legacyMemoryDigest(candidate, hexToBytes(record.salt), record.memoryBytes, record.rounds);
+    if (!fixedTimeEqual(computed, hexToBytes(record.hash))) return false;
+    await storeHashedSecret(vault, ref, candidate);
+    return true;
+  }
+  if (record.version !== 3 || record.algorithm !== "pbkdf2-sha256" || typeof record.salt !== "string" || typeof record.hash !== "string") return false;
+  const computed = await bundledKdf(candidate, hexToBytes(record.salt), record.iterations);
   return fixedTimeEqual(computed, hexToBytes(record.hash));
 }
 
@@ -99,16 +105,24 @@ export async function storeHashedSecret(vault: SecretVault, ref: string, secret:
   const salt = new Uint8Array(16);
   if (!globalThis.crypto?.getRandomValues) throw new Error("Secure randomness is unavailable");
   globalThis.crypto.getRandomValues(salt);
-  const memoryBytes = 64 * 1024;
-  const rounds = 3;
-  const hash = await memoryHardDigest(secret, salt, memoryBytes, rounds);
-  const record: PasswordRecord = { version: 2, algorithm: "memory-sha256", salt: bytesToHex(salt), memoryBytes, rounds, hash: bytesToHex(hash) };
+  const iterations = 310_000;
+  const hash = await bundledKdf(secret, salt, iterations);
+  const record: PasswordRecord = { version: 3, algorithm: "pbkdf2-sha256", salt: bytesToHex(salt), iterations, hash: bytesToHex(hash) };
   await vault.put(ref, JSON.stringify(record));
 }
 
-type PasswordRecord = { version: 2; algorithm: "memory-sha256"; salt: string; memoryBytes: number; rounds: number; hash: string };
+type PasswordRecord =
+  | { version: 2; algorithm: "memory-sha256"; salt: string; memoryBytes: number; rounds: number; hash: string }
+  | { version: 3; algorithm: "pbkdf2-sha256"; salt: string; iterations: number; hash: string };
 
-async function memoryHardDigest(secret: string, salt: Uint8Array, memoryBytes: number, rounds: number): Promise<Uint8Array> {
+async function bundledKdf(secret: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
+  if (!Number.isInteger(iterations) || iterations < 100_000 || iterations > 1_000_000) throw new Error("KDF iterations are out of bounds");
+  const key = await globalThis.crypto.subtle.importKey("raw", new TextEncoder().encode(secret) as unknown as BufferSource, "PBKDF2", false, ["deriveBits"]);
+  const bits = await globalThis.crypto.subtle.deriveBits({ name: "PBKDF2", salt: salt as unknown as BufferSource, iterations, hash: "SHA-256" }, key, 256);
+  return new Uint8Array(bits);
+}
+
+async function legacyMemoryDigest(secret: string, salt: Uint8Array, memoryBytes: number, rounds: number): Promise<Uint8Array> {
   if (!Number.isInteger(memoryBytes) || memoryBytes < 16 * 1024 || memoryBytes > 256 * 1024 || !Number.isInteger(rounds) || rounds < 1 || rounds > 8) throw new Error("Password verifier parameters are out of bounds");
   const memory = new Uint8Array(memoryBytes);
   const encodedSecret = new TextEncoder().encode(secret);
