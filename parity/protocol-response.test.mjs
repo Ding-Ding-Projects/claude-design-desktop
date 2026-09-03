@@ -10,14 +10,27 @@ const inventory = JSON.parse(readFileSync(resolve(root, "parity/inventory.json")
 const parseRoute = createRouteParser(data);
 const files = { "/index.html": [resolve(root, "design/reference/index.html"), "text/html"], "/app.js": [resolve(root, "design/reference/app.js"), "text/javascript"], "/styles.css": [resolve(root, "design/reference/styles.css"), "text/css"] };
 for (const row of inventory.rows) {
-  const response = resolveProtocolResponse(row.designRoute, { parseRoute, files });
+  const response = resolveProtocolResponse(row.designRoute, { parseRoute, files, fallbackRoute: parseRoute(row.designRoute) });
   assert.ok(response, `missing response for ${row.id}`);
+  assert.equal(response.status, 200, `entry response status mismatch for ${row.id}`);
   assert.equal(response.path, files["/index.html"][0], `canonical route must serve index for ${row.id}`);
   assert.equal(response.contentType, "text/html", `canonical route must serve HTML for ${row.id}`);
   assert.equal(response.route.screen.id, row.screen, `response screen mismatch for ${row.id}`);
   assert.equal(response.route.state, row.state, `response state mismatch for ${row.id}`);
   assert.equal(existsSync(response.path), true, `response source missing for ${row.id}`);
 }
-const slash = resolveProtocolResponse(inventory.rows[0].designRoute.replace("design-reference://signin", "design-reference://signin/"), { parseRoute, files });
+const activeRoute = parseRoute(inventory.rows[0].designRoute);
+const staticApp = resolveProtocolResponse("design-reference://signin/app.js", { parseRoute, files, fallbackRoute: activeRoute });
+assert.equal(staticApp.status, 200, "app.js response must be 200");
+assert.equal(staticApp.contentType, "text/javascript", "app.js response content type mismatch");
+const staticStyles = resolveProtocolResponse("design-reference://signin/styles.css", { parseRoute, files, fallbackRoute: activeRoute });
+assert.equal(staticStyles.status, 200, "styles.css response must be 200");
+assert.equal(staticStyles.contentType, "text/css", "styles.css response content type mismatch");
+assert.throws(() => resolveProtocolResponse("design-reference://signin/app.js?state=default", { parseRoute, files, fallbackRoute: activeRoute }), /omit the deterministic tuple query/i);
+assert.throws(() => resolveProtocolResponse("design-reference://other/app.js", { parseRoute, files, fallbackRoute: activeRoute }), /active reference screen/i);
+assert.equal(resolveProtocolResponse("design-reference://signin/secret.txt", { parseRoute, files, fallbackRoute: activeRoute }), null, "unknown static paths must be refused");
+assert.throws(() => resolveProtocolResponse("design-reference://signin", { parseRoute, files, fallbackRoute: activeRoute }).route, /query keys/i);
+const slash = resolveProtocolResponse(inventory.rows[0].designRoute.replace("design-reference://signin", "design-reference://signin/"), { parseRoute, files, fallbackRoute: activeRoute });
+assert.equal(slash.status, 200, "slash entry response must be 200");
 assert.equal(slash.path, files["/index.html"][0], "slash route must serve index");
-console.log(`PASS: protocol response resolves the checked-in index for all ${inventory.rows.length} inventoried design URLs and slash variants`);
+console.log(`PASS: protocol response returns 200 and exact content types for all ${inventory.rows.length} inventoried entries and allowlisted static resources, while refusing query-bearing or unknown resources`);
