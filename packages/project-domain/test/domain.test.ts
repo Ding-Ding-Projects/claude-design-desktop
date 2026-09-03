@@ -16,8 +16,8 @@ async function run(): Promise<void> {
   try {
     service = new ProjectDomainService(root);
     await service.open();
-    await service.upsertAccount({ slotId: "owner", label: "Owner" });
-    await service.upsertAccount({ slotId: "editor", label: "Editor" });
+    await service.upsertAccount({ slotId: "owner", label: "Owner", state: "ready" });
+    await service.upsertAccount({ slotId: "editor", label: "Editor", state: "ready" });
     const project = await service.createProject({ id: "p1", name: "Prototype", ownerSlotId: "owner" });
     await service.setGrant({ projectId: project.id, actorSlotId: "owner", slotId: "editor", role: "editor" });
     await service.writeFile({ projectId: project.id, actorSlotId: "editor", path: "src/index.html", content: "<main>ok</main>" });
