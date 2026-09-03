@@ -6,7 +6,7 @@ This package owns the bounded download protocol used by the desktop bridge and t
 
 `DownloadStateMachine.prepareStart()` validates a source URL, one file name, and a bounded destination, then creates a proposal in `awaiting-confirmation`. The queue is unchanged until `confirmStart()` is called. `cancelProposal()` removes only that proposal and reports no queue mutation. Confirmation creates a queued item and a separate `ProgressWindowModel` whose `alwaysOnTop` value is always true. `startNext()` begins the transfer through the injected transfer starter. Progress updates calculate bytes per second and ETA, while pause, resume, cancel, failure, and completion are explicit transitions.
 
-The state machine does not perform network I/O itself. The browser adapter calls the real browser download API, while the native host adapter owns the separate always-on-top desktop progress window. This keeps the state transitions deterministic and makes the actual transfer seam testable.
+The state machine does not perform network I/O itself. The installed Windows native host owns validation, queue persistence, the real HTTP transfer, the separate always-on-top desktop progress window, terminal notifications, and restart recovery. The browser extension only submits a proposal through the native messaging bridge. This keeps the state transitions deterministic and makes the actual transfer seam testable.
 
 ## Bounds and safety
 

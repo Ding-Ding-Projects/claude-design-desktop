@@ -16,11 +16,11 @@ cancel.addEventListener("click", async () => {
 });
 
 form.addEventListener("submit", async (event) => {
-  event.preventDefault(); start.disabled = true; cancel.disabled = true; status.textContent = "Starting the queued download…";
+  event.preventDefault(); start.disabled = true; cancel.disabled = true; status.textContent = "Handing the proposal to the installed desktop app…";
   try {
-    const reply = await chrome.runtime.sendMessage({ type: "start-download", sourceUrl: source.value, filename: filename.value, sourceLabel: "Browser extension" });
+    const reply = await chrome.runtime.sendMessage({ type: "propose-download", sourceUrl: source.value, filename: filename.value, sourceLabel: "Browser extension" });
     if (!reply?.ok) throw new Error(reply?.error || "The download did not start");
-    status.textContent = "Download queued. A separate progress window is opening.";
+    status.textContent = "Proposal handed off. Confirm it in the installed desktop app to begin the transfer.";
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : "The download did not start";
     start.disabled = false; cancel.disabled = false;

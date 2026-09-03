@@ -1,0 +1,8 @@
+{
+  "name": "@claude-design/downloads",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict test/node-shims.d.ts src/download-state-machine.ts src/native-messaging-codec.ts src/native-messaging.ts src/pipe-auth.ts src/product-download-ui-bridge.ts src/product-named-pipe-bridge.ts src/product-main-download-listener.ts src/windows-native-host.ts src/windows-native-host-main.ts src/windows-vault-adapter.ts test/download-state-machine.test.ts test/native-messaging.test.ts test/windows-native-host.test.ts"
+  }
+}

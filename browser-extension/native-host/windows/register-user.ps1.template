@@ -1,0 +1,14 @@
+# Per-user registration template. Replace placeholders during installation only.
+param([ValidateSet('install','repair','unregister')] [string] $Mode = 'install')
+$ErrorActionPreference = 'Stop'
+$installDir = '{{INSTALL_DIR}}'
+$extensionId = '{{EXTENSION_ID}}'
+if ($installDir -match '[\"`r`n]') { throw 'Install directory contains unsupported characters' }
+if ($extensionId -notmatch '^[a-p]{32}$') { throw 'Extension id must be the owner-selected unpacked or ZIP id' }
+$manifest = Join-Path $installDir 'com.claude.design.downloads.json'
+$key = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.claude.design.downloads'
+if ($Mode -eq 'unregister') { Remove-Item -LiteralPath $key -Recurse -Force -ErrorAction SilentlyContinue; exit 0 }
+if (-not (Test-Path -LiteralPath (Join-Path $installDir 'claude-design-download-host.exe') -PathType Leaf)) { throw 'Packaged native host executable is missing' }
+if (-not (Get-Command chrome.exe -ErrorAction SilentlyContinue) -and -not (Get-Command msedge.exe -ErrorAction SilentlyContinue)) { throw 'No supported installed browser was found' }
+New-Item -Path $key -Force | Out-Null
+New-ItemProperty -Path $key -Name '(default)' -PropertyType String -Value $manifest -Force | Out-Null

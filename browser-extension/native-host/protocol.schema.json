@@ -8,15 +8,20 @@
   "properties": {
     "protocolVersion": { "const": 1 },
     "requestId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
-    "type": { "enum": ["start-download", "download-control", "open-progress-window", "download-event"] },
+    "type": { "enum": ["propose-download", "confirm-download", "download-control", "proposal-ready", "queued", "download-event", "rejected"] },
     "request": { "$ref": "#/$defs/request" },
-    "downloadId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "proposalId": { "$ref": "#/$defs/id" },
+    "confirmation": { "$ref": "#/$defs/confirmation" },
+    "downloadId": { "$ref": "#/$defs/id" },
     "action": { "enum": ["pause", "resume", "cancel"] },
-    "title": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
     "event": { "enum": ["queued", "downloading", "paused", "resumed", "cancelled", "failed", "completed"] },
-    "record": { "$ref": "#/$defs/record" }
+    "record": { "$ref": "#/$defs/record" },
+    "preflight": { "$ref": "#/$defs/preflight" },
+    "error": { "type": "string", "minLength": 1, "maxLength": 500 }
   },
   "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "confirmation": { "type": "object", "additionalProperties": false, "required": ["keyOne", "keyTwo", "slider"], "properties": { "keyOne": { "const": true }, "keyTwo": { "const": true }, "slider": { "const": 1 } } },
     "request": {
       "type": "object",
       "additionalProperties": false,
@@ -33,21 +38,31 @@
       "additionalProperties": false,
       "required": ["id", "request", "phase", "bytesReceived", "rateBytesPerSecond", "progressWindow"],
       "properties": {
-        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "id": { "$ref": "#/$defs/id" },
         "request": { "type": "object", "additionalProperties": false, "required": ["sourceUrl", "filename", "destination", "sourceLabel"], "properties": { "sourceUrl": { "type": "string", "format": "uri", "maxLength": 2048 }, "filename": { "type": "string", "minLength": 1, "maxLength": 240 }, "destination": { "type": "string", "maxLength": 1024 }, "sourceLabel": { "type": "string", "maxLength": 160 } } },
         "phase": { "enum": ["awaiting-confirmation", "queued", "downloading", "paused", "cancelled", "failed", "completed"] },
         "bytesReceived": { "type": "integer", "minimum": 0, "maximum": 5000000000 },
         "totalBytes": { "type": ["integer", "null"], "minimum": 0, "maximum": 5000000000 },
         "rateBytesPerSecond": { "type": "integer", "minimum": 0 },
         "etaSeconds": { "type": ["integer", "null"], "minimum": 0 },
+        "error": { "type": "string", "maxLength": 500 },
         "progressWindow": { "type": "object", "additionalProperties": false, "required": ["alwaysOnTop", "accessibleName", "windowId", "visible"], "properties": { "alwaysOnTop": { "const": true }, "accessibleName": { "type": "string", "minLength": 1, "maxLength": 160 }, "windowId": { "type": "string", "maxLength": 128 }, "visible": { "type": "boolean" } } }
       }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collision", "destinationPath", "freeBytes", "minimumFreeBytes"],
+      "properties": { "destinationPath": { "type": "string", "maxLength": 1024 }, "collision": { "type": "boolean" }, "freeBytes": { "type": "integer", "minimum": 0 }, "minimumFreeBytes": { "type": "integer", "minimum": 0 } }
     }
   },
   "allOf": [
-    { "if": { "properties": { "type": { "const": "start-download" } } }, "then": { "required": ["request"], "not": { "required": ["downloadId", "action", "title"] } } },
-    { "if": { "properties": { "type": { "const": "download-control" } } }, "then": { "required": ["downloadId", "action"], "not": { "required": ["request", "title"] } } },
-    { "if": { "properties": { "type": { "const": "open-progress-window" } } }, "then": { "required": ["downloadId", "title"], "not": { "required": ["request", "action"] } } }
-    ,{ "if": { "properties": { "type": { "const": "download-event" } } }, "then": { "required": ["event", "record"], "not": { "required": ["request", "downloadId", "action", "title"] } } }
+    { "if": { "properties": { "type": { "const": "propose-download" } } }, "then": { "required": ["request"], "not": { "required": ["proposalId", "downloadId", "action"] } } },
+    { "if": { "properties": { "type": { "const": "confirm-download" } } }, "then": { "required": ["confirmation", "proposalId"], "not": { "required": ["request", "downloadId", "action"] } } },
+    { "if": { "properties": { "type": { "const": "download-control" } } }, "then": { "required": ["downloadId", "action"], "not": { "required": ["request", "proposalId"] } } },
+    { "if": { "properties": { "type": { "const": "proposal-ready" } } }, "then": { "required": ["proposalId", "request", "preflight"], "not": { "required": ["downloadId", "action", "event", "record", "error"] } } },
+    { "if": { "properties": { "type": { "const": "queued" } } }, "then": { "required": ["record"], "not": { "required": ["proposalId", "request", "downloadId", "action", "event", "error"] } } },
+    { "if": { "properties": { "type": { "const": "download-event" } } }, "then": { "required": ["event", "record"], "not": { "required": ["proposalId", "request", "downloadId", "action", "error"] } } },
+    { "if": { "properties": { "type": { "const": "rejected" } } }, "then": { "required": ["error"], "not": { "required": ["proposalId", "request", "downloadId", "action", "event", "record"] } } }
   ]
 }

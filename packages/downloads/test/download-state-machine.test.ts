@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DownloadStateMachine, DOWNLOAD_LIMITS, normalizeDownloadRequest } from "../src/download-state-machine";
+import { DownloadStateMachine, DOWNLOAD_LIMITS, normalizeDownloadRequest, type DownloadEvent } from "../src/download-state-machine.js";
 
 const request = { sourceUrl: "https://example.test/files/report.pdf", suggestedFilename: "report.pdf", sourceLabel: "Example" };
 
@@ -51,7 +51,7 @@ test("progress computes rate and ETA and supports pause, resume, cancel", async 
 test("completion and failure are terminal and observable", async () => {
   const events: string[] = [];
   const machine = new DownloadStateMachine();
-  machine.subscribe((event) => events.push(event.type));
+  machine.subscribe((event: DownloadEvent) => events.push(event.type));
   const proposal = machine.prepareStart(request);
   machine.confirmStart(proposal.id);
   await machine.startNext();

@@ -1,7 +1,0 @@
-{
-  "name": "com.claude.design.downloads",
-  "description": "Claude Design local download companion for Linux-compatible browsers",
-  "path": "{{INSTALL_DIR}}/claude-design-download-host",
-  "type": "stdio",
-  "allowed_origins": ["chrome-extension://{{EXTENSION_ID}}/"]
-}

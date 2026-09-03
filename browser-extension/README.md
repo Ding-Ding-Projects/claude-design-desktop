@@ -4,16 +4,16 @@ This directory is a real Manifest V3 browser extension. Load the directory throu
 
 ## User flow
 
-1. A link context action or the toolbar action opens the Start download surface.
-2. The surface shows the source URL, proposed file name, and the browser Downloads destination. Nothing transfers before the user activates Start download.
-3. Cancel removes the pending proposal and returns `queueChanged: false`; it does not call the browser download API.
-4. Start calls `chrome.downloads.download()` and opens a distinct progress window. The progress surface reports bytes, total size where supplied, rate, ETA, pause, resume, cancel, interrupted, and completed states.
-5. Completion is a non-blocking browser notification. If the native host is installed, the same bounded event also opens or updates its always-on-top desktop progress model.
+1. A link context action or the toolbar action opens the proposal surface.
+2. The surface shows the source URL, proposed file name, and the selected Downloads destination. Nothing transfers before the installed desktop app validates and confirms the proposal.
+3. Cancel removes the pending proposal and returns `queueChanged: false`; it sends no transfer command.
+4. The extension hands the proposal to the installed Windows native host using a four-byte native-endian length-prefixed UTF-8 JSON frame. The host owns the durable queue, actual transfer, pause, resume, cancel, rate, ETA, and separate progress window.
+5. The host closes the progress window after cancellation, failure, or completion, then emits a non-blocking completion notification. The browser extension never calls the browser download API and never creates a fake progress window.
 
 ## Native host
 
-The host name is `com.claude.design.downloads`. Registration templates live under `native-host/`, with install-folder and extension-id placeholders only. The host protocol is newline-delimited JSON and is described by `native-host/protocol.schema.json`. Unknown fields, malformed JSON, embedded URL credentials, unsafe path segments, oversized payloads, and unsupported protocol versions are rejected. The browser-only extension remains usable when the native host is unavailable.
+The host name is `com.claude.design.downloads`. Registration templates live under `native-host/`, with install-folder and extension-id placeholders only. The host protocol is four-byte native-endian length-prefixed JSON and is described by `native-host/protocol.schema.json`. Unknown fields, malformed JSON, embedded URL credentials, unsafe path segments, oversized payloads, private or loopback sources, and unsupported protocol versions are rejected. The extension requires the installed native host before a transfer can begin.
 
 ## Verification
 
-Run `node --test test/contract.test.mjs` from this directory. It checks the manifest, referenced files, actual download and progress-window calls, cancellation semantics, input limits, and machine-neutral host templates. The TypeScript state-machine suite is under `../packages/downloads/test/` and is compiled by the parent build's TypeScript route.
+Run `node --test test/contract.test.mjs` from this directory. It checks the manifest, referenced files, native handoff, cancellation semantics, input limits, and machine-neutral host templates. The TypeScript state-machine and native-host suites are under `../packages/downloads/test/` and are compiled by the parent build's TypeScript route.
