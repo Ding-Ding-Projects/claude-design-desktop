@@ -101,15 +101,34 @@ function runCodexContract(executable, destination) {
     if (result.error) throw new Error(`Codex runtime ${args.join(" ")} failed to start: ${result.error.message}`);
     if (result.status !== 0) throw new Error(`Codex runtime ${args.join(" ")} exited with code ${result.status}: ${(result.stderr || result.stdout || "").trim()}`);
   }
-  const metadataFile = path.join(root, "packages", "contracts", "generated", "schema-metadata.json");
-  if (existsSync(metadataFile)) {
-    const metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
-    if (metadata.runtimeVersion !== "0.152.1" || metadata.platform !== "win32-x64") throw new Error("Committed app-server schema metadata does not match @openai/codex 0.152.1 win32-x64.");
+  const metadataFile = requiredFile(path.join(root, "release-support", "codex-schema-metadata.json"), "committed app-server schema metadata");
+  const metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
+  if (metadata.runtimeVersion !== "0.152.1-win32-x64" || metadata.platform !== "win32-x64" || metadata.binaryRelativePath !== "bin/codex.exe") throw new Error("Committed app-server schema metadata does not match @openai/codex-win32-x64 0.152.1.");
+  if (hashFile(executable) !== metadata.binarySha256) throw new Error("Codex binary SHA-256 differs from committed schema metadata.");
+  for (const [key, expected] of Object.entries(metadata.generated || {})) {
+    const directory = path.join(destination, expected.relativePath);
+    if (!existsSync(directory)) throw new Error(`Generated ${key} schema directory is missing: ${expected.relativePath}`);
+    const actual = hashDirectory(directory);
+    if (actual.fileCount !== expected.fileCount || actual.sha256OfSortedFileHashes !== expected.sha256OfSortedFileHashes) throw new Error(`Generated ${key} schema output differs from committed metadata.`);
   }
 }
 
 function hashFile(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function hashDirectory(directory) {
+  const files = [];
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else files.push({ path: path.relative(directory, full).replaceAll("\\", "/"), hash: hashFile(full) });
+    }
+  };
+  walk(directory);
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { fileCount: files.length, sha256OfSortedFileHashes: createHash("sha256").update(files.map((entry) => entry.hash).join("\n"), "utf8").digest("hex") };
 }
 
 export async function buildDesktop({ mode = "production" } = {}) {

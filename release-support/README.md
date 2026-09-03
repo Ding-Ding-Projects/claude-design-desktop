@@ -10,7 +10,7 @@ The scripts use the local pinned Node runtime instead of whichever runtime happe
 
 ## Installer contract
 
-The package identity is `com.dingdingprojects.claudedesigndesktop`. A valid package contains `Setup.exe`, `RELEASES`, a full `.nupkg`, `resources/app.asar`, and the bundled app-server runtime. `scripts/validate-squirrel-package.ps1` checks these paths, verifies the `RELEASES` reference, checks the setup file's Authenticode state is `NotSigned`, and reports its SHA-256. Code signing is prohibited, so an operating system unknown-publisher warning is expected.
+The package identity is `com.dingdingprojects.claudedesigndesktop`. A valid package contains `Setup.exe`, `RELEASES`, a full `.nupkg`, `resources/app.asar`, and the bundled app-server runtime at `resources/codex/bin/codex.exe`. `scripts/validate-squirrel-package.ps1` checks these paths, verifies the `RELEASES` reference, checks the setup file's Authenticode state is `NotSigned`, and reports its SHA-256. Code signing is prohibited, so an operating system unknown-publisher warning is expected.
 
 ## Release workflow
 

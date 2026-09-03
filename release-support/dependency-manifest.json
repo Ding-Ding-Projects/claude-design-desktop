@@ -35,7 +35,7 @@
     {
       "name": "@openai/codex-win32-x64",
       "version": "0.152.1-win32-x64",
-      "tarball": "https://registry.npmjs.org/@openai/codex-win32-x64/-/codex-win32-x64-0.152.1.tgz",
+      "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.152.1-win32-x64.tgz",
       "integrity": "sha512-B8h0/2Kt+rKQv2+vqBhlhWkMEdhf4dsn46FNKMEBTXj3YC5hwSioOcTX2hMgJxMEMtKIMH6Ire1eNrQPvaL9og=="
     }
   ],

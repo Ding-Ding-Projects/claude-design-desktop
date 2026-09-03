@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 
 const manifest = JSON.parse(await readFile("release-support/dependency-manifest.json", "utf8"));
 const installer = JSON.parse(await readFile("release-support/installer-contract.json", "utf8"));
@@ -12,9 +12,23 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function assertFile(file, message) {
+  try { await access(file); } catch { throw new Error(message); }
+}
+
+for (const [file, label] of [
+  ["package.json", "root package manifest"],
+  ["package-lock.json", "root lockfile"],
+  ["apps/desktop/src/main.ts", "desktop main source"],
+  ["apps/desktop/src/preload.ts", "desktop preload source"],
+  ["apps/desktop/src/renderer.tsx", "desktop renderer source"],
+  ["apps/site/src/main.tsx", "public site source"]
+]) await assertFile(file, `${label} is absent; test the merged application inputs before release.`);
+
 assert(manifest.node.version === "22.14.0", "Node bootstrap is not pinned to the declared version.");
 assert(/^[a-f0-9]{64}$/.test(manifest.node.sha256), "Node bootstrap lacks a SHA-256 digest.");
 assert(manifest.npmPackages.some((entry) => entry.name === "@openai/codex" && entry.version === "0.152.1"), "Codex runtime pin is missing.");
+assert(manifest.npmPackages.some((entry) => entry.name === "@openai/codex-win32-x64" && entry.tarball === "https://registry.npmjs.org/@openai/codex/-/codex-0.152.1-win32-x64.tgz"), "Native Codex tarball URL is incorrect.");
 assert(manifest.npmPackages.every((entry) => entry.integrity.startsWith("sha512-")), "Each npm package pin must carry npm integrity.");
 assert(installer.appId === "com.dingdingprojects.claudedesigndesktop", "Installer app identity drifted.");
 assert(installer.installerFormat === "squirrel-windows", "Installer format is not Squirrel.Windows.");

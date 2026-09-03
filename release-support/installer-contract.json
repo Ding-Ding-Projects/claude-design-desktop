@@ -8,7 +8,7 @@
   "codeSigning": "prohibited",
   "requiredRuntimeCandidates": [
     "resources/app.asar",
-    "resources/codex/codex.exe",
+    "resources/codex/bin/codex.exe",
     "resources/app-server/codex.exe"
   ]
 }

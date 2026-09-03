@@ -2,12 +2,22 @@
 param([switch]$Silent)
 
 $ErrorActionPreference = 'Stop'
+$Silent = $Silent.IsPresent -or $env:SILENT -eq '1'
+if (-not $Silent) {
+  $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+    try { $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru } catch { throw "Interactive elevation was declined: $($_.Exception.Message)" }
+    exit $elevated.ExitCode
+  }
+}
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifestPath = Join-Path $root 'release-support/dependency-manifest.json'
 $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
 $toolRoot = Join-Path $env:LOCALAPPDATA 'Ding-Ding-Projects/ClaudeDesignDesktop/toolchain'
 $nodeRoot = Join-Path $toolRoot ("node-v{0}-win-x64" -f $manifest.node.version)
 $nodeExe = Join-Path $nodeRoot 'node.exe'
+$cacheManifest = Join-Path $nodeRoot 'cache-manifest.json'
 
 function Write-Phase([string]$Message) {
   if (-not $Silent) { Write-Host ("[dependencies] {0}" -f $Message) }
@@ -24,15 +34,12 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
   }
 }
 
- $existingNode = Get-Command node.exe -ErrorAction SilentlyContinue
-$existingVersion = $null
-if ($existingNode) {
-  $existingVersion = (& $existingNode.Source '--version' 2>$null).Trim().TrimStart('v')
+$cacheValid = $false
+if ((Test-Path -LiteralPath $nodeExe) -and (Test-Path -LiteralPath $cacheManifest)) {
+  $cached = Get-Content -Raw $cacheManifest | ConvertFrom-Json
+  $cacheValid = $cached.version -eq $manifest.node.version -and $cached.nodeSha256 -eq (Get-Sha256 $nodeExe)
 }
-if ($existingVersion -eq $manifest.node.version) {
-  Write-Phase ("Found pinned Node {0} at {1}" -f $manifest.node.version, $existingNode.Source)
-  $nodeExe = $existingNode.Source
-} elseif (-not (Test-Path -LiteralPath $nodeExe)) {
+if (-not $cacheValid) {
   New-Item -ItemType Directory -Force -Path $toolRoot | Out-Null
   $archive = Join-Path $toolRoot (".node-{0}.zip" -f [guid]::NewGuid().ToString('N'))
   Write-Phase ("Downloading Node {0} from {1}" -f $manifest.node.version, $manifest.node.url)
@@ -55,9 +62,10 @@ if ($existingVersion -eq $manifest.node.version) {
   Move-Item -LiteralPath $expanded.FullName -Destination $nodeRoot
   Remove-Item -LiteralPath $extractRoot -Recurse -Force
   Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+  @{ schemaVersion = 1; version = $manifest.node.version; nodeSha256 = Get-Sha256 $nodeExe } | ConvertTo-Json | Set-Content -LiteralPath $cacheManifest -Encoding utf8
   Write-Phase ("Installed Node to {0}" -f $nodeRoot)
 } else {
-  Write-Phase ("Found verified Node cache at {0}" -f $nodeRoot)
+  Write-Phase ("Found and revalidated product-owned Node cache at {0}" -f $nodeRoot)
 }
 
 if (-not (Test-Path -LiteralPath $nodeExe)) {

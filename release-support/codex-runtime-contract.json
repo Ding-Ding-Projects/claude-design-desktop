@@ -6,5 +6,5 @@
   "binary": "codex.exe",
   "transport": "stdio-jsonl",
   "requiredCommands": ["app-server", "generate-ts", "generate-json-schema"],
-  "generatedSchemaDirectoryCandidates": ["packages/contracts/generated", "schemas", "resources/codex/schemas"]
+  "generatedSchemaDirectoryCandidates": ["release-support/codex-schema-metadata.json", "resources/codex/schemas"]
 }

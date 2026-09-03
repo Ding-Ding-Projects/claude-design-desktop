@@ -2,6 +2,14 @@
 param([switch]$Silent)
 
 $ErrorActionPreference = 'Stop'
+$Silent = $Silent.IsPresent -or $env:SILENT -eq '1'
+if (-not $Silent) {
+  $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    try { $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"") -Wait -PassThru } catch { throw "Interactive elevation was declined: $($_.Exception.Message)" }
+    exit $elevated.ExitCode
+  }
+}
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $env:SILENT = if ($Silent) { '1' } else { $env:SILENT }
 $fetcher = Join-Path $root 'scripts/download-dependencies.ps1'
