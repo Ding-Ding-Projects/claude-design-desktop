@@ -28,5 +28,5 @@ assert(!/forceCodeSigning\s*:\s*true|sign(AndEdit)?Executable\s*:\s*true/i.test(
 assert(/gh release create/.test(workflow) && /gh release edit/.test(workflow), "Release workflow does not create and finalize one published release.");
 assert(buildEntry.includes("buildDesktop") && buildEntry.includes("buildSite"), "Standalone desktop and site build entries are not registered.");
 assert(buildConfig.includes("apps") && buildConfig.includes("desktop") && buildConfig.includes("main.ts") && buildConfig.includes("preload.ts") && buildConfig.includes("renderer.tsx"), "Standalone desktop entry paths are missing.");
-assert(/assertStandaloneEntry/.test(buildConfig) && /ccrdesk\.top/.test(buildConfig), "Retired hosted and router input guard is missing.");
+assert(buildConfig.includes("assertStandaloneEntry") && buildConfig.includes("ccrdesk\\.top"), "Retired hosted and router input guard is missing.");
 console.log("Release tooling contract checks passed.");
