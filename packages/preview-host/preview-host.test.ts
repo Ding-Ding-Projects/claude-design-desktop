@@ -135,6 +135,13 @@ test("dynamic local scripts and CSS imports are allowed only through bounded ass
   assert.throws(() => previewDataUrl({ html: "<script>fetch('https://example.invalid')</script>" }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
 });
 
+test("SVG namespace declarations are accepted while external SVG references are refused", () => {
+  const valid = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 10 10\"><path d=\"M0 0h10v10z\"></path></svg>";
+  assert.match(previewDataUrl({ html: `<img src=icon.svg>`, assets: [{ name: "icon.svg", mimeType: "image/svg+xml", bytes: text(valid) }] }), /^data:text\/html/iu);
+  const unsafe = valid.replace("M0 0h10v10z", "M0 0h10v10z\" href=\"https://example.invalid/image");
+  assert.throws(() => previewDataUrl({ html: `<img src=icon.svg>`, assets: [{ name: "icon.svg", mimeType: "image/svg+xml", bytes: text(unsafe) }] }), (error: unknown) => error instanceof PreviewHostError && error.code === "content_rejected");
+});
+
 test("unsupported HTML and CSS URL-bearing constructs fail closed", () => {
   const bad = [
     "<meta http-equiv=refresh content=0;url=https://example.invalid>",

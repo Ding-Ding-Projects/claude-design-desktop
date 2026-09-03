@@ -284,7 +284,11 @@ function decodeUtf8(bytes: Uint8Array): string {
 function validateSvg(bytes: Uint8Array): void {
   const text = decodeUtf8(bytes);
   if (!/<svg(?:\s|>)/iu.test(text) || /<(?:script|foreignObject)(?:\s|>)/iu.test(text) || /<!doctype|<!entity|@import|url\s*\(/iu.test(text)) throw fixed("content_rejected");
-  if (/[a-z][a-z0-9+.-]*:|\/\//iu.test(text.replaceAll("http://", ""))) throw fixed("content_rejected");
+  const withoutNamespaces = text
+    .replaceAll("http://www.w3.org/2000/svg", "")
+    .replaceAll("http://www.w3.org/1999/xlink", "")
+    .replace(/\b(?:xmlns|[a-z][a-z0-9._-]*):[a-z][a-z0-9._-]*/giu, "");
+  if (/[a-z][a-z0-9+.-]*:|\/\//iu.test(withoutNamespaces)) throw fixed("content_rejected");
   const viewBox = text.match(/\bviewBox\s*=\s*["']\s*0\s+0\s+([0-9.]+)\s+([0-9.]+)\s*["']/iu);
   if (viewBox) assertPixels(Number(viewBox[1]), Number(viewBox[2]));
 }
