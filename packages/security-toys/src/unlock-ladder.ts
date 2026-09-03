@@ -3,8 +3,8 @@ import { randomId } from "./vault";
 export type LadderRung = "dish" | "sums" | "moles" | "clock";
 export type LadderAnswer =
   | { kind: "dish"; choice: number }
-  | { kind: "sums"; answers: number[] }
-  | { kind: "moles"; hits: Array<{ moleId: string; cell: number; at: number }> };
+  | { kind: "sums"; answers: number[] };
+export type MoleHitResult = { accepted: boolean; complete: boolean; reason?: "wrong-rung" | "early" | "late" | "wrong-cell" | "replay" | "invalid"; clearedWaiting: boolean; sessionCookieIssued: false };
 
 export type LadderChallenge = {
   nonce: string;
@@ -26,7 +26,7 @@ export type LadderResult = {
 };
 
 type Lockout = { waitingUntil: number; attemptsRemaining: number; maxAttempts: number };
-type ActiveChallenge = LadderChallenge & { userId: string; sessionId: string };
+type ActiveChallenge = LadderChallenge & { userId: string; sessionId: string; moleHits?: string[] };
 
 export interface LadderAuthorityAdapter {
   readBudget(userId: string): number[];
@@ -35,12 +35,16 @@ export interface LadderAuthorityAdapter {
   readChallenge(nonce: string): ActiveChallenge | undefined;
   writeChallenge(challenge: ActiveChallenge): void;
   deleteChallenge(nonce: string): void;
+  startLadder?(userId: string, sessionId: string, lockout: Lockout, now: number, maxSkipsPerHour: number, challenge: ActiveChallenge): boolean;
+  consumeChallenge?(userId: string, sessionId: string, nonce: string): ActiveChallenge | undefined;
+  clearWaiting?(userId: string, sessionId: string, rung: LadderRung): LadderResult;
 }
 
 export class MemoryLadderAuthority implements LadderAuthorityAdapter {
   private readonly budgets = new Map<string, number[]>();
   private readonly challenges = new Map<string, ActiveChallenge>();
   private readonly usedSessions = new Set<string>();
+  private readonly lockouts = new Map<string, Lockout>();
   readBudget(userId: string): number[] { return [...(this.budgets.get(userId) ?? [])]; }
   writeBudget(userId: string, starts: number[]): void { this.budgets.set(userId, [...starts]); }
   authorizeLadderStart(userId: string, sessionId: string, lockout: Lockout, now: number, maxSkipsPerHour: number, challenge: ActiveChallenge): boolean {
@@ -54,9 +58,25 @@ export class MemoryLadderAuthority implements LadderAuthorityAdapter {
     this.usedSessions.add(sessionId);
     return true;
   }
+  startLadder(userId: string, sessionId: string, lockout: Lockout, now: number, maxSkipsPerHour: number, challenge: ActiveChallenge): boolean {
+    if (!this.authorizeLadderStart(userId, sessionId, lockout, now, maxSkipsPerHour, challenge)) return false;
+    this.lockouts.set(sessionId, { ...lockout });
+    return true;
+  }
   readChallenge(nonce: string): ActiveChallenge | undefined { const value = this.challenges.get(nonce); return value ? structuredClone(value) : undefined; }
   writeChallenge(challenge: ActiveChallenge): void { this.challenges.set(challenge.nonce, structuredClone(challenge)); }
   deleteChallenge(nonce: string): void { this.challenges.delete(nonce); }
+  consumeChallenge(userId: string, sessionId: string, nonce: string): ActiveChallenge | undefined {
+    const challenge = this.challenges.get(nonce);
+    if (!challenge || challenge.userId !== userId || challenge.sessionId !== sessionId) return undefined;
+    this.challenges.delete(nonce);
+    return structuredClone(challenge);
+  }
+  clearWaiting(userId: string, sessionId: string, rung: LadderRung): LadderResult {
+    if (!this.lockouts.has(sessionId)) return failed(rung, "invalid");
+    this.lockouts.delete(sessionId);
+    return cleared(rung);
+  }
 }
 
 export class UnlockLadderServer {
@@ -78,22 +98,27 @@ export class UnlockLadderServer {
     if (lockout.waitingUntil <= now) return undefined;
     const rung: LadderRung = schoolMode ? "sums" : "dish";
     const challenge = this.issue(userId, sessionId, rung, now, 0, false);
-    if (!this.authority.authorizeLadderStart(userId, sessionId, lockout, now, this.maxSkipsPerHour, challenge)) return undefined;
+    const allowed = this.authority.startLadder
+      ? this.authority.startLadder(userId, sessionId, lockout, now, this.maxSkipsPerHour, challenge)
+      : this.authority.authorizeLadderStart(userId, sessionId, lockout, now, this.maxSkipsPerHour, challenge);
+    if (!allowed) return undefined;
     return publicChallenge(challenge);
   }
 
   submit(userId: string, sessionId: string, nonce: string, answer: LadderAnswer): LadderResult {
     validateSessionId(sessionId);
-    const challenge = this.authority.readChallenge(nonce);
+    const challenge = this.authority.consumeChallenge
+      ? this.authority.consumeChallenge(userId, sessionId, nonce)
+      : this.authority.readChallenge(nonce);
     if (!challenge || challenge.userId !== userId || challenge.sessionId !== sessionId) return failed("clock", "invalid");
-    this.authority.deleteChallenge(nonce);
+    if (!this.authority.consumeChallenge) this.authority.deleteChallenge(nonce);
     const now = this.now();
     if (challenge.expiresAt <= now) return failed(challenge.rung, "expired");
     if (!isAnswerForRung(answer, challenge.rung)) return failed(challenge.rung, "invalid");
 
     if (challenge.rung === "dish") {
       const correct = answer.kind === "dish" && answer.choice === challenge.correctDish;
-      if (correct) return cleared("dish");
+      if (correct) return this.clearWaiting(userId, sessionId, "dish");
       const wrongDishes = Number((challenge as ActiveChallenge & { wrongDishes?: number }).wrongDishes ?? 0) + 1;
       if (wrongDishes >= 5) return this.nextWithState(challenge, "sums", now, wrongDishes);
       return this.nextWithState(challenge, "dish", now, wrongDishes);
@@ -101,24 +126,53 @@ export class UnlockLadderServer {
     if (challenge.rung === "sums") {
       const expected = challenge.sums?.map((sum) => sum.left + sum.right) ?? [];
       if (answer.kind === "sums" && answer.answers.length === expected.length && answer.answers.every((value, index) => value === expected[index])) {
-        return cleared("sums");
+        return this.clearWaiting(userId, sessionId, "sums");
       }
       return this.nextWithState(challenge, "moles", now, 0);
     }
     if (challenge.rung === "moles") {
-      const round = challenge.moleRound;
-      if (!round || now < round.startedAt + round.durationMs) return failed("moles", "too-early");
-      const uniqueHits = new Set<string>();
-      const valid = answer.kind === "moles" && answer.hits.every((hit) => {
-        const key = `${hit.moleId}:${hit.cell}`;
-        const mole = round.moles.find((candidate) => candidate.id === hit.moleId && candidate.cell === hit.cell);
-        if (uniqueHits.has(key) || !mole || hit.at > now || hit.at < mole.visibleAt || hit.at > mole.hiddenAt) return false;
-        uniqueHits.add(key);
-        return true;
-      });
-      return valid && uniqueHits.size >= round.moles.length ? cleared("moles") : failed("clock", "wrong-answer");
+      return failed("moles", "invalid");
     }
     return failed("clock", "invalid");
+  }
+
+  submitMoleHit(userId: string, sessionId: string, nonce: string, moleId: string, cell: number): MoleHitResult {
+    validateSessionId(sessionId);
+    if (!Number.isSafeInteger(cell) || cell < 0 || cell > 63 || moleId.length > 120) return { accepted: false, complete: false, reason: "invalid", clearedWaiting: false, sessionCookieIssued: false };
+    const challenge = this.authority.readChallenge(nonce);
+    if (!challenge || challenge.userId !== userId || challenge.sessionId !== sessionId || challenge.rung !== "moles") return { accepted: false, complete: false, reason: "wrong-rung", clearedWaiting: false, sessionCookieIssued: false };
+    const now = this.now();
+    const round = challenge.moleRound;
+    if (!round || now < round.startedAt) return { accepted: false, complete: false, reason: "early", clearedWaiting: false, sessionCookieIssued: false };
+    if (now >= challenge.expiresAt) { this.authority.deleteChallenge(nonce); return { accepted: false, complete: false, reason: "late", clearedWaiting: false, sessionCookieIssued: false }; }
+    const mole = round.moles.find((candidate) => candidate.id === moleId);
+    if (!mole || mole.cell !== cell || now < mole.visibleAt || now > mole.hiddenAt) return { accepted: false, complete: false, reason: "wrong-cell", clearedWaiting: false, sessionCookieIssued: false };
+    const key = `${moleId}:${cell}`;
+    const hits = new Set(challenge.moleHits ?? []);
+    if (hits.has(key)) return { accepted: false, complete: false, reason: "replay", clearedWaiting: false, sessionCookieIssued: false };
+    if (hits.size >= round.moles.length) return { accepted: false, complete: false, reason: "invalid", clearedWaiting: false, sessionCookieIssued: false };
+    hits.add(key);
+    challenge.moleHits = [...hits];
+    if (hits.size === round.moles.length) {
+      this.authority.writeChallenge(challenge);
+      return { accepted: true, complete: false, clearedWaiting: false, sessionCookieIssued: false };
+    }
+    this.authority.writeChallenge(challenge);
+    return { accepted: true, complete: false, clearedWaiting: false, sessionCookieIssued: false };
+  }
+
+  finishMoleRound(userId: string, sessionId: string, nonce: string): MoleHitResult {
+    validateSessionId(sessionId);
+    const challenge = this.authority.readChallenge(nonce);
+    if (!challenge || challenge.userId !== userId || challenge.sessionId !== sessionId || challenge.rung !== "moles") return { accepted: false, complete: false, reason: "wrong-rung", clearedWaiting: false, sessionCookieIssued: false };
+    const round = challenge.moleRound;
+    const now = this.now();
+    if (!round || now < round.startedAt + round.durationMs) return { accepted: false, complete: false, reason: "early", clearedWaiting: false, sessionCookieIssued: false };
+    if (now >= challenge.expiresAt) { this.authority.deleteChallenge(nonce); return { accepted: false, complete: false, reason: "late", clearedWaiting: false, sessionCookieIssued: false }; }
+    if ((challenge.moleHits?.length ?? 0) !== round.moles.length) { this.authority.deleteChallenge(nonce); return { accepted: false, complete: false, reason: "invalid", clearedWaiting: false, sessionCookieIssued: false }; }
+    this.authority.deleteChallenge(nonce);
+    const cleared = this.clearWaiting(userId, sessionId, "moles");
+    return { accepted: true, complete: cleared.clearedWaiting, clearedWaiting: cleared.clearedWaiting, sessionCookieIssued: false };
   }
 
   remainingBudget(userId: string): number {
@@ -155,6 +209,10 @@ export class UnlockLadderServer {
     const next = this.issue(challenge.userId, challenge.sessionId, rung, now, wrongDishes);
     return { clearedWaiting: false, sessionCookieIssued: false, attemptsRestored: 0, rung, next: publicChallenge(next), reason: "wrong-answer" };
   }
+
+  private clearWaiting(userId: string, sessionId: string, rung: LadderRung): LadderResult {
+    return this.authority.clearWaiting ? this.authority.clearWaiting(userId, sessionId, rung) : cleared(rung);
+  }
 }
 
 function publicChallenge(challenge: LadderChallenge): LadderChallenge {
@@ -171,7 +229,7 @@ function failed(rung: LadderRung, reason: LadderResult["reason"]): LadderResult 
 }
 
 function isAnswerForRung(answer: LadderAnswer, rung: LadderRung): boolean {
-  return (rung === "dish" && answer.kind === "dish") || (rung === "sums" && answer.kind === "sums") || (rung === "moles" && answer.kind === "moles");
+  return (rung === "dish" && answer.kind === "dish") || (rung === "sums" && answer.kind === "sums");
 }
 
 function validateSessionId(sessionId: string): void {

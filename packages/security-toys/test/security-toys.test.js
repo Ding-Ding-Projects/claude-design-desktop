@@ -206,6 +206,35 @@ test("ladder budget survives a fresh server instance through its authority adapt
   assert.throws(() => second.begin("persisted", "bad", lockout), /Session ID/);
 });
 
+test("mole hits are one-at-a-time, authority-timestamped, bounded, and replay-safe", () => {
+  let now = 1_000;
+  const ladder = new toys.UnlockLadderServer({ now: () => now, random: () => 0 });
+  const lockout = { waitingUntil: now + 60_000, attemptsRemaining: 1, maxAttempts: 1 };
+  const sums = ladder.begin("mole-user", "mole-session", lockout, true);
+  const moleChallenge = ladder.submit("mole-user", "mole-session", sums.nonce, { kind: "sums", answers: [] }).next;
+  const moles = moleChallenge.moleRound.moles;
+  now = 999;
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, "bad", 0).reason, "early");
+  now = moles[0].visibleAt;
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[0].id, 1).reason, "wrong-cell");
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[0].id, moles[0].cell).accepted, true);
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[0].id, moles[0].cell).reason, "replay");
+  for (const mole of moles.slice(1)) {
+    now = mole.visibleAt;
+    assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, mole.id, mole.cell).accepted, true);
+  }
+  assert.equal(ladder.finishMoleRound("mole-user", "mole-session", moleChallenge.nonce).reason, "early");
+  now = moles[4].visibleAt + 10_000;
+  const finished = ladder.finishMoleRound("mole-user", "mole-session", moleChallenge.nonce);
+  assert.equal(finished.clearedWaiting, true);
+  assert.equal(finished.sessionCookieIssued, false);
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session", moleChallenge.nonce, moles[4].id, moles[4].cell).reason, "wrong-rung");
+  const secondSums = ladder.begin("mole-user", "mole-session-2", { waitingUntil: now + 60_000, attemptsRemaining: 1, maxAttempts: 1 }, true);
+  const secondMoles = ladder.submit("mole-user", "mole-session-2", secondSums.nonce, { kind: "sums", answers: [] }).next;
+  now = secondMoles.expiresAt + 1;
+  assert.equal(ladder.submitMoleHit("mole-user", "mole-session-2", secondMoles.nonce, secondMoles.moleRound.moles[0].id, 0).reason, "late");
+});
+
 test("support tickets and history exports are local and redacted", async () => {
   const tickets = new toys.LocalSupportTickets(() => 123);
   const ticket = tickets.create({ category: "forgotten-lock", description: "Forgot the toy lock", recoveryDirectory: "C:/AppData/Local/ClaudeDesign" });
