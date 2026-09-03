@@ -1,0 +1,16 @@
+{
+  "name": "@claude-design-desktop/converter",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/converter.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.21",
+    "typescript": "5.8.3"
+  }
+}
