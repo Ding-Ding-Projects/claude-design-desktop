@@ -1,4 +1,4 @@
-import { DesignDomain, DomainError, RequestContext, normalizeLinkPermission, normalizeProjectType, normalizeSharingScope } from "./domain";
+import { DesignDomain, DomainError, ProjectRole, RequestContext, normalizeLinkPermission, normalizeProjectType, normalizeSharingScope } from "./domain";
 import { handleJsonSyncRequest } from "./json-sync-adapter";
 import { normalizeProjectPath } from "./path-policy";
 import { decodeGeneratedRequestFields, decodeUnaryRequest, encodeUnaryResponse } from "./generated/connect";
@@ -6,7 +6,7 @@ import { decodeGeneratedRequestFields, decodeUnaryRequest, encodeUnaryResponse }
 export const CONNECT_PREFIX = "/design/anthropic.omelette.api.v1alpha.OmeletteService/";
 export type ConnectRequest = { method: string; path: string; contentType: string; body: Uint8Array | string | Record<string, unknown> };
 export type ConnectResponse = { status: number; contentType: string; body: Uint8Array | Record<string, unknown> };
-export type ConnectOptions = { accountId?: string; resolveAccount?: (transport: "connect") => Promise<{ accountId: string; authenticated: boolean }> };
+export type ConnectOptions = { accountId?: string; capabilityCheck?: (request: ConnectRequest) => boolean | Promise<boolean>; resolveAccount?: (transport: "connect") => Promise<{ accountId: string; authenticated: boolean; role?: ProjectRole }> };
 
 const join = (...xs: Uint8Array[]) => Uint8Array.from(xs.flatMap((x) => [...x]));
 const varint = (n: number) => { const a: number[] = []; do { a.push((n & 127) | (n > 127 ? 128 : 0)); n = Math.floor(n / 128); } while (n); return Uint8Array.from(a); };
@@ -24,11 +24,12 @@ const fileBytes = (f: any) => join(str(1, f.path), field(2, f.content), str(3, f
 export async function handleConnectRequest(domain: DesignDomain, request: ConnectRequest, options: ConnectOptions): Promise<ConnectResponse> {
   if (request.method.toUpperCase() !== "POST") return { status: 405, contentType: "application/json; charset=utf-8", body: { error: { message: "Connect RPC only supports POST." } } };
   if (!request.path.startsWith(CONNECT_PREFIX)) return { status: 404, contentType: "application/json; charset=utf-8", body: { error: { message: "Unknown Connect route." } } };
+  if (options.capabilityCheck && !(await options.capabilityCheck(request))) return { status: 401, contentType: "application/json; charset=utf-8", body: { error: { code: "capability_required", message: "A valid local capability is required." } } };
   const name = request.path.slice(CONNECT_PREFIX.length).replace(/\?.*$/, "");
   const body = bodyRecord(request);
   const account = options.resolveAccount ? await options.resolveAccount("connect") : { accountId: options.accountId || "", authenticated: Boolean(options.accountId) };
   if (!account.authenticated || !account.accountId) return { status: 401, contentType: "application/json; charset=utf-8", body: { error: { code: "account_required", message: "An authenticated account is required." } } };
-  const context: RequestContext = { accountId: account.accountId, capabilityValid: true, transport: "connect" };
+  const context: RequestContext = { accountId: account.accountId, capabilityValid: true, role: account.role, transport: "connect" };
   try {
     if (request.contentType.includes("application/json")) { const jsonName = name === "ListProjects" ? "ListOrgProjects" : name; const response = await handleJsonSyncRequest(domain, { method: "POST", path: `/v1/design/anthropic.omelette.api.v1alpha.OmeletteService/${jsonName}`, body }, { accountId: account.accountId }); return { status: response.status, contentType: "application/json; charset=utf-8", body: response.body as Record<string, unknown> }; }
     const frame = (payload: Uint8Array): ConnectResponse => ({ status: 200, contentType: "application/connect+proto", body: encodeConnectFrame(payload, true) });

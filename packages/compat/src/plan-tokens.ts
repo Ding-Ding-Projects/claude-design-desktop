@@ -30,6 +30,13 @@ export class PlanTokenManager {
       const allowed = kind === "deletes" ? plan.deletes : plan.writes;
       for (const target of targets) if (![...allowed].some((prefix) => pathMatchesPrefix(target, prefix))) throw new DomainError(`plan_token does not cover ${target}.`, 403, "plan_scope");
     }
+  }
+  consume(token: string | undefined, projectId: string, operationId: string): void {
+    this.prune();
+    const plan = token ? this.plans.get(token) : undefined;
+    if (!plan) throw new DomainError("plan_token is invalid or expired.", 400, "plan_expired");
+    if (plan.projectId !== projectId || plan.operationId !== operationId) throw new DomainError("plan token binding does not match the operation.", 403, "plan_binding_mismatch");
+    if (plan.consumed) throw new DomainError("plan_token has already been consumed.", 409, "plan_replay");
     plan.consumed = true;
   }
   prune(now = Date.now()) { for (const [token, plan] of this.plans) if (plan.expiresAtMs <= now) this.plans.delete(token); }

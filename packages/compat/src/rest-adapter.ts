@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
-import { DesignDomain, DomainError, DesignProject, RequestContext, normalizeProjectType } from "./domain";
+import { DesignDomain, DomainError, DesignProject, RequestContext, ProjectRole, normalizeProjectType } from "./domain";
 import { normalizeOptionalPath, normalizeProjectPath } from "./path-policy";
 
 export type HttpRequest = {
@@ -18,7 +18,7 @@ export type HttpResponse = {
 
 export type RestAdapterOptions = {
   accountId?: string;
-  resolveAccount?: (transport: "rest") => Promise<{ accountId: string; authenticated: boolean }>;
+  resolveAccount?: (transport: "rest") => Promise<{ accountId: string; authenticated: boolean; role?: ProjectRole }>;
   capabilityCheck: (request: HttpRequest) => boolean | Promise<boolean>;
   previewOrigin?: string;
   agents?: Array<Record<string, unknown>>;
@@ -120,7 +120,7 @@ export async function handleRestRequest(domain: DesignDomain, request: HttpReque
   if (!(await options.capabilityCheck(request))) return json(401, { error: { code: "capability_required", message: "A valid local capability is required." } });
   const account = options.resolveAccount ? await options.resolveAccount("rest") : { accountId: options.accountId || "", authenticated: Boolean(options.accountId) };
   if (!account.authenticated || !account.accountId) return json(401, { error: { code: "account_required", message: "An authenticated account is required." } });
-  const ctx: RequestContext = { accountId: account.accountId, capabilityValid: true, transport: "rest" };
+  const ctx: RequestContext = { accountId: account.accountId, capabilityValid: true, role: account.role, transport: "rest" };
   const method = request.method.toUpperCase();
   const path = request.path.replace(/\?.*$/, "").replace(/\/$/, "") || "/";
   try { validateRestBody(request, method, path); } catch (error) { return errorResponse(error); }

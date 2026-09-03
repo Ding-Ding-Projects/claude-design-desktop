@@ -1,4 +1,5 @@
 import { MCP_TOOL_NAMES, McpToolName } from "../../compat/src/manifest";
+import { normalizeProjectPath } from "../../compat/src/path-policy";
 const s = (description: string) => ({ description, type: "string" });
 const a = (description: string) => ({ description, items: { type: "string" }, type: "array" });
 const o = (properties: Record<string, unknown>, required: string[] = []) => ({ additionalProperties: false, properties, required, type: "object" });
@@ -37,8 +38,9 @@ export function validateMcpInput(name: McpToolName, value: unknown): void {
       for (const [key, child] of Object.entries(shape.properties || {})) if (key in record) validate(record[key], child, `${path}.${key}`);
       return;
     }
-    if (shape.type === "array") { if (!Array.isArray(current)) throw new Error(`${path} must be an array.`); if (shape.items) current.forEach((entry, index) => validate(entry, shape.items, `${path}[${index}]`)); return; }
-    if (shape.type === "string" && typeof current !== "string") throw new Error(`${path} must be a string.`);
+    if (shape.type === "array") { if (!Array.isArray(current)) throw new Error(`${path} must be an array.`); if (current.length > 1000) throw new Error(`${path} exceeds the item limit.`); if (shape.items) current.forEach((entry, index) => validate(entry, shape.items, `${path}[${index}]`)); return; }
+    if (shape.type === "string") { if (typeof current !== "string") throw new Error(`${path} must be a string.`); if (current.length > 4096) throw new Error(`${path} exceeds the string limit.`); const key = path.split(".").pop() || ""; if (key === "path" || key === "src" || key === "dest") normalizeProjectPath(current); }
+    if (shape.type === "boolean" && typeof current !== "boolean") throw new Error(`${path} must be a boolean.`);
   };
   validate(value, schema, "arguments");
 }
