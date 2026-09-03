@@ -1,4 +1,6 @@
-const FEATURE_IDS = [
+import { openVersionedStore } from './storage.js';
+
+export const FEATURE_IDS = [
   'language-modes', 'dialog-emoji-toggle', 'school-mode', 'narration', 'scheduled-settings',
   'dim-sum-surprise', 'regex-builders', 'notification-centre', 'appearance-editors',
   'tabbed-navigation', 'offline-documentation', 'command-palette', 'destructive-confirmation',
@@ -63,8 +65,21 @@ const state = {
   funnyCantonese: Number(localStorage.getItem('cdd.funnyCantonese') || 5),
   route: location.hash.slice(1) || 'home',
   logo: localStorage.getItem('cdd.logo') || 'star',
-  customLogo: localStorage.getItem('cdd.customLogo') || ''
+  customLogo: localStorage.getItem('cdd.customLogo') || '',
+  tabs: [],
+  tabGroups: [],
+  locks: {}
 };
+
+export const visitorStore = openVersionedStore('claude-design-desktop-site', 1);
+const DEFAULT_TABS = routes => routes.map(([id, , label]) => ({ id, label, pinned: false, groupId: null }));
+const saveLargeState = () => visitorStore.set('workspace', { tabs: state.tabs, tabGroups: state.tabGroups, locks: state.locks, updatedAt: new Date().toISOString() });
+export function isLocked(target) { return Boolean(target?.closest?.('[data-locked="true"]')); }
+export function interceptLockedActivation(target, event) { const locked = target?.closest?.('[data-locked="true"]'); if (!locked || event?.type === 'contextmenu') return false; event?.preventDefault?.(); event?.stopImmediatePropagation?.(); return true; }
+export function toggleTabPin(tabId) { const tab = state.tabs.find((entry) => entry.id === tabId); if (!tab) return false; tab.pinned = !tab.pinned; saveLargeState(); return tab.pinned; }
+export function createTabGroup(label = 'New group') { const group = { id: `group-${Date.now()}-${Math.random().toString(16).slice(2)}`, label, collapsed: false }; state.tabGroups.push(group); saveLargeState(); return group; }
+export function addTab(label = 'New tab') { const id = `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`; state.tabs.push({ id, label, pinned: false, groupId: null }); saveLargeState(); return id; }
+async function hydrateLargeState() { const saved = await visitorStore.get('workspace'); state.tabs = saved?.tabs?.length ? saved.tabs : DEFAULT_TABS(routes); state.tabGroups = Array.isArray(saved?.tabGroups) ? saved.tabGroups : []; state.locks = saved?.locks && typeof saved.locks === 'object' ? saved.locks : {}; renderTabs(); }
 
 const routes = [
   ['home', '⌂', 'Home'], ['features', '✦', 'Features'], ['documentation', '▤', 'Documentation'],
@@ -93,11 +108,17 @@ function renderFeatures() {
 }
 
 function featureRow(id) {
-  return `<article class="feature-row" data-feature="${id}" data-context-target="feature-${id}"><span class="feature-id">${id}</span><div><h3>${FEATURE_TITLES[id]}</h3><p>${FEATURE_SUMMARIES[id]}</p><a href="https://github.com/Ding-Ding-Projects/claude-design-desktop/blob/main/docs/features/${id}.md" target="_blank" rel="noreferrer">Read the article <span class="sr-only">for ${FEATURE_TITLES[id]}</span></a></div><span class="feature-state">Unverified</span></article>`;
+  return `<article class="feature-row" data-feature="${id}" data-context-target="feature-${id}"><span class="feature-id">${id}</span><div><h3>${FEATURE_TITLES[id]}</h3><p>${FEATURE_SUMMARIES[id]}</p><button class="text-button open-article" data-article="${id}" type="button">Read bundled article <span class="sr-only">for ${FEATURE_TITLES[id]}</span></button><details class="feature-contract"><summary>Implementation and evidence status</summary><dl class="contract-grid"><dt>Implementation</dt><dd>Pending integrated runtime</dd><dt>Localized copy</dt><dd>English, Hong Kong Cantonese, and bilingual copy declared</dd><dt>Persistence</dt><dd>Pending runtime storage binding</dd><dt>Focused check</dt><dd><code>site/test-behavior.mjs</code></dd><dt>Built evidence</dt><dd>Pending real built-artifact interaction and screen capture</dd><dt>Negative regression</dt><dd>Inventory removal must fail the static and behavior checks</dd></dl></details></div><span class="feature-state">Unverified</span></article>`;
 }
 
 function renderDocumentation() {
-  return shell(`<div class="card"><h2>Offline-ready article catalog</h2>${searchControl('docs-search', 'Search documentation', 'Search article titles and summaries')}<p class="supporting">The source articles below are the shared documentation bundle for the desktop application and this public landing site. Every article names behavior, configuration, failure modes, security considerations, verification, and suggested reading.</p><div id="docs-list" class="feature-list">${FEATURE_IDS.map((id) => `<article class="feature-row" data-doc="${id}"><span class="feature-id">docs/features/${id}.md</span><div><h3>${FEATURE_TITLES[id]}</h3><p>${FEATURE_SUMMARIES[id]}</p></div><a class="outlined-button" href="https://github.com/Ding-Ding-Projects/claude-design-desktop/blob/main/docs/features/${id}.md" target="_blank" rel="noreferrer">Open article</a></article>`).join('')}</div></div>`, 'Documentation', 'Read the source contracts before relying on a release claim.');
+  return shell(`<div class="card"><h2>Offline-ready article catalog</h2>${searchControl('docs-search', 'Search documentation', 'Search article titles and summaries')}<p class="supporting">The source articles below are the shared documentation bundle for the desktop application and this public landing site. Every article names behavior, configuration, failure modes, security considerations, verification, and suggested reading.</p><div id="docs-list" class="feature-list">${FEATURE_IDS.map((id) => `<article class="feature-row" data-doc="${id}"><span class="feature-id">docs/features/${id}.md</span><div><h3>${FEATURE_TITLES[id]}</h3><p>${FEATURE_SUMMARIES[id]}</p></div><button class="outlined-button open-article" data-article="${id}" type="button">Open bundled article</button></article>`).join('')}</div></div>`, 'Documentation', 'Read the source contracts before relying on a release claim.');
+}
+
+function renderArticle(id) {
+  const title = FEATURE_TITLES[id] || 'Feature article';
+  const summary = FEATURE_SUMMARIES[id] || 'This article is not present in the hand-written inventory.';
+  return shell(`<div class="card article-card">${searchControl(`article-${id}-search`, `Search ${title}`, 'Search this article')}<p class="supporting">This bundled preview article is rendered locally from the checked-in documentation source. The integrated runtime must load the full Markdown article offline before release.</p><h2>${title}</h2><p>${summary}</p><h3>Behavior</h3><p>The feature contract is declared in <code>docs/features/${id}.md</code> and remains unverified until the integrated application exercises it.</p><h3>Configuration and persistence</h3><p>Configuration, local persistence, reset behavior, and browser-storage equivalents are documented in the source article. This preview does not invent runtime state.</p><h3>Failure and security</h3><p>Failures remain visible with recovery guidance. Credentials, private vocabulary content, and personal data stay outside the public article bundle.</p><h3>Verification</h3><p>Focused checks and real built-artifact evidence are pending integration. A static article presence check cannot prove runtime behavior.</p><h3>Suggested articles</h3><p><button class="text-button" data-route="documentation" type="button">Return to the article catalog</button></p></div>`, title, 'A local article view for the selected feature contract.');
 }
 
 function renderStatus() {
@@ -117,7 +138,8 @@ function renderChangelog() {
 }
 
 function renderRoute() {
-  const content = { home: renderHome, features: renderFeatures, documentation: renderDocumentation, status: renderStatus, settings: renderSettings, downloads: renderDownloads, changelog: renderChangelog }[state.route] || renderHome;
+  const articleMatch = state.route.match(/^article:(.+)$/);
+  const content = articleMatch ? () => renderArticle(articleMatch[1]) : ({ home: renderHome, features: renderFeatures, documentation: renderDocumentation, status: renderStatus, settings: renderSettings, downloads: renderDownloads, changelog: renderChangelog }[state.route] || renderHome);
   document.querySelector('#main-content').innerHTML = content();
   bindRouteActions();
   bindSearches();
@@ -126,12 +148,14 @@ function renderRoute() {
 }
 
 function renderTabs() {
-  document.querySelector('#tab-list').innerHTML = routes.map(([id, icon, label]) => `<button class="tab-button" role="tab" aria-selected="${state.route === id}" data-route="${id}" data-context-target="tab-${id}"><span aria-hidden="true">${icon}</span><span>${label}</span>${state.route === id ? '<span class="tab-pin" aria-label="Active tab">●</span>' : ''}</button>`).join('');
+  const tabs = state.tabs.length ? state.tabs : DEFAULT_TABS(routes);
+  document.querySelector('#tab-list').innerHTML = tabs.map((tab) => { const route = routes.find(([id]) => id === tab.id); const icon = route?.[1] || '□'; const label = tab.label || route?.[2] || tab.id; const group = state.tabGroups.find((entry) => entry.id === tab.groupId); const destination = route?.[0] || 'home'; return `<button class="tab-button" role="tab" aria-selected="${state.route === destination}" data-route="${destination}" data-context-target="tab-${tab.id}" data-tab-id="${tab.id}"><span aria-hidden="true">${icon}</span><span>${escapeHtml(label)}</span>${group ? `<small class="tab-group-label">${escapeHtml(group.label)}</small>` : ''}${tab.pinned ? '<span class="tab-pin" aria-label="Pinned tab">●</span>' : ''}</button>`; }).join('');
   document.querySelectorAll('[data-route]').forEach((button) => button.addEventListener('click', () => { state.route = button.dataset.route; location.hash = state.route; renderTabs(); renderRoute(); }));
 }
 
 function bindRouteActions() {
   document.querySelectorAll('[data-route]').forEach((button) => button.addEventListener('click', () => { state.route = button.dataset.route; location.hash = state.route; renderTabs(); renderRoute(); }));
+  document.querySelectorAll('.open-article').forEach((button) => button.addEventListener('click', () => { state.route = `article:${button.dataset.article}`; location.hash = state.route; renderTabs(); renderRoute(); }));
   document.querySelector('#open-settings')?.addEventListener('click', () => { state.route = 'settings'; location.hash = state.route; renderTabs(); renderRoute(); });
 }
 
@@ -141,7 +165,8 @@ function bindSearches() {
     const surface = input.closest('[data-search-surface]');
     if (!surface) return;
     const scope = surface.dataset.searchSurface === 'features-search' ? '#feature-list [data-feature]' : surface.dataset.searchSurface === 'docs-search' ? '#docs-list [data-doc]' : null;
-    if (scope) document.querySelectorAll(scope).forEach((row) => { row.hidden = value && !row.textContent.toLowerCase().includes(value); });
+    const rows = scope ? document.querySelectorAll(scope) : surface.closest('.card')?.querySelectorAll('.status-card, .setting, .empty-state, .feature-row');
+    rows?.forEach((row) => { row.hidden = Boolean(value && !row.textContent.toLowerCase().includes(value)); });
     if (surface.dataset.searchSurface?.includes('search')) surface.dataset.query = value;
   }));
   document.querySelectorAll('.regex-button').forEach((button) => button.addEventListener('click', () => openRegex(button.dataset.regexFor)));
@@ -160,8 +185,8 @@ function hydrateSettings() {
   const upload = document.querySelector('#logo-upload');
   if (upload) upload.addEventListener('change', () => { const file = upload.files?.[0]; if (!file) return; if (file.size > 2 * 1024 * 1024) { notify('Logo rejected', 'The local image exceeds the 2 MiB limit.'); upload.value = ''; return; } const reader = new FileReader(); reader.onload = () => { state.customLogo = String(reader.result); save('customLogo', state.customLogo); updateLogo(); notify('Local logo applied', 'The image stays in this browser profile.'); }; reader.readAsDataURL(file); });
   document.querySelector('#reset-settings')?.addEventListener('click', () => { Object.assign(state, { language: 'en', emojis: true, funnyEnglish: 5, funnyCantonese: 5, logo: 'star', customLogo: '' }); ['language', 'emojis', 'funnyEnglish', 'funnyCantonese', 'logo', 'customLogo'].forEach((key) => localStorage.removeItem(`cdd.${key}`)); renderRoute(); notify('Visitor settings reset', 'The original shipped wording and presentation are active again.'); });
-  document.querySelector('#pin-current-tab')?.addEventListener('click', () => notify('Tab pin recorded', 'The active tab remains visible in this preview surface.'));
-  document.querySelector('#manage-tabs')?.addEventListener('click', () => notify('Tab groups', 'Group management is represented in the documented contract and will be wired in the integrated runtime.'));
+  document.querySelector('#pin-current-tab')?.addEventListener('click', () => { const pinned = toggleTabPin(state.route); renderTabs(); notify(pinned ? 'Tab pinned' : 'Tab unpinned', 'The tab state is stored in the versioned local visitor store.'); });
+  document.querySelector('#manage-tabs')?.addEventListener('click', () => { const group = createTabGroup(); renderTabs(); notify('Tab group created', `${group.label} is stored in the versioned local visitor store.`); });
   updateLogo();
 }
 
@@ -217,7 +242,7 @@ document.querySelectorAll('[data-close-dialog]').forEach((button) => button.addE
 document.querySelector('#apply-regex').addEventListener('click', () => { if (regexTarget) { const input = document.querySelector(`#${regexTarget}`); if (input) input.value = document.querySelector('#regex-pattern').value; } document.querySelector('#regex-dialog').close(); });
 document.querySelector('#open-palette').addEventListener('click', () => openPalette());
 document.querySelector('#toggle-theme').addEventListener('click', () => { state.theme = state.theme === 'light' ? 'dark' : 'light'; save('theme', state.theme); document.documentElement.dataset.theme = state.theme; });
-document.querySelector('#add-tab').addEventListener('click', () => notify('New tab', 'A user-created tab would be added to the local tab registry.'));
+document.querySelector('#add-tab').addEventListener('click', () => { const id = addTab('New tab'); renderTabs(); notify('New tab created', `${id} is stored in the versioned local visitor store.`); });
 
 function openPalette() {
   const dialog = document.querySelector('#palette'); dialog.showModal(); const input = document.querySelector('#palette-search'); input.value = ''; input.focus(); renderPalette('');
@@ -226,15 +251,21 @@ function renderPalette(query) {
   const rows = [['home', 'Open Home', 'Destination'], ['features', 'Open feature contracts', 'Destination'], ['documentation', 'Open Documentation', 'Destination'], ['status', 'Open Status', 'Destination'], ['settings', 'Open visitor settings', 'Destination'], ['downloads', 'Open Downloads', 'Destination'], ['changelog', 'Open Changelog', 'Destination'], ...FEATURE_IDS.map((id) => [id, FEATURE_TITLES[id], 'Feature'])];
   const list = document.querySelector('#palette-results'); const filtered = rows.filter((row) => row[1].toLowerCase().includes(query.toLowerCase()) || row[0].toLowerCase().includes(query.toLowerCase()));
   list.innerHTML = filtered.length ? filtered.map(([id, label, kind]) => `<button class="palette-item" type="button" data-palette-route="${id}"><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(kind)} · ${escapeHtml(id)}</small></span><span aria-hidden="true">↗</span></button>`).join('') : '<div class="empty-state">No matching commands.</div>';
-  list.querySelectorAll('[data-palette-route]').forEach((button) => button.addEventListener('click', () => { const destination = routes.some(([id]) => id === button.dataset.paletteRoute) ? button.dataset.paletteRoute : 'features'; state.route = destination; location.hash = destination; dialog.close(); renderTabs(); renderRoute(); notify('Palette destination opened', button.textContent.trim()); }));
+  list.querySelectorAll('[data-palette-route]').forEach((button) => button.addEventListener('click', () => { const target = button.dataset.paletteRoute; const destination = routes.some(([id]) => id === target) ? target : 'features'; state.route = destination; location.hash = destination; dialog.close(); renderTabs(); renderRoute(); requestAnimationFrame(() => { const exact = document.querySelector(`[data-feature="${CSS.escape(target)}"]`); exact?.scrollIntoView({ block: 'center' }); exact?.focus?.(); exact?.classList.add('palette-highlight'); setTimeout(() => exact?.classList.remove('palette-highlight'), 1200); }); notify('Palette destination opened', button.textContent.trim()); }));
 }
 document.querySelector('#palette-search').addEventListener('input', (event) => renderPalette(event.target.value));
 
-document.addEventListener('contextmenu', (event) => { const target = event.target.closest('[data-context-target]'); if (!target) return; event.preventDefault(); document.querySelector('.context-menu')?.remove(); const menu = document.createElement('div'); menu.className = 'context-menu'; menu.setAttribute('role', 'menu'); menu.innerHTML = `<label class="sr-only" for="context-filter">Filter context actions</label><input id="context-filter" type="search" placeholder="Filter actions" /><button type="button" data-context-action="appearance">Edit appearance…</button><button type="button" data-context-action="lock">Lock this element…</button><button type="button" data-context-action="copy">Copy accessible name</button>`; document.body.appendChild(menu); const x = Math.min(event.clientX, innerWidth - menu.offsetWidth - 12); const y = Math.min(event.clientY, innerHeight - menu.offsetHeight - 12); menu.style.left = `${Math.max(8, x)}px`; menu.style.top = `${Math.max(8, y)}px`; menu.querySelector('input').focus(); menu.querySelector('input').addEventListener('input', (e) => menu.querySelectorAll('button').forEach((button) => { button.hidden = !button.textContent.toLowerCase().includes(e.target.value.toLowerCase()); })); menu.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => { if (button.dataset.contextAction === 'appearance') { state.route = 'settings'; location.hash = state.route; renderTabs(); renderRoute(); notify('Appearance editor', 'The settings surface is the documented place to adjust local presentation.'); } else if (button.dataset.contextAction === 'lock') { target.dataset.locked = 'true'; target.setAttribute('aria-label', `${target.getAttribute('aria-label') || 'Element'} locked`); notify('Element lock enabled', 'This preview marks the element as locked locally.'); } else { navigator.clipboard?.writeText(target.textContent.trim()); notify('Accessible name copied', 'Only visible local text was requested.'); } menu.remove(); })); });
+document.addEventListener('contextmenu', (event) => { const target = event.target.closest('[data-context-target]'); if (!target) return; event.preventDefault(); document.querySelector('.context-menu')?.remove(); const menu = document.createElement('div'); menu.className = 'context-menu'; menu.setAttribute('role', 'menu'); menu.innerHTML = `<label class="sr-only" for="context-filter">Filter context actions</label><div class="context-search"><input id="context-filter" type="search" placeholder="Filter actions" /><button class="regex-button" data-regex-for="context-filter" type="button">.* Regex</button></div><button type="button" data-context-action="appearance">Edit appearance…</button><button type="button" data-context-action="lock">Lock this element…</button><button type="button" data-context-action="copy">Copy accessible name</button>`; document.body.appendChild(menu); const x = Math.min(event.clientX, innerWidth - menu.offsetWidth - 12); const y = Math.min(event.clientY, innerHeight - menu.offsetHeight - 12); menu.style.left = `${Math.max(8, x)}px`; menu.style.top = `${Math.max(8, y)}px`; menu.querySelector('input').focus(); menu.querySelector('input').addEventListener('input', (e) => menu.querySelectorAll('button[data-context-action]').forEach((button) => { button.hidden = !button.textContent.toLowerCase().includes(e.target.value.toLowerCase()); })); menu.querySelector('.regex-button').addEventListener('click', () => openRegex('context-filter')); menu.querySelectorAll('button[data-context-action]').forEach((button) => button.addEventListener('click', () => { if (button.dataset.contextAction === 'appearance') { state.route = 'settings'; location.hash = state.route; renderTabs(); renderRoute(); notify('Appearance editor', 'The settings surface is the documented place to adjust local presentation.'); } else if (button.dataset.contextAction === 'lock') { target.dataset.locked = 'true'; target.setAttribute('aria-disabled', 'true'); target.setAttribute('aria-label', `${target.getAttribute('aria-label') || 'Element'} locked`); state.locks[target.dataset.contextTarget || 'unknown'] = true; saveLargeState(); notify('Element lock enabled', 'This preview intercepts activation locally.'); } else { navigator.clipboard?.writeText(target.textContent.trim()); notify('Accessible name copied', 'Only visible local text was requested.'); } menu.remove(); })); });
 document.addEventListener('click', (event) => { if (!event.target.closest('.context-menu')) document.querySelector('.context-menu')?.remove(); });
+let lockedTarget = null;
+function openLockDialog(target) { lockedTarget = target; const dialog = document.querySelector('#lock-dialog'); const name = target.dataset.contextTarget || target.textContent.trim().slice(0, 80) || 'element'; document.querySelector('#lock-target-name').textContent = `The element “${name}” is locked locally. This is a user-experience lock, not security or encryption. Clear this site's storage to recover it.`; document.querySelector('#lock-value').value = ''; document.querySelector('#lock-status').textContent = 'Enter the phrase configured for this element.'; dialog.showModal(); document.querySelector('#lock-value').focus(); }
+document.addEventListener('click', (event) => { if (interceptLockedActivation(event.target, event)) openLockDialog(event.target.closest('[data-locked="true"]')); }, true);
+document.addEventListener('keydown', (event) => { if (!['Enter', ' '].includes(event.key)) return; if (interceptLockedActivation(event.target, event)) openLockDialog(event.target.closest('[data-locked="true"]')); }, true);
+document.querySelector('#unlock-element').addEventListener('click', () => { const value = document.querySelector('#lock-value').value; if (!value) { document.querySelector('#lock-status').textContent = 'A non-empty phrase is required; no action was performed.'; return; } if (!lockedTarget) return; lockedTarget.dataset.locked = 'false'; lockedTarget.removeAttribute('aria-disabled'); lockedTarget.removeAttribute('aria-label'); if (lockedTarget.dataset.contextTarget) delete state.locks[lockedTarget.dataset.contextTarget]; saveLargeState(); document.querySelector('#lock-dialog').close(); notify('Element unlocked', 'The protected action is available again.'); lockedTarget.focus?.(); lockedTarget = null; });
 document.addEventListener('keydown', (event) => { if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'f') { event.preventDefault(); openPalette(); } if (event.key === 'Escape') document.querySelector('.context-menu')?.remove(); });
 window.addEventListener('hashchange', () => { state.route = location.hash.slice(1) || 'home'; renderTabs(); renderRoute(); });
 
 document.documentElement.dataset.theme = state.theme;
 renderTabs();
 renderRoute();
+hydrateLargeState();

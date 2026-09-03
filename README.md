@@ -19,7 +19,7 @@ The `site/` folder is a dependency-free static source with local CSS and JavaScr
 node site/test-static.mjs
 ```
 
-No CDN, analytics, remote font, or remote image is required by the source. The Open Graph image URL is a release-bound placeholder until a verified product capture is committed and published.
+No CDN, analytics, remote font, or remote image is required by the source. No Open Graph image URL is emitted yet, because a product-specific image has not been committed and served for verification.
 
 ## Build and release status
 

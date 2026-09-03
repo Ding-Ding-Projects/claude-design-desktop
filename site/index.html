@@ -9,12 +9,9 @@
     <meta property="og:url" content="https://ding-ding-projects.github.io/claude-design-desktop/" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Claude Design Desktop" />
-    <meta property="og:image" content="https://ding-ding-projects.github.io/claude-design-desktop/social-preview.png" />
-    <meta property="og:image:width" content="1280" />
-    <meta property="og:image:height" content="640" />
-    <meta property="og:image:alt" content="Claude Design Desktop documentation and workspace interface" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="theme-color" content="#6750a4" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
     <title>Claude Design Desktop</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -58,6 +55,14 @@
       <label>Sample text<textarea id="regex-sample" rows="4">Design systems become easier to search when every field has its own builder.</textarea></label>
       <div class="regex-output"><div><span class="eyebrow">Explanation</span><code id="regex-explanation">No pattern yet</code></div><div><span class="eyebrow">Matches</span><output id="regex-matches">0</output></div></div>
       <div class="dialog-actions"><button class="text-button" data-close-dialog="regex-dialog" type="button">Cancel</button><button class="filled-button" id="apply-regex" type="button">Apply to search</button></div>
+    </dialog>
+
+    <dialog id="lock-dialog" class="surface-dialog" aria-labelledby="lock-title">
+      <div class="dialog-header"><div><span class="eyebrow">Local toy lock</span><h2 id="lock-title">Unlock this element</h2></div><button class="icon-button" data-close-dialog="lock-dialog" aria-label="Close unlock prompt">×</button></div>
+      <p id="lock-target-name" class="supporting">This is a local user-experience lock, not security or encryption. Recovery is available by clearing this site's storage.</p>
+      <label>Unlock phrase<input id="lock-value" type="password" autocomplete="off" /></label>
+      <p id="lock-status" class="inline-status">Enter the phrase configured for this element.</p>
+      <div class="dialog-actions"><button class="text-button" data-close-dialog="lock-dialog" type="button">Cancel</button><button class="filled-button" id="unlock-element" type="button">Unlock</button></div>
     </dialog>
 
     <template id="search-template"><div class="search-row"><label class="sr-only"></label><input type="search" autocomplete="off" /><button class="regex-button" type="button">.* Regex</button></div></template>

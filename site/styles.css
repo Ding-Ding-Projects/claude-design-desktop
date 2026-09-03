@@ -85,6 +85,12 @@ h3 { font-size: 1.1rem; }
 .feature-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; padding: 16px; border: 1px solid var(--outline-variant); border-radius: var(--radius-md); background: var(--surface); }
 .feature-id { color: var(--on-surface-variant); font: 500 .78rem ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .feature-state { font-size: .78rem; color: var(--warning); border: 1px solid currentColor; padding: 5px 9px; border-radius: 999px; white-space: nowrap; }
+.feature-contract { margin-top: 10px; color: var(--on-surface-variant); }
+.feature-contract summary { cursor: pointer; min-height: 40px; display: inline-flex; align-items: center; }
+.contract-grid { display: grid; grid-template-columns: minmax(120px, .4fr) 1fr; gap: 6px 12px; margin: 10px 0 0; padding: 12px; background: var(--surface-container); border-radius: 12px; font-size: .9rem; }
+.contract-grid dt { font-weight: 700; }
+.contract-grid dd { margin: 0; }
+.secondary-copy { display: block; color: var(--on-surface-variant); font-size: .88em; }
 .setting-list { display: grid; gap: 14px; }
 .setting { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--outline-variant); border-radius: var(--radius-md); background: var(--surface); }
 .setting-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
@@ -119,7 +125,9 @@ h3 { font-size: 1.1rem; }
 .regex-output { grid-template-columns: 1fr 100px; }
 .regex-output output { font-size: 2rem; font-weight: 800; }
 .context-menu { position: fixed; z-index: 20; min-width: 240px; background: var(--surface-container); border: 1px solid var(--outline-variant); border-radius: 14px; padding: 10px; box-shadow: var(--shadow); }
-.context-menu input { width: 100%; min-height: 40px; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--outline); background: var(--surface); color: inherit; }
+.context-search { display: flex; gap: 6px; margin-bottom: 8px; }
+.context-search input { width: 100%; min-height: 40px; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--outline); background: var(--surface); color: inherit; }
+.context-search .regex-button { min-height: 40px; padding: 0 9px; }
 .context-menu button { width: 100%; min-height: 40px; border: 0; border-radius: 9px; text-align: left; background: transparent; color: inherit; padding: 0 10px; }
 .context-menu button:hover { background: var(--primary-container); color: var(--on-primary-container); }
 .logo-preview { width: 64px; height: 64px; display: grid; place-items: center; border-radius: 18px; background: var(--primary); color: var(--on-primary); font-size: 30px; overflow: hidden; }

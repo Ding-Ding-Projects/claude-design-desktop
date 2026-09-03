@@ -14,7 +14,7 @@
 - [ ] Bundle the offline article set in the installed application.
 - [ ] Verify the desktop implementation and site equivalents against the complete feature inventory.
 - [ ] Add real built-artifact captures and the committed product recording.
-- [ ] Replace the Open Graph placeholder with a verified product-specific image generated from one source.
+- [ ] Add Open Graph image metadata only after a real product-specific root and served image exist, with byte-equality proof.
 
 ## Release
 
