@@ -19,3 +19,4 @@ declare module "node:http" {
 }
 
 declare const Buffer: any;
+declare const process: { arch?: string };
