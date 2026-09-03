@@ -13,6 +13,7 @@ const rows = new Map([
   ["source", []],
   ["tests", []],
   ["styles-markup", []],
+  ["binary-assets", []],
   ["generated", []],
   ["documentation", []],
   ["tooling", []],
@@ -21,8 +22,9 @@ const rows = new Map([
 
 function category(file) {
   const normalized = file.replaceAll("\\", "/");
+  if (/\.(png|jpe?g|gif|webp|webm|ico|zip|7z|nupkg|exe|dll|woff2?|ttf|otf)$/i.test(normalized)) return "binary-assets";
   if (/^(test|tests|packages\/[^/]+\/test|packages\/[^/]+\/tests)\//.test(normalized) || /\.(test|spec)\.[^.]+$/.test(normalized)) return "tests";
-  if (/^(dist|build|coverage|node_modules)\//.test(normalized)) return "generated";
+  if (/^(dist|coverage|node_modules)\//.test(normalized)) return "generated";
   if (/\.(css|scss|sass|less|html|htm|svg)$/.test(normalized)) return "styles-markup";
   if (/^(docs|README|CHANGELOG|ROADMAP|HANDOFF|SECURITY|CONTRIBUTING|CODE_OF_CONDUCT|LICENSE)/i.test(normalized)) return "documentation";
   if (/^(scripts|build|\.github)\//.test(normalized) || /\.(bat|ps1|mjs|cjs|yml|yaml)$/.test(normalized)) return "tooling";
@@ -31,6 +33,7 @@ function category(file) {
 }
 
 function count(file) {
+  if (category(file) === "binary-assets") return { total: 0, nonBlank: 0 };
   const bytes = readFileSync(path.join(root, file));
   if (bytes.length === 0) return { total: 0, nonBlank: 0 };
   const text = bytes.toString("utf8").replaceAll("\r\n", "\n").replaceAll("\r", "\n");
@@ -45,12 +48,12 @@ const table = [...rows.entries()].map(([name, entries]) => ({
   total: entries.reduce((sum, entry) => sum + entry.total, 0),
   nonBlank: entries.reduce((sum, entry) => sum + entry.nonBlank, 0)
 }));
-const project = table.filter((row) => !["generated"].includes(row.category));
+const project = table.filter((row) => !["generated", "binary-assets"].includes(row.category));
 const result = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   command: "node scripts/line-count.mjs",
-  exclusions: ["node_modules", "build output", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "vendored third-party trees"],
+  exclusions: ["node_modules", "build output", "binary assets", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "vendored third-party trees"],
   rows: table,
   projectTotal: {
     total: project.reduce((sum, row) => sum + row.total, 0),
@@ -60,8 +63,11 @@ const result = {
     total: table.reduce((sum, row) => sum + row.total, 0),
     nonBlank: table.reduce((sum, row) => sum + row.nonBlank, 0)
   },
-  attribution: blameAttribution(files.filter((file) => category(file) !== "generated"))
+  attribution: blameAttribution(files.filter((file) => !["generated", "binary-assets"].includes(category(file))))
 };
+if (result.attribution.countedLines !== result.projectTotal.total) {
+  throw new Error(`Attribution arithmetic mismatch: ${result.attribution.countedLines} blamed lines versus ${result.projectTotal.total} project lines. Per-file mismatches: ${JSON.stringify(result.attribution.mismatches)}.`);
+}
 const estimatedHours = result.projectTotal.nonBlank / 60 * 1.5;
 result.humanEffortEstimate = {
   basis: `${result.projectTotal.nonBlank} surviving non-blank project lines / 60 lines per hour × 1.5 complexity multiplier`,
@@ -80,18 +86,21 @@ if (process.argv.includes("--json")) {
   console.log(`Surviving project lines attributed to people |  | ${result.attribution.personLines} | `);
   console.log(`Estimated human writing time |  | ${result.humanEffortEstimate.hours} hours | estimate only`);
   console.log(`Estimate method: ${result.humanEffortEstimate.basis}.`);
-  console.log("Excluded from project total: node_modules, build output, dependency lockfiles, and vendored third-party trees.");
+  console.log("Excluded from project total: node_modules, build output, binary assets, dependency lockfiles, and vendored third-party trees.");
 }
 
 function blameAttribution(paths) {
   const people = new Map();
+  const fileCounts = [];
   for (const file of paths) {
     const source = execFileSync("git", ["blame", "--line-porcelain", "HEAD", "--", file], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     let author = "unknown";
+    let blamedLines = 0;
     for (const line of source.split("\n")) {
       if (line.startsWith("author ")) author = line.slice("author ".length).trim();
-      else if (line.startsWith("\t")) people.set(author, (people.get(author) || 0) + 1);
+      else if (line.startsWith("\t")) { people.set(author, (people.get(author) || 0) + 1); blamedLines += 1; }
     }
+    fileCounts.push({ file, counted: count(file).total, blamed: blamedLines });
   }
   const rows = [...people.entries()].map(([author, lines]) => ({ author, lines, kind: /claude|automation|bot|agent/i.test(author) ? "agent" : "person" }));
   return {
@@ -99,6 +108,7 @@ function blameAttribution(paths) {
     agentLines: rows.filter((row) => row.kind === "agent").reduce((sum, row) => sum + row.lines, 0),
     personLines: rows.filter((row) => row.kind === "person").reduce((sum, row) => sum + row.lines, 0),
     countedLines: rows.reduce((sum, row) => sum + row.lines, 0),
+    mismatches: fileCounts.filter((entry) => entry.counted !== entry.blamed),
     rule: "Surviving lines are attributed from git blame at HEAD; commits by an automation identity are counted as agent-written."
   };
 }
