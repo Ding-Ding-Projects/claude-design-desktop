@@ -21,7 +21,9 @@ const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 export function normalizeBase32(value: string): string {
   if (value.length > 4096) throw new Error("TOTP secret is too large");
-  const normalized = value.replace(/[\s=-]/g, "").toUpperCase();
+  const compact = value.replace(/\s/g, "");
+  if (!/^[A-Za-z2-7]+=*$/.test(compact)) throw new Error("TOTP secret must be base32 text");
+  const normalized = compact.replace(/=+$/, "").toUpperCase();
   if (!normalized || !/^[A-Z2-7]+$/.test(normalized)) {
     throw new Error("TOTP secret must be base32 text");
   }

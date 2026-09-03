@@ -57,6 +57,7 @@ export class LockManager {
     this.vault = options.vault;
     this.now = options.now ?? (() => Date.now());
     this.maxAttempts = options.maxAttempts ?? 5;
+    if (!Number.isInteger(this.maxAttempts) || this.maxAttempts < 1 || this.maxAttempts > 100) throw new Error("Attempt budget is out of bounds");
     this.state = options.state ?? new MemoryLockStatePersistence();
   }
 
@@ -72,6 +73,7 @@ export class LockManager {
     totpMetadata?: { algorithm: "SHA-1" | "SHA-256" | "SHA-512"; digits: 6 | 7 | 8; period: number };
   }): Promise<LockSummary> {
     const factors = LOCK_POLICY_FACTORS[input.policy];
+    if (!factors) throw new Error("Unknown lock policy");
     for (const factor of factors) {
       if (factor === "pin" && !input.pin) throw new Error("PIN is required by this policy");
       if (factor === "password" && !input.password) throw new Error("Password is required by this policy");
@@ -84,20 +86,25 @@ export class LockManager {
 
     const id = randomId("lock");
     const credentialRefs: InternalLockRecord["credentialRefs"] = {};
-    if (factors.includes("pin") && input.pin !== undefined) {
-      const ref = randomId("pin");
-      await storeHashedSecret(this.vault, ref, input.pin);
-      credentialRefs.pin = ref;
-    }
-    if (factors.includes("password") && input.password !== undefined) {
-      const ref = randomId("password");
-      await storeHashedSecret(this.vault, ref, input.password);
-      credentialRefs.password = ref;
-    }
-    if (factors.includes("totp") && input.totpSecret !== undefined) {
-      const ref = randomId("totp");
-      await this.vault.put(ref, normalizeBase32(input.totpSecret));
-      credentialRefs.totp = ref;
+    try {
+      if (factors.includes("pin") && input.pin !== undefined) {
+        const ref = randomId("pin");
+        await storeHashedSecret(this.vault, ref, input.pin);
+        credentialRefs.pin = ref;
+      }
+      if (factors.includes("password") && input.password !== undefined) {
+        const ref = randomId("password");
+        await storeHashedSecret(this.vault, ref, input.password);
+        credentialRefs.password = ref;
+      }
+      if (factors.includes("totp") && input.totpSecret !== undefined) {
+        const ref = randomId("totp");
+        await this.vault.put(ref, normalizeBase32(input.totpSecret));
+        credentialRefs.totp = ref;
+      }
+    } catch (error) {
+      for (const ref of Object.values(credentialRefs)) if (ref) await this.vault.delete(ref);
+      throw error;
     }
     const record: InternalLockRecord = {
       id,
