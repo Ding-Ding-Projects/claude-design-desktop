@@ -7,7 +7,7 @@ import esbuild from "esbuild";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const distDir = path.join(root, "dist");
-export const desktopDistDir = path.join(distDir, "desktop");
+export const desktopDistDir = distDir;
 export const siteDistDir = path.join(distDir, "site");
 const desktopSource = path.join(root, "apps", "desktop", "src");
 const siteSource = path.join(root, "apps", "site", "src");
@@ -109,7 +109,7 @@ export async function buildDesktop({ mode = "production" } = {}) {
   const main = requiredFile(path.join(desktopSource, "main.ts"), "desktop main entry");
   const preload = requiredFile(path.join(desktopSource, "preload.ts"), "desktop preload entry");
   const renderer = requiredFile(path.join(desktopSource, "renderer.tsx"), "desktop renderer entry");
-  await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: { main, preload }, external: ["electron"], format: "cjs", legalComments: "none", minify: mode === "production", outdir: desktopDistDir, platform: "node", sourcemap: mode !== "production", target: "node22" });
+  await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: { main, preload }, external: ["electron"], format: "cjs", legalComments: "none", minify: mode === "production", outdir: desktopDistDir, outExtension: { ".js": ".cjs" }, platform: "node", sourcemap: mode !== "production", target: "node22" });
   await esbuild.build({ absWorkingDir: root, bundle: true, entryPoints: [renderer], format: "esm", jsx: "automatic", legalComments: "none", minify: mode === "production", outfile: path.join(desktopDistDir, "renderer.js"), platform: "browser", sourcemap: mode !== "production", target: "chrome120" });
 }
 
@@ -124,6 +124,6 @@ export async function buildSite({ mode = "production" } = {}) {
 }
 
 export function verifyBuildOutputs() {
-  for (const output of [path.join(desktopDistDir, "main.js"), path.join(desktopDistDir, "preload.js"), path.join(desktopDistDir, "renderer.js")]) requiredFile(output, "desktop build output");
+  for (const output of [path.join(desktopDistDir, "main.cjs"), path.join(desktopDistDir, "preload.cjs"), path.join(desktopDistDir, "renderer.js")]) requiredFile(output, "desktop build output");
   requiredFile(path.join(siteDistDir, "site.js"), "public site build output");
 }
