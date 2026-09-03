@@ -10,9 +10,9 @@ Run the executable check from the repository root:
 node quality/check-completeness.mjs
 ```
 
-The check validates all 30 canonical feature rows on both user-facing surfaces. Every row names an implementation registration, documentation article, English localization, Traditional Chinese localization, bilingual localization, persistence and reset behavior, focused test, built interaction receipt, genuine capture receipt, recording when motion applies, data boundary, supported and unavailable evidence, and a negative case. Missing paths are reported as failures. The check also validates version provenance and exact design-reference parity tuples.
+The check validates all 30 approved feature rows, with one literal desktop entry and one literal site entry for each row. The approved list includes `status-hub` and `front-screen-provenance`, and uses `accessibility-responsive-sizing` as one combined row. Every row names an implementation registration, documentation article, English localization, Traditional Chinese localization, bilingual localization, persistence and reset behavior, focused test, built interaction receipt, genuine capture receipt, recording when motion applies, data boundary, supported and unavailable evidence, and a negative case. Missing paths are reported as failures. The check also validates version provenance and exact design-reference parity tuples.
 
-The retired-runtime scan reads `quality/retired-runtime-patterns.json` and rejects the old hosted origin, fixture identity, router and gateway wiring, custom protocol handler, interception hooks, request-body logging, legacy runtime paths, and package-output wiring. Source comments are removed before code scanning so a commented-out line cannot satisfy or evade the check.
+The retired-runtime scan reads `quality/retired-runtime-patterns.json` and scans the repository root, hidden workflow directory, build output, package trees, documentation, distribution trees, and staged package trees. It rejects the old hosted origin, fixture identity, static and dynamic router or gateway wiring, CommonJS and ES module imports, custom protocol handlers, CDP and `webRequest` interception hooks, request-body logging, legacy runtime paths, and package-output wiring. Source comments are removed before code scanning so a commented-out line cannot satisfy or evade the check.
 
 Run the red-then-green mutation checks with:
 
@@ -20,7 +20,7 @@ Run the red-then-green mutation checks with:
 node quality/check-completeness.mjs --self-test
 ```
 
-The self-tests remove implementation, route, localization, article, focused test, interaction receipt, capture receipt, package content, and source-symbol entries one at a time. Each mutation must fail, and the original inventory must pass immediately after restoration. Design parity and retired-runtime manifest mutations are covered as separate cases.
+The self-tests physically remove or alter implementation fixtures, source symbols, registration calls, localization files, article files, focused tests, interaction receipts, capture receipts, package records, and provenance records one class at a time. Each mutation asserts that the file or bytes changed, turns red, and restores green. Design parity tuple and duplicate-tuple mutations are covered separately, as is an injected prohibited package-content mutation.
 
 The current extraction base is expected to report failures. The missing feature paths and evidence are intentional until the implementation lanes land, and the retired-runtime findings document paths that still need removal. A green self-test means the checks themselves are sound, not that the product is complete.
 
@@ -28,4 +28,4 @@ The current extraction base is expected to report failures. The missing feature 
 
 Evidence paths are repository-relative literals. Receipts must bind the source commit, built package digest, route, viewport, scale, theme, and privacy result. A capture receipt is not satisfied by a filename alone. Version information comes from package metadata and a recorded build provenance file, with a labeled local timezone and seconds. Invalid provenance must render an explicit unavailable state.
 
-Design parity entries use one exact state, theme, viewport, and display scale for the reference and built application. Each entry names both routes, the Material Design audit, raw captures, a labeled comparison, a machine-readable visual diff, and any intentional deviation with its reason.
+Design parity entries use one exact state, language, theme, viewport, display scale, frozen-time setting, and motion setting for the reference and built application. The tuple matrix explicitly lists the required language, theme, viewport, scale, time, and motion combinations. Duplicate tuples are rejected even when their IDs differ. Each entry names both routes, the Material Design audit, raw captures, a labeled comparison, a machine-readable visual diff, non-placeholder hashes bound to those files, and any intentional deviation with its reason and approval.

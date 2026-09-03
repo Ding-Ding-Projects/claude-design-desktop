@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "inventoryId": "claude-design-desktop-retired-runtime",
-  "scanRoots": ["build", "packages", "docs"],
+  "scanRoots": [".", ".github", "build", "packages", "docs", "dist", "build/staged-package"],
   "rules": [
     {
       "id": "old-hosted-design-url",
@@ -16,7 +16,7 @@
     {
       "id": "router-imports-and-config",
       "description": "Legacy router and gateway imports or configuration must not be shipped.",
-      "patterns": ["^\\s*(?:import|export)\\b[^\\r\\n;]*(?:router|gateway)", "\\bgateway(?:Origin|Auth|Url|Package|Runtime|Model)", "\\brouter(?:Endpoint|Default)\\b"]
+      "patterns": ["^\\s*(?:import|export)\\b[^\\r\\n;]*(?:router|gateway)", "\\brequire\\(\\s*[\"'][^\"']*(?:router|gateway)[^\"']*[\"']\\s*\\)", "\\b(?:gateway|router)(?:Origin|Auth|Url|Package|Runtime|Model|Endpoint|Default)\\b", "\\b(?:config|options|settings)\\.(?:router|gateway)\\b"]
     },
     {
       "id": "ccr-protocol",
