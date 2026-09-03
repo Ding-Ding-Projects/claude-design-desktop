@@ -34,6 +34,7 @@
     "canonicalPlacement": {
       "source": "assets/branding/logo-master.png",
       "destination": { "x": 32, "y": 24, "width": 840, "height": 840 },
+      "placementFillRgb": [33, 20, 65],
       "method": "deterministic nearest-neighbor resize followed by alpha composite in Node"
     },
     "socialPreviewCopies": [

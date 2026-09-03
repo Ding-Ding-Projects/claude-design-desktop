@@ -161,26 +161,28 @@ const resizePixels = (source, width, height) => {
   return { width, height, pixels };
 };
 
-const compositePixels = (backdrop, overlay, x, y) => {
-  const pixels = Buffer.from(backdrop.pixels);
-  if (x < 0 || y < 0 || x + overlay.width > backdrop.width || y + overlay.height > backdrop.height) fail('canonical placement exceeds backdrop');
-  const base = pixels.subarray(0, 3);
-  for (let oy = 0; oy < overlay.height; oy += 1) for (let ox = 0; ox < overlay.width; ox += 1) pixels.set(base, ((y + oy) * backdrop.width + x + ox) * 4);
-  for (let oy = 0; oy < overlay.height; oy += 1) for (let ox = 0; ox < overlay.width; ox += 1) {
-    const from = (oy * overlay.width + ox) * 4;
-    const to = ((y + oy) * backdrop.width + x + ox) * 4;
-    const alpha = overlay.pixels[from + 3] / 255;
-    if (alpha === 1) pixels.set(overlay.pixels.subarray(from, from + 3), to);
-    else if (alpha > 0) for (let channel = 0; channel < 3; channel += 1) pixels[to + channel] = Math.round(overlay.pixels[from + channel] * alpha + pixels[to + channel] * (1 - alpha));
-  }
-  return pixels;
+const assertAlphaState = (decoded, record) => {
+  if (record.alpha.includes('non-opaque') && !decoded.alpha) fail(`${record.path}: manifest requires non-opaque alpha`);
+  if (record.alpha === 'none' && decoded.alpha) fail(`${record.path}: manifest requires no alpha`);
 };
 
-const assertPlacement = (actual, backdrop, canonical, placement) => {
-  const expected = compositePixels(backdrop, resizePixels(canonical, placement.width, placement.height), placement.x, placement.y);
-  for (let y = placement.y; y < placement.y + placement.height; y += 1) for (let x = placement.x; x < placement.x + placement.width; x += 1) {
+const assertPlacementIndependently = (actual, backdrop, canonical, placement, fillRgb) => {
+  if (fillRgb.length !== 3 || fillRgb.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) fail('placementFillRgb must contain three byte values');
+  const scaled = resizePixels(canonical, placement.width, placement.height);
+  for (let y = 0; y < backdrop.height; y += 1) for (let x = 0; x < backdrop.width; x += 1) {
     const at = (y * backdrop.width + x) * 4;
-    for (let channel = 0; channel < 4; channel += 1) if (actual[at + channel] !== expected[at + channel]) fail(`canonical placement pixel mismatch at ${x},${y}`);
+    const inside = x >= placement.x && x < placement.x + placement.width && y >= placement.y && y < placement.y + placement.height;
+    if (!inside) {
+      for (let channel = 0; channel < 4; channel += 1) if (actual[at + channel] !== backdrop.pixels[at + channel]) fail(`backdrop pixel mismatch outside placement at ${x},${y}`);
+      continue;
+    }
+    const sourceAt = ((y - placement.y) * scaled.width + (x - placement.x)) * 4;
+    const alpha = scaled.pixels[sourceAt + 3];
+    const expected = Buffer.from(fillRgb);
+    if (alpha === 255) scaled.pixels.copy(expected, 0, sourceAt, sourceAt + 3);
+    else if (alpha > 0) for (let channel = 0; channel < 3; channel += 1) expected[channel] = Math.round(scaled.pixels[sourceAt + channel] * alpha / 255 + fillRgb[channel] * (255 - alpha) / 255);
+    for (let channel = 0; channel < 3; channel += 1) if (actual[at + channel] !== expected[channel]) fail(`canonical placement pixel mismatch at ${x},${y}`);
+    if (actual[at + 3] !== 255) fail(`canonical placement alpha mismatch at ${x},${y}`);
   }
 };
 
@@ -207,10 +209,11 @@ for (const copy of manifest.assets.socialPreviewCopies) {
 }
 
 const placement = manifest.assets.canonicalPlacement.destination;
+const fillRgb = manifest.assets.canonicalPlacement.placementFillRgb;
 const masterDecoded = decodedByPath.get(manifest.assets.socialPreviewMaster.path);
 const backdropDecoded = decodedByPath.get(manifest.assets.socialPreviewBackdrop.path);
 const canonicalDecoded = decodedByPath.get(manifest.assets.logoMaster.path);
-assertPlacement(masterDecoded.pixels, backdropDecoded, canonicalDecoded, placement);
+assertPlacementIndependently(masterDecoded.pixels, backdropDecoded, canonicalDecoded, placement, fillRgb);
 
 const ico = manifest.assets.derivedDisplayAssets.find((record) => record.format === 'ICO');
 const icoInfo = decodeIco(await readFile(resolve(root, ico.path)), ico.path);
@@ -218,8 +221,10 @@ for (const expectedSize of ico.sizes) if (!icoInfo.sizes.includes(expectedSize))
 
 let trailingByteRegression = 'not-run';
 let placementPixelRegression = 'not-run';
+let fillRegression = 'not-run';
 let crcRegression = 'not-run';
 let icoDimensionRegression = 'not-run';
+let alphaRegression = 'not-run';
 if (selfTest) {
   const logoBytes = await readFile(resolve(root, manifest.assets.logoMaster.path));
   try {
@@ -230,14 +235,28 @@ if (selfTest) {
     trailingByteRegression = 'red-then-green';
   }
   const mutated = Buffer.from(masterDecoded.pixels);
-  const mutationAt = (placement.y * masterDecoded.width + placement.x) * 4;
+  const scaledForSelfTest = resizePixels(canonicalDecoded, placement.width, placement.height);
+  let transparentOffset = -1;
+  for (let offset = 0; offset < scaledForSelfTest.pixels.length; offset += 4) if (scaledForSelfTest.pixels[offset + 3] === 0) { transparentOffset = offset; break; }
+  if (transparentOffset < 0) fail('self-test could not find a transparent scaled-mark pixel');
+  const transparentX = placement.x + (transparentOffset / 4) % placement.width;
+  const transparentY = placement.y + Math.floor((transparentOffset / 4) / placement.width);
+  const mutationAt = (transparentY * masterDecoded.width + transparentX) * 4;
   mutated[mutationAt] ^= 1;
   try {
-    assertPlacement(mutated, backdropDecoded, canonicalDecoded, placement);
+    assertPlacementIndependently(mutated, backdropDecoded, canonicalDecoded, placement, fillRgb);
     fail('self-test placement pixel mutation was accepted');
   } catch (error) {
     if (!String(error.message).includes('canonical placement pixel mismatch')) throw error;
     placementPixelRegression = 'red-then-green';
+  }
+  const changedFill = [...fillRgb]; changedFill[0] = (changedFill[0] + 1) % 256;
+  try {
+    assertPlacementIndependently(masterDecoded.pixels, backdropDecoded, canonicalDecoded, placement, changedFill);
+    fail('self-test placement fill mutation was accepted');
+  } catch (error) {
+    if (!String(error.message).includes('canonical placement pixel mismatch')) throw error;
+    fillRegression = 'red-then-green';
   }
   const crcMutation = Buffer.from(logoBytes);
   crcMutation[16] ^= 1;
@@ -259,6 +278,15 @@ if (selfTest) {
     if (!String(error.message).includes('embedded dimensions mismatch')) throw error;
     icoDimensionRegression = 'red-then-green';
   }
+  const opaqueCanonical = { ...canonicalDecoded, alpha: false, pixels: Buffer.from(canonicalDecoded.pixels) };
+  for (let offset = 3; offset < opaqueCanonical.pixels.length; offset += 4) opaqueCanonical.pixels[offset] = 255;
+  try {
+    assertAlphaState(opaqueCanonical, manifest.assets.logoMaster);
+    fail('self-test non-opaque alpha mutation was accepted');
+  } catch (error) {
+    if (!String(error.message).includes('manifest requires non-opaque alpha')) throw error;
+    alphaRegression = 'red-then-green';
+  }
 }
 
-console.log(JSON.stringify({ ok: true, checked, identicalWideCopies: true, icoSizes: icoInfo.sizes, canonicalPlacement: placement, trailingByteRegression, placementPixelRegression, crcRegression, icoDimensionRegression }, null, 2));
+console.log(JSON.stringify({ ok: true, checked, identicalWideCopies: true, icoSizes: icoInfo.sizes, canonicalPlacement: placement, placementFillRgb: fillRgb, trailingByteRegression, placementPixelRegression, fillRegression, crcRegression, icoDimensionRegression, alphaRegression }, null, 2));

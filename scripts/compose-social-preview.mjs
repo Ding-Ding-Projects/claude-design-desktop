@@ -84,7 +84,7 @@ const resize = (source, width, height) => {
 };
 const alphaComposite = (backdrop, mark, x, y) => {
   if (x < 0 || y < 0 || x + mark.width > backdrop.width || y + mark.height > backdrop.height) fail('placement exceeds backdrop');
-  const base = backdrop.pixels.subarray(0, 3);
+  const base = Buffer.from([33, 20, 65]);
   for (let my = 0; my < mark.height; my += 1) for (let mx = 0; mx < mark.width; mx += 1) backdrop.pixels.set(base, ((y + my) * backdrop.width + x + mx) * 4);
   for (let my = 0; my < mark.height; my += 1) for (let mx = 0; mx < mark.width; mx += 1) {
     const source = (my * mark.width + mx) * 4; const target = ((y + my) * backdrop.width + x + mx) * 4; const alpha = mark.pixels[source + 3] / 255;
