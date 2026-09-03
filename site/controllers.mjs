@@ -21,7 +21,7 @@ export function createVisitorController(store, initial = {}) {
       const policy = options.policy || 'password';
       const durationMs = Number.isFinite(options.durationMs) && options.durationMs >= 0 ? options.durationMs : 0;
       if (!targetId || typeof phrase !== 'string' || phrase.length < 4 || !policyNames.has(policy)) return false;
-      state.locks[targetId] = { targetId, policy, browserStorageOnly: true, credentialDigest: digest(phrase), locked: true, unlockExpiresAt: null, attempts: [], durationMs };
+      state.locks[targetId] = { targetId, policy, credentialStorage: 'browser-storage-only', browserStorageOnly: true, credentialDigest: digest(phrase), locked: true, unlockExpiresAt: null, attempts: [], durationMs };
       persist();
       return true;
     },
