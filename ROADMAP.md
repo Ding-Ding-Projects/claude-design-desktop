@@ -28,7 +28,7 @@ This checklist describes the standalone product extraction. A checked item is im
 - [ ] Add projects, files, conversations, sharing, previews, exports, REST, Connect, JSON, and MCP parity.
 - [ ] Add read-only legacy migration and the one-release router handoff.
 - [ ] Add the complete user-facing feature inventory, documentation links, localization, and accessibility evidence.
-- [ ] Add the bundled `@openai/codex` runtime with versioned provenance and matching notices.
+- [x] Add the bundled `@openai/codex@0.152.1` runtime with generated schemas, versioned provenance, hash verification, and matching notices.
 - [ ] Prove the router bridge as a read-only migration aid, then remove the bridge and all hosted-shell/provider-routing paths before shipping.
 - [ ] Verify compatibility and migration parity across the supported legacy inputs, with explicit refusal and recovery states.
 - [ ] Prove two isolated Windows profiles use the same stable identity fields and separate local state without contacting the hosted shell or router.
@@ -36,9 +36,10 @@ This checklist describes the standalone product extraction. A checked item is im
 ## Build, release, and evidence
 
 - [x] Add the root package manifest and focused shell test route.
-- [ ] Add the one-click dependency bootstrap.
-- [ ] Add `build.bat` and `build-installer.bat` with reproducible Windows x64 Squirrel.Windows packaging.
-- [ ] Verify unsigned installer output, hashes, release metadata, and the required third-party notices.
+- [x] Add the one-click dependency bootstrap, including explicit materialization of the pinned Electron runtime.
+- [x] Add `build.bat` and `build-installer.bat` with reproducible Windows x64 Squirrel.Windows packaging.
+- [x] Verify local unsigned installer output, full package contents, bundled runtime, seven-size executable icon, and hashes.
+- [ ] Publish and verify release metadata and the required third-party notices on the public release record.
 - [ ] Resolve the two high-severity dependency audit findings in the exact `electron@42.3.3` pin before stable release.
 - [ ] Add the real built-artifact capture harness and screen recording route.
 - [ ] Capture the front screen, settings, error and empty states, narrow layout, light theme, and dark theme from the built artifact.
@@ -57,8 +58,8 @@ This checklist describes the standalone product extraction. A checked item is im
 
 ## Next safe actions
 
-- [ ] Reconcile the product shell and package manifest lanes before claiming a runnable build.
-- [ ] Run the focused Electron tests after the workspace toolchain is available.
+- [x] Reconcile the product shell and package manifest lanes and produce a runnable local build.
+- [x] Run the focused Electron tests after the workspace toolchain is available.
 - [ ] Validate the packaged runtime and capture real evidence before ticking any user-facing feature.
 - [ ] Keep the 16,728-line historical extraction module out of the shipping tip and retain its exclusion evidence.
 - [x] Make one deliberate integration commit for the nine root-record add/add conflicts after site-docs tip `c2224116ce65a59fd82e1a7332edbf0cb4a2f5d9` settled.

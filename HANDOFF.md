@@ -2,7 +2,7 @@
 
 ## Current state
 
-This working tree carries the product-record lane for the standalone Claude Design Desktop extraction. The lane is based on source commit `4a3c267e7e22f6636a02542554309cd49cd41e9d` from `Ding-Ding-Projects/claude-code-router` and is checked out on `codex/product-docs`.
+This working tree carries the integrated construction checkpoint for the standalone Claude Design Desktop extraction. It is based on source commit `4a3c267e7e22f6636a02542554309cd49cd41e9d` from `Ding-Ding-Projects/claude-code-router` and is checked out on `codex/standalone-foundation` pending default-branch integration.
 
 The shipping product contract is local-only. It never contacts the hosted shell at `https://claude-design.ccrdesk.top/design` and never contacts the legacy router. The source files that implement those historical compatibility paths are extraction material and must be removed from the shipping tip.
 
@@ -19,7 +19,19 @@ The shipping product contract is local-only. It never contacts the hosted shell 
 
 The display label is presentation-only. It must not alter any identity field or local data location.
 
-The product-record lane added public root records and categorized product documentation. The integrated tree now also contains the reviewed runtime-shell foundation and the reviewed public preview foundation. Release tooling, account and project hosts, migration, captures, packaging, and stable release remain open.
+The integrated tree contains the reviewed runtime shell, public preview, universal pending registry, local model core, appearance foundation, deterministic design-reference application, owned branding, disabled converter foundation, and release tooling. Account and project hosts, migration, full compatibility, complete utilities, captures, router handoff/removal, and stable release remain open.
+
+## Verified local package checkpoint
+
+- `build.bat /s` completed from the root and materialized the pinned Electron runtime.
+- `build-installer.bat /s` completed through genuine unsigned Squirrel.Windows packaging.
+- `Setup.exe` SHA-256: `f09a97f2e209041b9f15fb8ace9cb94b1f7dae75d267f71858de370ebdb0b6d3`.
+- `Setup.exe`, `Claude Design Desktop.exe`, and the execution stub have empty PE certificate tables.
+- The full `.nupkg` is referenced by `RELEASES`, contains `app.asar`, and contains the pinned Codex app-server runtime.
+- The packaged executable carries the committed `16`, `24`, `32`, `48`, `64`, `128`, and `256` pixel icon set.
+- The desktop title bar and BrowserWindow consume the committed mark.
+- The public page carries an absolute HTTPS Open Graph image URL, image dimensions, alt text, and a large-card declaration. The root and served images are byte-identical.
+- Root TypeScript, 22 focused desktop tests, release tooling, runtime validation, updater validation, static site inventory, design-reference checks, branding checks, and 26 converter package tests passed before this checkpoint.
 
 ## Integrated preview foundation
 
@@ -35,28 +47,28 @@ The product-record lane added public root records and categorized product docume
 | --- | --- | --- |
 | Product identity and scope | `README.md`, `docs/product/overview.md` | Verified as documentation |
 | MIT license | `LICENSE` | Preserved from source baseline |
-| Third-party notice | `THIRD_PARTY_NOTICES.md` | Notice recorded; runtime package not yet present |
+| Third-party notice | `THIRD_PARTY_NOTICES.md`, packaged runtime | Notice recorded and runtime packaged; release-page proof pending |
 | Security model | `SECURITY.md`, `docs/product/security.md` | Verified as documentation |
 | Source extraction provenance | `provenance/extraction.md` | Baseline and filter recorded |
 | Stable identity | `README.md`, `docs/product/overview.md` | Values recorded; runtime proof pending integration |
 | Shell source checks | `package.json`, `apps/desktop`, `packages/ui-shell` | Integrated; 22 focused tests passed before this merge |
 | Public preview source checks | `site/test-*.mjs` | Integrated; source and controller checks passed |
-| Release build route | `CONTRIBUTING.md`, `docs/product/build-and-contribute.md` | Planned; installer path not yet verified |
+| Release build route | Root build scripts and `dist/squirrel-windows/squirrel-windows` | Locally verified; public release proof pending |
 | Captures and recording | `README.md`, `ROADMAP.md` | Pending; no real capture exists |
 
 ## Open blockers
 
-1. The current extraction has a root package manifest and focused shell checks, but no verified one-click installer build, so no runnable packaged product or installer can be claimed yet.
-2. The target repository's remote has no published refs yet. Verify the first intended default-branch push and release transaction before cleanup.
+1. The target repository's remote has no published refs yet. Verify the first intended default-branch push and prerelease transaction before cleanup.
+2. The local package is a construction preview only. Authentication, project-domain integration, migration, compatibility, and most canonical feature surfaces remain unmerged or incomplete.
 3. The repository has no verified capture or recording in this baseline.
-4. The `@openai/codex` runtime notice is recorded, but its exact packaged version and source revision must be added when the runtime lane lands.
+4. The exact `@openai/codex@0.152.1` runtime is packaged and schema-checked, but real two-profile authentication and OS-vault isolation remain unverified.
 5. The 16,728-line historical module `packages/electron/bundled-plugins/claude-design/index.cjs` is present in the extraction material and must be absent from the shipping tip.
 6. The shipping product still needs a router bridge migration proof followed by bridge removal proof. No router bridge may remain in the 1.0.0 shipping product.
 7. `npm audit` reports two high-severity findings through the exact `electron@42.3.3` pin. The available patched 42.x version is `42.11.1`; no pin change was made because the approved plan names `42.3.3` exactly. Stable release remains blocked pending that product decision.
 
 ## Next owner
 
-The integration owner has reconciled the nine root-record add/add conflicts by retaining product identity and provenance together with the current preview implementation and source checks. Next, integrate the remaining reviewed domain packages, remove the historical hosted/runtime paths from the shipping tree, run the real build and installer routes, and replace this source-only handoff with exact packaged evidence. Preserve the 2025 `musistudio` MIT notice and complete the router bridge migration then removal before 1.0.0. Keep every open roadmap item unticked until the corresponding built-product proof exists.
+This construction checkpoint was requested before the complete product was finished. Preserve every unmerged lane at its committed tip. Next, integrate the remaining independently reviewed domain packages, remove the historical hosted/runtime paths from the shipping tree, complete real built-product interaction evidence, and execute the router bridge migration then removal before 1.0.0. Preserve the 2025 `musistudio` MIT notice. Keep every open roadmap item unticked until the corresponding built-product proof exists.
 
 ## Suggested reading
 

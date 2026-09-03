@@ -75,8 +75,8 @@ jobs:
         shell: pwsh
         run: |
           $targets = @(
-            (Join-Path $pwd 'dist/squirrel-windows'),
-            (Join-Path $pwd 'packages/electron/dist/squirrel-windows')
+            (Join-Path $pwd 'dist/squirrel-windows/squirrel-windows'),
+            (Join-Path $pwd 'packages/electron/dist/squirrel-windows/squirrel-windows')
           ) | Where-Object { Test-Path -LiteralPath $_ }
           foreach ($target in $targets) {
             Copy-Item -LiteralPath (Join-Path $target 'Setup.exe') -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
@@ -130,7 +130,7 @@ jobs:
           foreach ($asset in $assets) { $hashLines += "$(Split-Path $asset -Leaf): $((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant())" }
           $notes += $hashLines
           $notes -join "`n" | Out-File -FilePath (Join-Path $env:RELEASE_ROOT 'release-notes.md') -Encoding utf8
-          gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Claude Design Desktop $tag" --notes-file (Join-Path $env:RELEASE_ROOT 'release-notes.md') @assets
+          gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Claude Design Desktop $tag" --notes-file (Join-Path $env:RELEASE_ROOT 'release-notes.md') --prerelease @assets
           if ($LASTEXITCODE -ne 0) { throw "gh release create exited with code $LASTEXITCODE." }
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
