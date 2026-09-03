@@ -20,7 +20,7 @@ This file is a sanitized public mirror of the shared contribution and safety gui
 
 ## Stable identity
 
-The stable identity contract is package `@ding-ding-projects/claude-design-desktop`, app ID `com.dingdingprojects.claudedesigndesktop`, executable `Claude Design Desktop`, protocol `claude-design-desktop`, and local data root `%LOCALAPPDATA%\\Ding-Ding-Projects\\ClaudeDesignDesktop`. The public URL is `https://ding-ding-projects.github.io/claude-design-desktop/`. A display-label preference is presentation-only and must not alter any identity field.
+The stable identity contract is package `@ding-ding-projects/claude-design-desktop`, app ID `com.dingdingprojects.claudedesigndesktop`, executable `Claude Design Desktop.exe`, protocol `claude-design-desktop://`, and local data root `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop`. The public URL is `https://ding-ding-projects.github.io/claude-design-desktop/`. A display-label preference is presentation-only and must not alter any identity field.
 
 ## Documentation and verification
 

@@ -8,9 +8,9 @@ These values identify the shipping product and must remain stable across release
 | --- | --- |
 | Package | `@ding-ding-projects/claude-design-desktop` |
 | App ID | `com.dingdingprojects.claudedesigndesktop` |
-| Executable | `Claude Design Desktop` |
-| Protocol | `claude-design-desktop` |
-| Local data root | `%LOCALAPPDATA%\\Ding-Ding-Projects\\ClaudeDesignDesktop` |
+| Executable | `Claude Design Desktop.exe` |
+| Protocol | `claude-design-desktop://` |
+| Local data root | `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop` |
 | Public URL | `https://ding-ding-projects.github.io/claude-design-desktop/` |
 
 The public URL is the documentation and landing destination. It is not the desktop runtime, and the runtime must not contact it as a hosted shell. The runtime must not contact the legacy `claude-code-router` project either.

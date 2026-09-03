@@ -23,7 +23,7 @@ The source revision was verified as a commit object before documentation was wri
 | `4a3c267e7e22f6636a02542554309cd49cd41e9d` | `dfdffe8` | Historical source baseline mapped to the existing standalone extraction tip |
 | `4a3c267e7e22f6636a02542554309cd49cd41e9d` | `6dfcfdb0b0310c50c50e91e9a625622c2c85968c` | Product-record documentation added after the extraction tip |
 
-The filtered tip for the extraction is `dfdffe8`. The product-record commits after that tip are documentation records and do not broaden the filtered source set.
+The filtered target-history anchor and extraction tip is explicitly `dfdffe8`. The product-record commits after that tip are documentation records and do not broaden the filtered source set.
 
 ## Filtered-history method
 
@@ -45,6 +45,16 @@ git rev-list --reverse 4a3c267e7e22f6636a02542554309cd49cd41e9d -- packages/elec
 ```
 
 These queries identify the filtered history that informs the extraction. No source commit was rewritten, squashed, or silently relabelled by this documentation lane. The target checkout began from the existing standalone baseline `dfdffe8`, so later implementation commits must retain their own source and target SHAs in the integration handoff.
+
+## Temporary filter-repo command
+
+The temporary history-filter operation was not executed in this product-record lane. No temporary clone, rewritten history, or generated source-to-target mapping file exists. The exact command and options reserved for the extraction lane are recorded here so the operation is reproducible and reviewable:
+
+```text
+git filter-repo --force --refs 4a3c267e7e22f6636a02542554309cd49cd41e9d --path packages/electron/bundled-plugins/claude-design/index.cjs --path packages/electron/bundled-plugins/claude-design/plugin.json --path packages/electron/bundled-plugins/claude-design/README.md --path packages/electron/src/main/claude-design-window.ts --path packages/electron/src/main/plugin-app-url.ts --path packages/electron/test/unit/claude-design-plugin-assets.test.ts --path packages/electron/test/unit/claude-design-window.test.ts --path packages/electron/test/unit/plugin-app-url.test.ts --path build/build.mjs --path build/esbuild.config.mjs --path docs/src/content/docs/en/configuration/agents/claude-design.md --path docs/src/content/docs/zh/configuration/agents/claude-design.md --replace-refs delete-no-add
+```
+
+Because the command was not run here, it produced no temporary output directory and no machine-generated mapping report. The current source-to-target mapping is the explicit table in this file, anchored to filtered target-history tip `dfdffe8`. The extraction lane must write and review any future generated mapping before using it as release evidence.
 
 ## Retained paths and source mapping
 

@@ -12,7 +12,7 @@ The current extraction is not a published installer. Do not treat an unbuilt che
 - Local-only project and sharing data must remain local unless a user explicitly starts an operation that sends it to a configured endpoint.
 - Network requests must use bounded timeouts, explicit allowlists, and response validation. Redirects, embedded credentials, and unbounded payloads are not acceptable defaults.
 - The desktop shell must preserve the stable product identity when a user changes display preferences. A display label must never move the data directory, package identity, update feed, or executable identity.
-- Stable identity fields are package `@ding-ding-projects/claude-design-desktop`, app ID `com.dingdingprojects.claudedesigndesktop`, executable `Claude Design Desktop`, protocol `claude-design-desktop`, and local data root `%LOCALAPPDATA%\\Ding-Ding-Projects\\ClaudeDesignDesktop`. The public URL is `https://ding-ding-projects.github.io/claude-design-desktop/`.
+- Stable identity fields are package `@ding-ding-projects/claude-design-desktop`, app ID `com.dingdingprojects.claudedesigndesktop`, executable `Claude Design Desktop.exe`, protocol `claude-design-desktop://`, and local data root `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop`. The public URL is `https://ding-ding-projects.github.io/claude-design-desktop/`.
 - Packaged Windows installers are unsigned. Release notes must warn users that the operating system may show an unknown-publisher or SmartScreen warning. No signing key or certificate belongs in this project.
 
 ## Reporting a vulnerability

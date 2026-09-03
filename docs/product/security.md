@@ -16,7 +16,7 @@ Network calls must use explicit destinations, bounded timeouts, response-size li
 
 The supported delivery target is Windows x64 for this phase. The installer will be unsigned and may trigger an unknown-publisher or SmartScreen warning. No code-signing key or certificate is required or permitted for this project.
 
-The stable identity fields are package `@ding-ding-projects/claude-design-desktop`, app ID `com.dingdingprojects.claudedesigndesktop`, executable `Claude Design Desktop`, protocol `claude-design-desktop`, and local data root `%LOCALAPPDATA%\\Ding-Ding-Projects\\ClaudeDesignDesktop`. The public URL is `https://ding-ding-projects.github.io/claude-design-desktop/`. The display label is separate and presentation-only.
+The stable identity fields are package `@ding-ding-projects/claude-design-desktop`, app ID `com.dingdingprojects.claudedesigndesktop`, executable `Claude Design Desktop.exe`, protocol `claude-design-desktop://`, and local data root `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop`. The public URL is `https://ding-ding-projects.github.io/claude-design-desktop/`. The display label is separate and presentation-only.
 
 ## Reporting
 

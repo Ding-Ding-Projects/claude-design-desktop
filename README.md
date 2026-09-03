@@ -20,9 +20,9 @@ Claude Design Desktop is an unofficial local design workspace with a product-own
 | --- | --- |
 | Package | `@ding-ding-projects/claude-design-desktop` |
 | App ID | `com.dingdingprojects.claudedesigndesktop` |
-| Executable | `Claude Design Desktop` |
-| Protocol | `claude-design-desktop` |
-| Local data root | `%LOCALAPPDATA%\\Ding-Ding-Projects\\ClaudeDesignDesktop` |
+| Executable | `Claude Design Desktop.exe` |
+| Protocol | `claude-design-desktop://` |
+| Local data root | `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop` |
 | Public URL | `https://ding-ding-projects.github.io/claude-design-desktop/` |
 
 The display label is separate from these identity fields. A future user-selected label may change visible product copy only. It must never change the package, app ID, executable, protocol, data root, or public URL.

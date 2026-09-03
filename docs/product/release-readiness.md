@@ -14,7 +14,7 @@ A supported Windows release must use genuine Squirrel.Windows packaging and incl
 
 The packaged application must prove that every required runtime is inside the installer and discoverable by the running product. If `@openai/codex` is bundled, its exact version, source revision, Apache-2.0 notice, and package hash must be recorded with the release evidence.
 
-The stable package is `@ding-ding-projects/claude-design-desktop`, app ID is `com.dingdingprojects.claudedesigndesktop`, executable is `Claude Design Desktop`, protocol is `claude-design-desktop`, and local data root is `%LOCALAPPDATA%\\Ding-Ding-Projects\\ClaudeDesignDesktop`. A display-label change must not alter those values.
+The stable package is `@ding-ding-projects/claude-design-desktop`, app ID is `com.dingdingprojects.claudedesigndesktop`, executable is `Claude Design Desktop.exe`, protocol is `claude-design-desktop://`, and local data root is `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop`. A display-label change must not alter those values.
 
 ## Evidence required before publication
 

@@ -10,7 +10,7 @@ This checklist describes the standalone product extraction. A checked item is im
 - [x] Record the source extraction baseline and filtered-history method in [`provenance/extraction.md`](provenance/extraction.md).
 - [x] Add product, licensing, security, build, contribution, roadmap, and handoff records.
 - [x] Add a sanitized public guidance mirror in [`AGENTS.md`](AGENTS.md).
-- [x] Reconcile root product records with site-docs tip `17c981984dadcbeacf77a5dd4fb3253ca3f72687` without copying site implementation files.
+- [x] Reconcile root product records with site-docs tip `e6d5354` without copying site implementation files.
 
 ## Desktop product
 
@@ -50,3 +50,4 @@ This checklist describes the standalone product extraction. A checked item is im
 - [ ] Run the focused Electron tests after the workspace toolchain is available.
 - [ ] Validate the packaged runtime and capture real evidence before ticking any user-facing feature.
 - [ ] Keep the 16,728-line historical extraction module out of the shipping tip and retain its exclusion evidence.
+- [ ] Make one deliberate integration commit for the known nine add/add conflicts after site-docs tip `e6d5354` settles; do not resolve those conflicts in this lane.

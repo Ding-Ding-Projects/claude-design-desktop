@@ -12,9 +12,9 @@ The shipping product contract is local-only. It never contacts the hosted shell 
 | --- | --- |
 | Package | `@ding-ding-projects/claude-design-desktop` |
 | App ID | `com.dingdingprojects.claudedesigndesktop` |
-| Executable | `Claude Design Desktop` |
-| Protocol | `claude-design-desktop` |
-| Local data root | `%LOCALAPPDATA%\\Ding-Ding-Projects\\ClaudeDesignDesktop` |
+| Executable | `Claude Design Desktop.exe` |
+| Protocol | `claude-design-desktop://` |
+| Local data root | `%LOCALAPPDATA%\Ding-Ding-Projects\ClaudeDesignDesktop` |
 | Public URL | `https://ding-ding-projects.github.io/claude-design-desktop/` |
 
 The display label is presentation-only. It must not alter any identity field or local data location.
@@ -45,7 +45,7 @@ The lane added public root records and categorized product documentation. It did
 
 ## Next owner
 
-The integration owner should review this commit against site-docs tip `17c981984dadcbeacf77a5dd4fb3253ca3f72687`, merge it with the implementation and site lanes, rerun the documentation link checks, then update the handoff with the integrated default-branch commit and real build evidence. Reconcile both repositories independently, preserve the 2025 `musistudio` MIT notice, and complete the router bridge migration then removal before 1.0.0. Keep every open roadmap item unticked until the corresponding built-artifact proof exists.
+The integration owner should review this commit against the current site-docs tip `e6d5354`, merge it with the implementation and site lanes, rerun the documentation link checks, then update the handoff with the integrated default-branch commit and real build evidence. Do not resolve the known nine add/add conflicts in this lane; the integration owner should make one deliberate integration commit after the site tip settles. Reconcile both repositories independently, preserve the 2025 `musistudio` MIT notice, and complete the router bridge migration then removal before 1.0.0. Keep every open roadmap item unticked until the corresponding built-artifact proof exists.
 
 ## Suggested reading
 
