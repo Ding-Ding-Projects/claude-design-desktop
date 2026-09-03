@@ -36,10 +36,12 @@ const bridge: DesignerBridge = {
   app: {
     provenance: () => ipcRenderer.invoke("app:provenance", { version: REQUEST_VERSION }),
     onRoute: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => { if (isAppRouteEvent(payload)) listener(payload); };
+      const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => { if (isAppRouteEvent(payload)) { listener(payload); void ipcRenderer.invoke("app:route-ack", { version: REQUEST_VERSION, deliveryId: payload.deliveryId }); } };
       ipcRenderer.on("app:route", handler);
       return () => ipcRenderer.removeListener("app:route", handler);
     },
+    rendererReady: () => ipcRenderer.invoke("app:renderer-ready", { version: REQUEST_VERSION }),
+    acknowledgeRoute: (deliveryId) => ipcRenderer.invoke("app:route-ack", { version: REQUEST_VERSION, deliveryId }),
   },
 };
 

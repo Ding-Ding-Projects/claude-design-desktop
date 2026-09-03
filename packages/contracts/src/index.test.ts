@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAccountEvent } from "./index";
+import { isAccountEvent, isAppRouteEvent } from "./index";
 
 const account = { slotId: "slot-1", label: "Local", email: null, planType: null, state: "signedOut", lastVerifiedAt: null } as const;
 
@@ -13,4 +13,9 @@ describe("isAccountEvent", () => {
     expect(isAccountEvent({ type: "updated", account: { ...account, slotId: "x".repeat(129) } })).toBe(false);
     expect(isAccountEvent({ type: "error", slotId: "slot-1", message: "x".repeat(241) })).toBe(false);
   });
+});
+
+describe("isAppRouteEvent", () => {
+  it("accepts a bounded acknowledged route event", () => expect(isAppRouteEvent({ version: 1, deliveryId: "route-1", route: { type: "home" }, status: "navigate" })).toBe(true));
+  it("rejects an unbounded delivery id", () => expect(isAppRouteEvent({ version: 1, deliveryId: "x".repeat(129), route: { type: "home" }, status: "navigate" })).toBe(false));
 });

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, screen, session, shell } from "electron";
+import { app, BrowserWindow, Menu, dialog, screen, session, shell } from "electron";
 import { ipcMain } from "electron/main";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +10,8 @@ import { parsePersistedState, type PersistedState, type WindowBounds } from "./p
 import { configureSessionSecurity } from "./session-security";
 import { protocolRouteEvent } from "./protocol-delivery";
 import { runAfterReady } from "./ready-bootstrap";
+import { acknowledgeRoute, beginRouteDelivery, canDeliverRoute, type RouteLifecycle } from "./route-lifecycle";
+import { randomUUID } from "node:crypto";
 
 const APP_ID = "com.dingdingprojects.claudedesigndesktop";
 const PRODUCT_NAME = "Claude Design Desktop";
@@ -22,8 +24,7 @@ let statePath = "";
 let state: PersistedState = { version: 1, maximized: false };
 let lastNormalBounds: WindowBounds | undefined;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
-let pendingRoute: ProtocolRoute | null = null;
-let rendererReady = false;
+let routeState: RouteLifecycle = { rendererLoaded: false, rendererAcknowledged: false, pendingRoute: null, inFlightDeliveryId: null };
 
 function stableUserDataPath() {
   const localAppData = process.env.LOCALAPPDATA;
@@ -138,20 +139,24 @@ function registerIpc() {
   ipcMain.handle("projects:create", (event, input: unknown) => { assertRequest(event, input, ["version", "name"]); if (!isRecord(input) || typeof input.name !== "string" || input.name.trim().length < 1 || input.name.trim().length > 120) throw new TypeError("Invalid project creation request"); return unavailable("Project creation"); });
   ipcMain.handle("projects:open", (event, input: unknown) => { assertRequest(event, input, ["version", "projectId"]); if (!isRecord(input) || typeof input.projectId !== "string" || input.projectId.length < 1 || input.projectId.length > 200) throw new TypeError("Invalid project id"); return unavailable("Project opening"); });
   ipcMain.handle("app:provenance", (event, input: unknown): AppProvenance => { assertRequest(event, input, ["version"]); const value = readPackagedProvenance(join(app.getAppPath(), "provenance.json"), app.getVersion()); return { version: value.version, updatedAt: value.updatedAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }; });
+  ipcMain.handle("app:renderer-ready", (event, input: unknown) => { assertRequest(event, input, ["version"]); routeState = { ...routeState, rendererAcknowledged: true }; deliverProtocolRoute(); });
+  ipcMain.handle("app:route-ack", (event, input: unknown) => { assertRequest(event, input, ["version", "deliveryId"]); if (!isRecord(input) || typeof input.deliveryId !== "string" || input.deliveryId.length < 1 || input.deliveryId.length > 128) throw new TypeError("Invalid route delivery id"); routeState = acknowledgeRoute(routeState, input.deliveryId); });
 }
 
 function routeProtocol(argv: string[]) {
   const candidate = argv.find((value) => value.startsWith(`${PROTOCOL_SCHEME}://`));
   if (!candidate) return;
   const route = parseProtocolRoute(candidate);
-  if (route) { pendingRoute = route; deliverProtocolRoute(); }
+  if (route) { routeState = { ...routeState, pendingRoute: route, inFlightDeliveryId: null }; deliverProtocolRoute(); }
 }
 
 function deliverProtocolRoute() {
-  if (!rendererReady || !mainWindow || mainWindow.isDestroyed() || !pendingRoute) return;
-  const route = pendingRoute;
-  pendingRoute = null;
-  mainWindow.webContents.send("app:route", protocolRouteEvent(route));
+  if (!mainWindow || mainWindow.isDestroyed() || !canDeliverRoute(routeState)) return;
+  const route = routeState.pendingRoute;
+  if (!route) return;
+  const deliveryId = randomUUID();
+  routeState = beginRouteDelivery(routeState, deliveryId);
+  mainWindow.webContents.send("app:route", protocolRouteEvent(route, deliveryId));
 }
 
 async function createWindow() {
@@ -171,7 +176,7 @@ async function createWindow() {
   mainWindow.webContents.on("before-input-event", (event, input) => { if (input.type === "keyDown" && input.alt && input.key === " ") { event.preventDefault(); showSystemMenu(); } });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (isReviewedExternalHttps(url)) void shell.openExternal(url); return { action: "deny" }; });
   await mainWindow.loadFile(join(__dirname, "renderer.html"));
-  rendererReady = true;
+  routeState = { ...routeState, rendererLoaded: true };
   deliverProtocolRoute();
 }
 
@@ -185,6 +190,6 @@ else {
   routeProtocol(process.argv);
   app.on("second-instance", (_event, commandLine) => { routeProtocol(commandLine); if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
   app.on("open-url", (event, url) => { event.preventDefault(); routeProtocol([url]); });
-  runAfterReady(() => app.whenReady().then(() => undefined), () => configureSessionSecurity(session.defaultSession), async () => { statePath = join(app.getPath("userData"), "state.json"); state = loadState(); registerIpc(); await createWindow(); });
+  runAfterReady(() => app.whenReady().then(() => undefined), () => configureSessionSecurity(session.defaultSession), async () => { statePath = join(app.getPath("userData"), "state.json"); state = loadState(); registerIpc(); await createWindow(); }).catch((error: unknown) => { console.error("Startup failed", error instanceof Error ? error.message : "unknown error"); dialog.showErrorBox(PRODUCT_NAME, "The application could not start. Check the local logs for details."); app.quit(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 }

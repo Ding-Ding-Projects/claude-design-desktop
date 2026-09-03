@@ -39,10 +39,14 @@ function App() {
     });
   }, []);
 
-  useEffect(() => window.designer.app.onRoute((event) => {
-    if (event.status === "unavailable") setNotice(event.message ?? "The requested project host is unavailable");
-    else setActivePage(event.route.type === "open-project" ? "projects" : "home");
-  }), []);
+  useEffect(() => {
+    const unsubscribe = window.designer.app.onRoute((event) => {
+      if (event.status === "unavailable") setNotice(event.message ?? "The requested project host is unavailable");
+      else setActivePage(event.route.type === "open-project" ? "projects" : "home");
+    });
+    void window.designer.app.rendererReady().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Renderer readiness could not be acknowledged"));
+    return unsubscribe;
+  }, []);
 
   const projectFilter = useMemo(() => {
     if (!regexMode) return { items: projects.filter((project) => project.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())), error: null };

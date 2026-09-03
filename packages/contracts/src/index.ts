@@ -49,23 +49,24 @@ export type AccountEvent =
 export type WindowControlState = { maximized: boolean };
 
 export type ProtocolRoute = { type: "home" } | { type: "open-project"; projectId: string };
-export type AppRouteEvent = { version: 1; route: ProtocolRoute; status: "navigate" | "unavailable"; message?: string };
+export type AppRouteEvent = { version: 1; deliveryId: string; route: ProtocolRoute; status: "navigate" | "unavailable"; message?: string };
 
 export function isAppRouteEvent(value: unknown): value is AppRouteEvent {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if (record.version !== 1 || (record.status !== "navigate" && record.status !== "unavailable")) return false;
+  if (typeof record.deliveryId !== "string" || record.deliveryId.length < 1 || record.deliveryId.length > 128) return false;
   if (record.status === "unavailable" && (typeof record.message !== "string" || record.message.length < 1 || record.message.length > 240)) return false;
   if (record.status === "navigate" && record.message !== undefined) return false;
   const route = record.route;
   if (typeof route !== "object" || route === null || Array.isArray(route)) return false;
   const routeRecord = route as Record<string, unknown>;
-  if (routeRecord.type === "home") return Object.keys(routeRecord).length === 1 && Object.keys(record).length === 3;
+  if (routeRecord.type === "home") return Object.keys(routeRecord).length === 1 && Object.keys(record).length === 4;
   return routeRecord.type === "open-project"
     && typeof routeRecord.projectId === "string"
     && /^[a-zA-Z0-9_-]{1,128}$/.test(routeRecord.projectId)
     && Object.keys(routeRecord).length === 2
-    && Object.keys(record).length === (record.status === "navigate" ? 3 : 4);
+    && Object.keys(record).length === (record.status === "navigate" ? 4 : 5);
 }
 
 export const ACCOUNT_STATES: readonly AccountSlotState[] = ["signedOut", "signingIn", "ready", "refreshing", "offline", "unavailable", "error"];
@@ -117,5 +118,7 @@ export type DesignerBridge = {
   app: {
     provenance(): Promise<AppProvenance>;
     onRoute(listener: (event: AppRouteEvent) => void): () => void;
+    rendererReady(): Promise<void>;
+    acknowledgeRoute(deliveryId: string): Promise<void>;
   };
 };
