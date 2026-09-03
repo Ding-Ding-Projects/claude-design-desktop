@@ -3,6 +3,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSy
 import { open, rename, rm } from "node:fs/promises";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
+import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
 import path from "node:path";
 
@@ -116,7 +117,7 @@ type ResolvedTransportTarget = { address: string; family: 4 | 6; url: string };
 async function resolveSafeTransportTarget(urlValue: string, security: TransportSecurity, label: string): Promise<ResolvedTransportTarget> {
   const url = validateHttpsAllowlistedUrl(urlValue, security.allowedHosts, label);
   if (!Number.isSafeInteger(security.timeoutMs) || security.timeoutMs < 1000 || security.timeoutMs > 120_000) throw new Error("Transport timeout is outside its supported bound.");
-  const resolve = security.resolveHost || (async (host: string) => (await lookup(host, { all: true, verbatim: true })).map((entry) => entry.address));
+  const resolve = security.resolveHost || (async (host: string) => (await lookup(host, { all: true, verbatim: true })).map((entry: { address: string }) => entry.address));
   const addresses = await resolve(new URL(url).hostname);
   if (!addresses.length || addresses.some(isUnsafeAddress)) throw new Error(label + " resolved to an unsafe, reserved, or unavailable address.");
   return { address: addresses[0], family: isIP(addresses[0]) as 4 | 6, url };
@@ -161,13 +162,13 @@ async function requestBoundHttps(target: ResolvedTransportTarget, signal: AbortS
     const url = new URL(target.url);
     const request = httpsRequest({
       host: url.hostname,
-      lookup: (_hostname, _options, callback) => callback(null, target.address, target.family),
+      lookup: (_hostname: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) => callback(null, target.address, target.family),
       path: url.pathname + url.search,
       port: 443,
       servername: url.hostname,
       signal: deadline.signal,
       headers: { accept }
-    }, (response) => {
+    }, (response: IncomingMessage) => {
       const incoming = response as unknown as AsyncIterable<Uint8Array>;
       async function* body(): AsyncIterable<Uint8Array> {
         try {
@@ -180,7 +181,7 @@ async function requestBoundHttps(target: ResolvedTransportTarget, signal: AbortS
       const headers = Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : String(value || "")]));
       resolve({ body: body(), headers, status: response.statusCode || 0 });
     });
-    request.once("error", (error) => { deadline.dispose(); reject(error); });
+    request.once("error", (error: Error) => { deadline.dispose(); reject(error); });
     request.end();
   });
 }
@@ -335,7 +336,7 @@ async function hashFile(filePath: string, signal?: AbortSignal): Promise<StageRe
   let size = 0;
   for await (const chunk of createReadStream(filePath)) {
     if (signal?.aborted) throw signal.reason || new Error("Operation cancelled.");
-    const bytes = chunk as Buffer;
+    const bytes = chunk as Uint8Array;
     size += bytes.byteLength;
     if (size > MAX_PACKAGE_BYTES) throw new Error("Staged update exceeds its bounded size.");
     hash.update(bytes);
@@ -348,7 +349,7 @@ async function renameWithRetry(source: string, target: string): Promise<void> {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try { await rename(source, target); return; } catch (error) {
       lastError = error;
-      const code = (error as NodeJS.ErrnoException).code;
+      const code = (error as { code?: string }).code;
       if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") throw error;
       await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
     }
@@ -361,7 +362,7 @@ function renameSyncWithRetry(source: string, target: string): void {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try { renameSync(source, target); return; } catch (error) {
       lastError = error;
-      const code = (error as NodeJS.ErrnoException).code;
+      const code = (error as { code?: string }).code;
       if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") throw error;
       const wait = new SharedArrayBuffer(4);
       Atomics.wait(new Int32Array(wait), 0, 0, 50 * (attempt + 1));
