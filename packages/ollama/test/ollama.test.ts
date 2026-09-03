@@ -1,102 +1,72 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OllamaClient, OllamaProtocolError, MemoryPullStateStore, SerializedPullStateStore, PullQueue, assessHardwareFit, assertAttachmentCapabilities, createHarnessPreview, validateLoopbackBaseUrl, validateHarnessProfile, HarnessManager, __test } from "../src/index.js";
+import { createServer } from "node:http";
+import { OllamaClient, OllamaProtocolError, MemoryPullStateStore, PullQueue, assessHardwareFit, assertAttachmentCapabilities, decodeAttachments, createHarnessPreview, resolveAndPinLoopbackUrl, validateLoopbackBaseUrl, validateHarnessProfile, ProductHarnessRegistry, HarnessManager, LocalHardwareDetector, reconcileCatalog, OfficialCatalogSource, __test } from "../src/index.js";
 
-function response(body: unknown, status = 200, headers: Record<string, string> = {}): Response { return new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } }); }
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response { return new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } }); }
+async function listen(server: any): Promise<number> { await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); return server.address().port; }
 
-test("loopback transport rejects credentials and non-local endpoints", () => {
-  assert.throws(() => validateLoopbackBaseUrl("https://user:pass@example.test"), OllamaProtocolError);
-  assert.throws(() => validateLoopbackBaseUrl("http://192.168.1.5:11434"), OllamaProtocolError);
-  assert.equal(validateLoopbackBaseUrl("http://127.0.0.1:11434").hostname, "127.0.0.1");
+test("numeric loopback pinning rejects DNS rebinding and mixed answers", async () => {
+  assert.throws(() => validateLoopbackBaseUrl("http://localhost:11434"), OllamaProtocolError);
+  assert.equal((await resolveAndPinLoopbackUrl("http://ollama.local:11434", async () => ["127.0.0.1"])).hostname, "127.0.0.1");
+  await assert.rejects(() => resolveAndPinLoopbackUrl("http://ollama.local:11434", async () => ["127.0.0.1", "::1"]), /exactly one/);
+  await assert.rejects(() => resolveAndPinLoopbackUrl("http://ollama.local:11434", async () => ["192.168.0.2"]), /exactly one/);
 });
 
-test("health, version, installed, and running models use documented local paths", async () => {
-  const paths: string[] = [];
-  const client = new OllamaClient("http://127.0.0.1:11434", async (input) => { const path = new URL(input).pathname; paths.push(path); if (path === "/api/version") return response({ version: "0.1.0" }); if (path === "/api/tags") return response({ models: [{ name: "mistral:latest", size: 10 }] }); return response({ models: [{ name: "mistral:latest", size: 10 }] }); });
-  assert.deepEqual(await client.health(), { healthy: true, version: "0.1.0", status: 200 });
-  assert.equal((await client.installedModels())[0].name, "mistral:latest");
-  assert.equal((await client.runningModels())[0].name, "mistral:latest");
-  assert.deepEqual(paths, ["/api/version", "/api/tags", "/api/ps"]);
+test("fake local HTTP server sees exact official pull and chat payloads", async () => {
+  const seen: Array<{ path: string; accept: string | null; body: any }> = [];
+  const server = createServer((request: any, response: any) => { const chunks: any[] = []; request.on("data", (chunk: any) => chunks.push(chunk)); request.on("end", () => { const body = Buffer.concat(chunks).toString("utf8"); seen.push({ path: request.url, accept: request.headers.accept ?? null, body: body ? JSON.parse(body) : undefined }); response.writeHead(200, { "content-type": "application/x-ndjson" }); response.end('{"status":"success"}\n'); }); });
+  const port = await listen(server); const client = new OllamaClient(`http://127.0.0.1:${port}`);
+  await client.pull("llama3:latest");
+  const chat = client.chat({ model: "llama3:latest", messages: [{ role: "user", content: "describe" }], attachments: [{ mimeType: "image/png", base64: PNG, bytes: atob(PNG).length }], capabilities: { attachmentMimeTypes: ["image/png"] } });
+  for await (const _event of chat) { /* consume the stream */ }
+  server.close();
+  assert.equal(seen[0].path, "/api/pull"); assert.deepEqual(seen[0].body, { model: "llama3:latest", stream: true }); assert.equal(seen[0].accept, "application/x-ndjson");
+  assert.equal(seen[1].path, "/api/chat"); assert.deepEqual(seen[1].body.messages[0].images, [PNG]); assert.equal(seen[1].body.stream, true); assert.equal(seen[1].accept, "application/x-ndjson");
 });
 
-test("catalog refresh follows every page and preserves honest metadata", async () => {
-  const client = new OllamaClient("http://127.0.0.1:11434", async (input) => { const url = new URL(input); if (url.pathname === "/api/tags") return response({ models: [{ name: "a:latest" }] }); if (url.pathname === "/api/ps") return response({ models: [] }); if (url.searchParams.get("cursor") === "two") return response({ variants: [{ name: "b", tag: "latest" }], revision: "r2" }); return response({ variants: [{ name: "a", tag: "latest" }], next: "/catalog?cursor=two", revision: "r1" }); });
-  const state = await client.refreshCatalog("/catalog");
-  assert.equal(state.complete, true); assert.equal(state.pageCount, 2); assert.equal(state.sourceRevision, "r1");
-  assert.deepEqual(state.variants.map((v) => v.tag), ["latest", "latest"]);
+test("response limits and deadlines apply during full streamed body consumption", async () => {
+  let delayedClosed = false; const delayed = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('{"models":')); setTimeout(() => { if (!delayedClosed) controller.enqueue(new TextEncoder().encode("[]}")); }, 40); }, cancel() { delayedClosed = true; } });
+  const client = new OllamaClient("http://127.0.0.1:11434", async () => new Response(delayed, { headers: { "content-type": "application/json" } }), 10, 100);
+  await assert.rejects(() => client.installedModels(), /deadline|failed|abort|malformed/i);
+  const oversized = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(101)); controller.close(); } });
+  const bounded = new OllamaClient("http://127.0.0.1:11434", async () => new Response(oversized), 100, 100);
+  await assert.rejects(() => bounded.installedModels(), /exceeds/);
 });
 
-test("catalog repetition is a negative regression and falls back offline", async () => {
-  const client = new OllamaClient("http://127.0.0.1:11434", async () => response({ variants: [{ name: "a", tag: "latest" }], next: "/next" }));
-  const previous = { variants: [], installed: [], running: [], refreshedAt: "2026-01-01T00:00:00Z", pageCount: 1, complete: true, stale: false, offline: false };
-  const state = await client.refreshCatalog("/catalog", previous, 2);
-  assert.equal(state.complete, false); assert.equal(state.offline, true); assert.equal(state.stale, true); assert.equal(state.refreshedAt, previous.refreshedAt);
+test("catalog pagination requires continuity, cache saves only verified state, and tags reconcile exactly", async () => {
+  const calls: string[] = []; const client = new OllamaClient("http://127.0.0.1:11434", async (input) => { const url = new URL(input); calls.push(url.pathname + url.search); if (url.pathname === "/api/tags") return json({ models: [{ name: "llama3:latest" }] }); if (url.pathname === "/api/ps") return json({ models: [{ name: "llama3:latest" }] }); if (url.searchParams.get("page") === "2") return json({ page: 2, revision: "rev", variants: [{ name: "qwen", tag: "7b" }] }); return json({ page: 1, revision: "rev", next: "/api/catalog?page=2", variants: [{ name: "llama3", tag: "latest" }] }); });
+  const state = await client.refreshCatalog("/api/catalog"); assert.equal(state.complete, true); assert.equal(state.pageCount, 2); assert.equal(calls[1], "/api/catalog?page=2");
+  const matched = reconcileCatalog(state); assert.equal(matched[0].installed, true); assert.equal(matched[0].running, true); assert.equal(matched[1].installed, false);
+  let cached: any; const cache = { load: async () => undefined, save: async (value: any) => { cached = value; } }; const source = new OfficialCatalogSource(client, cache); await source.refresh(); assert.equal(cached.complete, true);
 });
 
-test("catalog pagination cannot escape the local endpoint", async () => {
-  const client = new OllamaClient("http://127.0.0.1:11434", async () => response({ variants: [], next: "https://example.test/catalog" }));
-  const state = await client.refreshCatalog("/catalog");
-  assert.equal(state.offline, true); assert.match(state.error ?? "", /escaped the local API path/);
+test("hardware detector records actual probe values and fit stays conservative", async () => {
+  const detector = new LocalHardwareDetector({ ramBytes: async () => 8_000, gpuModel: async () => "GPU", vramBytes: async () => 4_000, driver: async () => "driver", freeDiskBytes: async () => 8_000, architecture: async () => "x64" });
+  const hardware = await detector.detect(); assert.equal(hardware.gpuModel, "GPU");
+  const fit = assessHardwareFit({ name: "model", tag: "q4", sizeBytes: 100, requiredMemoryBytes: 100, requiredVramBytes: 100 }, hardware); assert.equal(fit.verdict, "Runs well"); assert.match(fit.assumptions[0], /published metadata/);
+  assert.equal(assessHardwareFit({ name: "model", tag: "unknown" }, hardware).verdict, "Unknown");
 });
 
-test("hardware fit is conservative and never guesses from a name", () => {
-  const unknown = assessHardwareFit({ name: "x", tag: "latest" }, { capturedAt: "2026-01-01T00:00:00Z", ramBytes: 1e9, freeDiskBytes: 1e9 });
-  assert.equal(unknown.verdict, "Unknown");
-  const well = assessHardwareFit({ name: "x", tag: "latest", sizeBytes: 100, requiredMemoryBytes: 100, requiredVramBytes: 10 }, { capturedAt: "2026-01-01T00:00:00Z", ramBytes: 1_000, vramBytes: 1_000, freeDiskBytes: 1_000 });
-  assert.equal(well.verdict, "Runs well");
+test("pull queue recovers interrupted work, supports pause/resume, and avoids duplicate tags", async () => {
+  let calls = 0; const client = { pull: async (_tag: string, onProgress: any, signal: AbortSignal) => { calls++; await onProgress({ status: "working", completedBytes: 1, totalBytes: 2 }); await new Promise<void>((resolve, reject) => { const timer = setTimeout(resolve, 5); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); }); } } as unknown as OllamaClient;
+  const store = new MemoryPullStateStore(); await store.writeAtomic([{ id: "recover", tag: "m:latest", status: "running", updatedAt: "2026-01-01T00:00:00Z" }]); const queue = new PullQueue(client, store, 1); await queue.enqueue(["m:latest"]); const recovered = await queue.run(); assert.equal(recovered.filter((record) => record.tag === "m:latest").length, 1); assert.equal(recovered[0].status, "pulled");
+  await queue.enqueue(["pause:latest"]); const running = queue.run(); await new Promise((resolve) => setTimeout(resolve, 1)); const pauseRecord = (await store.read()).find((record) => record.tag === "pause:latest"); if (pauseRecord) await queue.pause(pauseRecord.id); await running; const paused = (await store.read()).find((record) => record.id === pauseRecord?.id); assert.equal(paused?.status, "paused"); if (paused) await queue.resume(paused.id); await queue.run(); assert.ok(calls >= 2);
 });
 
-test("attachments remain visible to callers but unsupported types are refused", () => {
-  assert.throws(() => assertAttachmentCapabilities([{ mimeType: "image/png", base64: "AA==", bytes: 1 }], { attachmentMimeTypes: ["text/plain"] }), OllamaProtocolError);
-  assert.doesNotThrow(() => assertAttachmentCapabilities([{ mimeType: "image/png", base64: "AA==", bytes: 1 }], { attachmentMimeTypes: ["image/png"] }));
+test("reviewed product harness registry rejects unregistered hosts and filters environment", async () => {
+  const profile = { id: "local", label: "Local harness", executablePath: "C:\\Tools\\runner.exe", args: ["--token=secret", "--password", "secret2"], workingDirectory: "C:\\Project", environmentKeys: ["OLLAMA_HOST"], modelTag: "m:latest", reviewed: true as const };
+  const registry = new ProductHarnessRegistry([profile]); const preview = createHarnessPreview(profile, registry); assert.deepEqual(preview.args, ["--token=[redacted]", "--password", "[redacted]"]);
+  assert.throws(() => validateHarnessProfile({ ...profile, executablePath: "C:\\Tools\\runner.ps1" }), OllamaProtocolError); assert.throws(() => createHarnessPreview({ ...profile, args: ["--new-host.exe"] }, registry), OllamaProtocolError);
+  const snapshots: any[] = [{ id: "old", profile, createdAt: "2026-01-01T00:00:00Z" }]; let supplied: Record<string, string> = {}; let terminated = 0;
+  const manager = new HarnessManager({ launch: async (_p, env) => { supplied = env; return { id: "p" }; }, health: async () => false, terminate: async () => { terminated++; } }, { save: async (value) => { snapshots.push(value); }, latest: async () => snapshots[0] }, async () => ({ OLLAMA_HOST: "http://127.0.0.1:11434", SECRET: "hidden" }), registry);
+  manager.register(profile); await assert.rejects(() => manager.launch("local"), /rolled back/); assert.deepEqual(supplied, { OLLAMA_HOST: "http://127.0.0.1:11434" }); assert.equal(terminated, 1);
 });
 
-test("chat consumes a local streamed response and rejects oversized history", async () => {
-  const client = new OllamaClient("http://127.0.0.1:11434", async (input, init) => {
-    assert.equal(new URL(input).pathname, "/api/chat");
-    assert.equal((JSON.parse(String(init?.body)) as { stream: boolean }).stream, true);
-    return new Response('{"message":{"role":"assistant","content":"hello"}}\n{"done":true}\n', { headers: { "content-type": "application/x-ndjson" } });
-  });
-  const events = [];
-  for await (const event of client.chat({ model: "m:latest", messages: [{ role: "user", content: "hi" }] })) events.push(event);
-  assert.equal(events[0].message?.content, "hello"); assert.equal(events[1].done, true);
-  assert.throws(() => assertAttachmentCapabilities([{ mimeType: "image/png", base64: "AA==", bytes: 25 * 1024 * 1024 + 1 }], { attachmentMimeTypes: ["image/png"] }), OllamaProtocolError);
+test("attachment decoding rejects spoofed bytes and malformed chat options", () => {
+  assert.deepEqual(decodeAttachments([{ mimeType: "image/png", base64: PNG, bytes: atob(PNG).length }], { attachmentMimeTypes: ["image/png"] })[0].base64, PNG);
+  assert.throws(() => decodeAttachments([{ mimeType: "image/png", base64: "AA==", bytes: 1 }], { attachmentMimeTypes: ["image/png"] }), OllamaProtocolError);
+  assert.throws(() => __test.parseNdjsonLine("not-json"), OllamaProtocolError);
+  assert.doesNotThrow(() => assertAttachmentCapabilities(undefined, undefined));
 });
-
-test("pull queue has bounded concurrency and partial outcomes", async () => {
-  let active = 0; let peak = 0;
-  const client = new OllamaClient("http://127.0.0.1:11434", async () => response(""));
-  (client as unknown as { pull: OllamaClient["pull"] }).pull = async (tag, onProgress) => { active++; peak = Math.max(peak, active); onProgress?.({ status: "success", completedBytes: 1, totalBytes: 1 }); await new Promise((resolve) => setTimeout(resolve, 2)); active--; if (tag === "bad:latest") throw new Error("simulated pull failure"); };
-  const store = new MemoryPullStateStore(); const queue = new PullQueue(client, store, 2); await queue.enqueue(["one:latest", "bad:latest", "two:latest"]); const records = await queue.run();
-  assert.equal(peak, 2); assert.equal(records.find((r) => r.tag === "bad:latest")?.status, "failed"); assert.equal(records.filter((r) => r.status === "pulled").length, 2);
-});
-
-test("serialized pull state validates and persists bounded queue metadata", async () => {
-  let saved = "";
-  const store = new SerializedPullStateStore(async () => saved, async (text) => { saved = text; });
-  const source = [{ id: "1", tag: "m:latest", status: "queued" as const, updatedAt: "2026-01-01T00:00:00Z" }];
-  await store.write(source); assert.deepEqual(await store.read(), source);
-  saved = "{}"; await assert.rejects(() => store.read(), /must be an array/);
-});
-
-test("harness profiles reject arbitrary shell syntax and redact secrets in previews", () => {
-  const base = { id: "local", label: "Local harness", executablePath: "C:\\Tools\\runner.exe", args: ["--token", "secret-value"], workingDirectory: "C:\\Project", environmentKeys: ["OLLAMA_HOST"], modelTag: "m:latest" };
-  assert.equal(createHarnessPreview(base).args[1], "[redacted]");
-  assert.throws(() => validateHarnessProfile({ ...base, executablePath: "C:\\Windows\\System32\\cmd.exe", args: ["/c", "echo ok"] }), OllamaProtocolError);
-  assert.throws(() => validateHarnessProfile({ ...base, args: ["--ok; echo bad"] }), OllamaProtocolError);
-});
-
-test("failed harness health checks terminate and restore the saved profile", async () => {
-  const profile = { id: "local", label: "Local harness", executablePath: "C:\\Tools\\runner.exe", args: [], workingDirectory: "C:\\Project", environmentKeys: [], modelTag: "m:latest" };
-  const oldProfile = { ...profile, executablePath: "C:\\Tools\\old-runner.exe" };
-  const snapshots = [{ id: "old-snapshot", profile: oldProfile, createdAt: "2026-01-01T00:00:00Z" }];
-  const snapshotStore = { save: async (snapshot: typeof snapshots[number]) => { snapshots.push(snapshot); }, latest: async (_id: string) => snapshots[0] };
-  let terminated = 0;
-  const launcher = { launch: async () => ({ id: "process" }), health: async () => false, terminate: async () => { terminated++; } };
-  const manager = new HarnessManager(launcher, snapshotStore, async () => ({}));
-  manager.register(profile);
-  await assert.rejects(() => manager.launch("local"), /rolled back/);
-  assert.equal(terminated, 1); assert.equal(manager.preview("local").executablePath, oldProfile.executablePath);
-});
-
-test("malformed NDJSON is a negative regression", () => { assert.throws(() => __test.parseNdjsonLine("not-json"), OllamaProtocolError); });

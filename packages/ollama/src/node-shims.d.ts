@@ -13,3 +13,9 @@ declare module "node:assert/strict" {
   const assert: any;
   export default assert;
 }
+
+declare module "node:http" {
+  export const createServer: any;
+}
+
+declare const Buffer: any;
