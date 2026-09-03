@@ -2,7 +2,7 @@ const expectedQueryKeys = ["state", "theme", "locale", "width", "height", "scale
 const supportedThemes = new Set(["light", "dark"]);
 const supportedLocales = new Set(["en-US", "zh-Hant", "bilingual"]);
 const supportedScales = new Set([1, 1.25, 1.5, 2]);
-const supportedViewports = new Set(["1280x800", "960x700", "720x900"]);
+const supportedViewports = new Set(["1280x800", "960x700"]);
 
 export function createRouteParser(routes) {
   return function parseRoute(candidate) {

@@ -1,9 +1,10 @@
-import { BrowserWindow, Menu, app, ipcMain, protocol } from "electron";
-import { existsSync, readFileSync } from "node:fs";
+import { BrowserWindow, Menu, app, ipcMain, protocol, screen } from "electron";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRouteParser } from "./route.mjs";
 import { resolveProtocolResponse } from "./protocol-response.mjs";
+import { clampWindowBounds, validPersistedState } from "./window-state.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dataPath = resolve(here, "screens.json");
@@ -13,6 +14,7 @@ const stylePath = resolve(here, "styles.css");
 const routes = JSON.parse(readFileSync(dataPath, "utf8"));
 const parseRoute = createRouteParser(routes);
 let windowRef;
+let persistedStatePath;
 
 const value = (name, fallback) => {
   const index = process.argv.indexOf(`--${name}`);
@@ -49,16 +51,39 @@ function showNativeMenu() {
   menu.popup({ window: windowRef });
 }
 
+function readPersistedState() {
+  try {
+    const value = JSON.parse(readFileSync(persistedStatePath, "utf8"));
+    return validPersistedState(value) ? value : null;
+  } catch { return null; }
+}
+
+function saveWindowState() {
+  if (!windowRef || windowRef.isDestroyed() || windowRef.isMaximized()) return;
+  const bounds = windowRef.getBounds();
+  writeFileSync(persistedStatePath, JSON.stringify({ normal: bounds, maximized: windowRef.isMaximized() }, null, 2), "utf8");
+}
+
 protocol.registerSchemesAsPrivileged([{ scheme: "design-reference", privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false } }]);
 const initialRoute = parseRoute(routeFromArgs());
 
 app.whenReady().then(async () => {
   protocol.handle("design-reference", serveStatic);
   app.commandLine.appendSwitch("force-device-scale-factor", String(initialRoute.scale));
-  windowRef = new BrowserWindow({ width: initialRoute.width, height: initialRoute.height, minWidth: 320, minHeight: 240, show: false, frame: false, backgroundColor: initialRoute.theme === "dark" ? "#141218" : "#fffbfe", webPreferences: { preload: resolve(here, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, zoomFactor: initialRoute.scale } });
+  persistedStatePath = resolve(app.getPath("userData"), "window-state.json");
+  const display = screen.getPrimaryDisplay();
+  const workArea = display.workArea;
+  const saved = readPersistedState();
+  const hasExplicitSize = process.argv.includes("--width") || process.argv.includes("--height");
+  const requestedBounds = hasExplicitSize || !saved ? { x: workArea.x, y: workArea.y, width: initialRoute.width, height: initialRoute.height } : saved.normal;
+  const bounds = clampWindowBounds(requestedBounds, workArea);
+  windowRef = new BrowserWindow({ ...bounds, minWidth: 320, minHeight: 240, show: false, frame: false, backgroundColor: initialRoute.theme === "dark" ? "#141218" : "#fffbfe", webPreferences: { preload: resolve(here, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, zoomFactor: initialRoute.scale } });
   windowRef.setMenuBarVisibility(false);
-  windowRef.on("maximize", sendWindowState);
-  windowRef.on("unmaximize", sendWindowState);
+  windowRef.on("maximize", () => { if (persistedStatePath) writeFileSync(persistedStatePath, JSON.stringify({ normal: windowRef.getNormalBounds(), maximized: true }, null, 2), "utf8"); sendWindowState(); });
+  windowRef.on("unmaximize", () => { saveWindowState(); sendWindowState(); });
+  windowRef.on("resize", saveWindowState);
+  windowRef.on("move", saveWindowState);
+  windowRef.on("closed", saveWindowState);
   windowRef.on("focus", sendWindowState);
   windowRef.on("blur", sendWindowState);
   windowRef.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -69,6 +94,7 @@ app.whenReady().then(async () => {
   windowRef.webContents.on("before-input-event", (event, input) => { if (input.type === "keyDown" && input.alt && input.key === "F10") { event.preventDefault(); if (windowRef.isMaximized()) windowRef.unmaximize(); else windowRef.maximize(); } });
   await windowRef.loadURL(initialRoute.url.href);
   windowRef.webContents.setZoomFactor(initialRoute.scale);
+  if (saved?.maximized && !hasExplicitSize) windowRef.maximize();
   windowRef.showInactive();
   sendWindowState();
 });

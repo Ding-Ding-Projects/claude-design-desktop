@@ -23,14 +23,21 @@ function routeParts(value, protocol) {
 function validate(candidateInventory, candidateData, candidateTuples) {
   if (candidateInventory.version !== 1 || candidateData.version !== 1 || candidateTuples.version !== 1) throw new Error("reference schema version is invalid");
   if (candidateInventory.reference.data !== "design/reference/screens.json" || candidateInventory.reference.renderer !== "design/reference/index.html" || candidateInventory.reference.route !== "design/reference/main.mjs" || candidateInventory.reference.tupleInventory !== "parity/tuples.json") throw new Error("reference source registration is incomplete");
-  for (const file of ["design/reference/screens.json", "design/reference/index.html", "design/reference/app.js", "design/reference/main.mjs", "design/reference/route.mjs", "design/reference/protocol-response.mjs", "design/reference/preload.cjs", "design/reference/styles.css", "design/reference/launch.mjs", "parity/runtime-route.test.mjs", "parity/protocol-response.test.mjs"]) if (!existsSync(relative(file))) throw new Error(`implementation file is missing: ${file}`);
+  for (const file of ["design/reference/screens.json", "design/reference/index.html", "design/reference/app.js", "design/reference/main.mjs", "design/reference/route.mjs", "design/reference/protocol-response.mjs", "design/reference/window-state.mjs", "design/reference/preload.cjs", "design/reference/styles.css", "design/reference/launch.mjs", "parity/runtime-route.test.mjs", "parity/protocol-response.test.mjs", "parity/window-state.test.mjs", "parity/negative-probes.mjs"]) if (!existsSync(relative(file))) throw new Error(`implementation file is missing: ${file}`);
   const dataKeys = candidateData.screens.map((item) => `${item.id}:${item.state}`);
   if (dataKeys.length !== expected.length || JSON.stringify([...dataKeys].sort()) !== JSON.stringify([...expected].sort())) throw new Error("screen data does not match the exact expected screen/state inventory");
   if (candidateTuples.screens.length !== expected.length || JSON.stringify([...candidateTuples.screens].sort()) !== JSON.stringify([...expected].sort())) throw new Error("tuple inventory does not cover every screen/state");
-  if (!Array.isArray(candidateTuples.variants) || candidateTuples.variants.length !== 7) throw new Error("capture tuple variant inventory is incomplete");
+  if (!Array.isArray(candidateTuples.variants) || candidateTuples.variants.length !== 48) throw new Error("capture tuple variant inventory is incomplete");
+  const variantKeys = new Set();
   for (const variant of candidateTuples.variants) {
     if (!variant.id || !["light", "dark"].includes(variant.theme) || !["en-US", "zh-Hant", "bilingual"].includes(variant.locale) || !Number.isInteger(variant.width) || !Number.isInteger(variant.height) || ![1, 1.25, 1.5, 2].includes(variant.scale)) throw new Error(`invalid capture variant: ${variant.id}`);
+    const key = `${variant.theme}:${variant.locale}:${variant.width}x${variant.height}:${variant.scale}`;
+    if (variantKeys.has(key)) throw new Error(`duplicate capture variant: ${variant.id}`);
+    variantKeys.add(key);
   }
+  const requiredVariants = [];
+  for (const theme of ["light", "dark"]) for (const locale of ["en-US", "zh-Hant", "bilingual"]) for (const viewport of ["1280x800", "960x700"]) for (const scale of [1, 1.25, 1.5, 2]) requiredVariants.push(`${theme}:${locale}:${viewport}:${scale}`);
+  if (requiredVariants.some((key) => !variantKeys.has(key))) throw new Error("normal/minimum viewport, locale, theme, and scale matrix is incomplete");
   if (!String(candidateTuples.evidencePolicy).includes("pending")) throw new Error("evidence policy is not honest about pending captures");
   if (candidateInventory.rows.length !== expected.length) throw new Error("parity inventory row count is incomplete");
   const rowKeys = new Set();
@@ -52,7 +59,7 @@ function validate(candidateInventory, candidateData, candidateTuples) {
   const main = text("design/reference/main.mjs");
   const preload = text("design/reference/preload.cjs");
   const renderer = text("design/reference/app.js");
-  for (const required of ["protocol.handle(\"design-reference\"", "setWindowOpenHandler", "setPermissionRequestHandler", "will-navigate", "will-redirect", "setZoomFactor", "frame: false", "contextIsolation: true", "sandbox: true", "nodeIntegration: false"]) if (!main.includes(required)) throw new Error(`runtime security or window behavior is missing: ${required}`);
+  for (const required of ["protocol.handle(\"design-reference\"", "setWindowOpenHandler", "setPermissionRequestHandler", "will-navigate", "will-redirect", "setZoomFactor", "frame: false", "contextIsolation: true", "sandbox: true", "nodeIntegration: false", "clampWindowBounds", "getNormalBounds", "workArea"]) if (!main.includes(required)) throw new Error(`runtime security or window behavior is missing: ${required}`);
   for (const required of ["ipcRenderer.invoke(\"reference:data\")", "window:state", "contextBridge.exposeInMainWorld"]) if (!preload.includes(required)) throw new Error(`preload contract is missing: ${required}`);
   if (renderer.includes("fetch(")) throw new Error("renderer must not fetch reference data when network is disabled");
   for (const required of ["aria-controls", "role=\"tabpanel\"", "data-action=\"primary\"", "data-action=\"secondary\"", "data-action=\"regex\"", "dblclick", "onState"]) if (!renderer.includes(required)) throw new Error(`renderer interaction contract is missing: ${required}`);
