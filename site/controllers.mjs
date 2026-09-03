@@ -11,6 +11,7 @@ export function createVisitorController(store, initial = {}) {
   const persist = () => store.set('workspace', structuredClone(state));
   const digest = (value) => { let result = 2166136261; for (const char of String(value)) { result ^= char.codePointAt(0); result = Math.imul(result, 16777619); } return (result >>> 0).toString(16); };
   const policyNames = new Set(['PIN', 'password', 'PIN plus password', 'password plus TOTP', 'PIN plus TOTP', 'password plus PIN plus TOTP']);
+  const supportedPolicies = new Set(['password']);
   return {
     state,
     addTab(label = 'New tab') { const id = `tab-${state.tabs.length + 1}`; state.tabs.push({ id, label, pinned: false, groupId: null }); persist(); return id; },
@@ -20,8 +21,8 @@ export function createVisitorController(store, initial = {}) {
     lock(targetId, phrase, options = {}) {
       const policy = options.policy || 'password';
       const durationMs = Number.isFinite(options.durationMs) && options.durationMs >= 0 ? options.durationMs : 0;
-      if (!targetId || typeof phrase !== 'string' || phrase.length < 4 || !policyNames.has(policy)) return false;
-      state.locks[targetId] = { targetId, policy, credentialStorage: 'browser-storage-only', browserStorageOnly: true, credentialDigest: digest(phrase), locked: true, unlockExpiresAt: null, attempts: [], durationMs };
+      if (!targetId || typeof phrase !== 'string' || phrase.length < 4 || !policyNames.has(policy) || !supportedPolicies.has(policy)) return false;
+      state.locks[targetId] = { targetId, policy, credentialStorage: 'browser-storage-only', browserStorageOnly: true, credentialAdapter: 'password-digest', unsupportedPolicies: [...policyNames].filter((candidate) => !supportedPolicies.has(candidate)), credentialDigest: digest(phrase), locked: true, unlockExpiresAt: null, attempts: [], durationMs };
       persist();
       return true;
     },
@@ -64,4 +65,11 @@ export function interceptLockedActivation(target, event) {
   event?.preventDefault?.();
   event?.stopImmediatePropagation?.();
   return true;
+}
+
+export function matchRows(rows, pattern, flags = 'giu', mode = 'regex') {
+  if (String(pattern).length > 2048 || rows.some((row) => String(row).length > 100000)) throw new Error('Search input exceeds the local safety bound.');
+  const source = mode === 'text' ? String(pattern).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : String(pattern);
+  const expression = new RegExp(source, flags);
+  return rows.map((row) => { expression.lastIndex = 0; const matched = expression.test(String(row)); expression.lastIndex = 0; return matched; });
 }

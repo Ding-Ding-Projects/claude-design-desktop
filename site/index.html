@@ -11,7 +11,7 @@
     <meta property="og:site_name" content="Claude Design Desktop" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="theme-color" content="#6750a4" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
     <title>Claude Design Desktop</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -61,10 +61,11 @@
     <dialog id="lock-dialog" class="surface-dialog" aria-labelledby="lock-title">
       <div class="dialog-header"><div><span class="eyebrow">Local toy lock</span><h2 id="lock-title">Unlock this element</h2></div><button class="icon-button" data-close-dialog="lock-dialog" aria-label="Close unlock prompt">×</button></div>
       <p id="lock-target-name" class="supporting">This is a local user-experience lock, not security or encryption. Recovery is available by clearing this site's storage.</p>
-      <label id="lock-policy-field">Policy<select id="lock-policy"><option>password</option><option>PIN</option><option>PIN plus password</option><option>password plus TOTP</option><option>PIN plus TOTP</option><option>password plus PIN plus TOTP</option></select></label>
+      <label id="lock-policy-field">Policy<select id="lock-policy"><option value="password">password</option><option value="PIN" disabled title="Unavailable until the real PIN verifier is integrated">PIN (unavailable: real verifier pending)</option><option value="PIN plus password" disabled title="Unavailable until the real PIN verifier is integrated">PIN plus password (unavailable: real verifier pending)</option><option value="password plus TOTP" disabled title="Unavailable until the real TOTP verifier is integrated">password plus TOTP (unavailable: real verifier pending)</option><option value="PIN plus TOTP" disabled title="Unavailable until the real PIN and TOTP verifiers are integrated">PIN plus TOTP (unavailable: real verifiers pending)</option><option value="password plus PIN plus TOTP" disabled title="Unavailable until the real PIN and TOTP verifiers are integrated">password plus PIN plus TOTP (unavailable: real verifiers pending)</option></select></label>
       <label id="lock-duration-field">Unlock duration<select id="lock-duration"><option value="0">Until this page closes</option><option value="900000">15 minutes</option><option value="3600000">1 hour</option></select></label>
       <label id="lock-value-label">Unlock phrase<input id="lock-value" type="password" autocomplete="off" minlength="4" /></label>
       <label id="lock-confirm-field">Confirm phrase<input id="lock-confirm" type="password" autocomplete="off" minlength="4" /></label>
+      <p id="lock-policy-note" class="supporting">This preview enables only the password-digest verifier. PIN and TOTP policies remain visible but unavailable until their real factor flows land.</p>
       <p id="lock-status" class="inline-status">Enter the phrase configured for this element.</p>
       <div class="dialog-actions"><button class="text-button" data-close-dialog="lock-dialog" type="button">Cancel</button><button class="filled-button" id="unlock-element" type="button">Unlock</button></div>
     </dialog>

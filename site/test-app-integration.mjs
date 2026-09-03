@@ -9,6 +9,9 @@ assert.match(source, /const regexState = new Map\(\)/);
 assert.match(source, /MAX_REGEX_PATTERN = 2048/);
 assert.match(source, /MAX_REGEX_SAMPLE = 100000/);
 assert.match(source, /dispatchSearch\(regexTarget\)/);
+assert.match(source, /menu\.dataset\.searchSurface = 'context-menu'/);
+assert.match(source, /surface\.dataset\.searchSurface === 'context-menu'/);
+assert.match(source, /new Worker\('\.\/regex-worker\.js'/);
 
 const writes = [];
 const controller = createVisitorController({ set: async (key, value) => writes.push({ key, value }) });
@@ -21,4 +24,5 @@ assert.equal(controller.lock(tabId, 'four-char phrase', { policy: 'password', du
 assert.equal(controller.dispatchAction(tabId, 'click').kind, 'unlock-required');
 assert.equal(controller.unlock(tabId, 'wrong') , false);
 assert.equal(controller.unlock(tabId, 'four-char phrase') , true);
+assert.deepEqual(controller.search(['Edit appearance…', 'Lock this element…'], 'element'), ['Lock this element…']);
 console.log('PASS: app.js imports and consumes visitor controllers; regex and lock seams are wired');

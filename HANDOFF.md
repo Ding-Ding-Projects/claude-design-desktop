@@ -8,9 +8,11 @@ This lane owns the static documentation and landing-site source in `site/` and `
 
 - `site/index.html`, `site/styles.css`, and `site/app.js` form a local-asset responsive surface with tabs, visitor settings, local search, anchored regex workbench, command palette, context actions, status, downloads, changelog, and provenance states.
 - `site/storage.js` provides a versioned IndexedDB visitor store for tab, group, lock, and other larger local state; `site/controllers.mjs` contains executable tab, group, lock, and scoped-search controllers.
+- `site/regex-worker.js` runs regex-mode matching off the main page thread with 2,048-character pattern and 100,000-character sample bounds; multi-factor lock policies remain visible but disabled with exact pending-verifier reasons in the browser-only preview.
 - `docs/README.md` indexes thirty feature articles under `docs/features/`.
 - `site/test-static.mjs` checks the hand-written inventory, article parity, responsive metadata, strict CSP, absence of premature Open Graph image metadata, local article rendering, and no remote script or stylesheet. It includes a deliberate mutation probe that must fail before restoring the source.
 - `site/test-behavior.mjs` executes controller behavior for tab creation, pinning, grouping, persistence, lock interception, unlock, and scoped search.
+- `site/test-app-integration.mjs` proves `app.js` imports the controllers, uses their mutation and lock methods, binds the context-menu search scope, and starts bounded regex evaluation.
 - Root documentation records the extraction baseline and does not claim an installer or release.
 
 ## Verification

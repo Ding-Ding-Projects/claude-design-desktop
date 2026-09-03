@@ -8,6 +8,7 @@ const docs = join(root, 'docs', 'features');
 const html = await readFile(join(site, 'index.html'), 'utf8');
 const js = await readFile(join(site, 'app.js'), 'utf8');
 const css = await readFile(join(site, 'styles.css'), 'utf8');
+const worker = await readFile(join(site, 'regex-worker.js'), 'utf8');
 const files = (await readdir(docs)).filter((file) => file.endsWith('.md') && file !== 'README.md');
 const expected = ['language-modes', 'dialog-emoji-toggle', 'school-mode', 'narration', 'scheduled-settings', 'dim-sum-surprise', 'regex-builders', 'notification-centre', 'appearance-editors', 'tabbed-navigation', 'offline-documentation', 'command-palette', 'destructive-confirmation', 'local-history', 'changelog-viewer', 'external-editor', 'exports', 'bulk-actions', 'accessibility-responsive-sizing', 'personal-vocabulary-upload', 'toy-locks-authentication', 'unlock-ladder', 'shared-link-embed', 'adhd-modes', 'browser-download-surfaces', 'app-logo-customization', 'file-converter', 'ollama-suite-manager', 'status-hub', 'front-screen-provenance'];
 const articleIds = files.map((file) => file.slice(0, -3));
@@ -30,6 +31,7 @@ must(!html.includes('social-preview.png'), 'a placeholder social preview URL mus
 must(html.includes('width=device-width'), 'responsive viewport metadata is missing');
 must(css.includes('min-width: 320px'), 'responsive minimum is missing');
 must(html.includes('Content-Security-Policy'), 'strict static CSP is missing');
+must(worker.includes('MAX_PATTERN = 2048') && worker.includes('MAX_SAMPLE = 100000'), 'bounded regex worker limits are missing');
 must(!/<script[^>]+src=['"]https?:/i.test(html), 'remote script is not allowed');
 must(!/<link[^>]+href=['"]https?:/i.test(html), 'remote stylesheet is not allowed');
 must(!/github\.com\/Ding-Ding-Projects\/claude-design-desktop\/blob\/main\/docs\/features/.test(js), 'documentation articles must render from local bundled data');
