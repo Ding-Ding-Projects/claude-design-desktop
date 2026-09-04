@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Design Download Companion",
+  "description": "A local companion for deliberate, observable downloads.",
+  "version": "1.0.0",
+  "minimum_chrome_version": "102",
+  "permissions": ["storage", "nativeMessaging", "contextMenus"],
+  "background": { "service_worker": "extension/background.js", "type": "module" },
+  "action": { "default_title": "Start a download", "default_popup": "extension/popup.html" },
+  "options_page": "extension/options.html",
+  "icons": { "16": "extension/icon.svg", "32": "extension/icon.svg", "48": "extension/icon.svg", "128": "extension/icon.svg" }
+}

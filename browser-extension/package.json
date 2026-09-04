@@ -1,0 +1,9 @@
+{
+  "name": "claude-design-download-companion-extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build-zip.mjs",
+    "test": "node --test test/contract.test.mjs"
+  }
+}
