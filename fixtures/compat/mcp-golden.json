@@ -1,0 +1,5 @@
+{
+  "sourceCommit": "4a3c267e7e22f6636a02542554309cd49cd41e9d",
+  "protocolVersion": "2025-03-26",
+  "tools": ["list_design_systems", "get_claude_design_prompt", "list_projects", "get_project", "list_files", "read_file", "get_conversation", "list_members", "create_project", "put_conversation", "finalize_plan", "write_files", "copy_files", "delete_files", "render_preview", "create_support_js", "add_member", "update_member_role", "remove_member", "update_sharing"]
+}

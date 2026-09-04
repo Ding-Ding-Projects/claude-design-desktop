@@ -1,0 +1,8 @@
+{
+  "name": "@ding-ding-projects/claude-design-mcp-bridge",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": { "typecheck": "tsc --noEmit -p tsconfig.json" },
+  "devDependencies": { "@types/node": "22.15.0", "typescript": "5.9.2" }
+}
