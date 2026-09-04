@@ -1,0 +1,7 @@
+{
+  "name": "@ding-ding-projects/claude-design-project-storage",
+  "private": true,
+  "type": "module",
+  "dependencies": { "better-sqlite3": "12.11.1" },
+  "devDependencies": { "@types/better-sqlite3": "7.6.13", "@types/node": "22.10.2" }
+}
