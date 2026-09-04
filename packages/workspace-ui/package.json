@@ -1,0 +1,24 @@
+{
+  "name": "@claude-design/workspace-ui",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run src/controller.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "19.0.8",
+    "@types/react-dom": "19.0.3",
+    "esbuild": "0.25.12",
+    "typescript": "5.8.2",
+    "vitest": "3.2.7"
+  }
+}
