@@ -1,0 +1,1089 @@
+import { randomUUID } from "node:crypto";
+
+const MAX_PROJECT_ID_BYTES = 96;
+const MAX_ACCOUNT_ID_BYTES = 96;
+const MAX_ROLE_BYTES = 48;
+const MAX_HTML_BYTES = 1_048_576;
+const MAX_ASSETS = 64;
+const MAX_ASSET_BYTES = 524_288;
+const MAX_TOTAL_ASSET_BYTES = 4 * 1024 * 1024;
+const MAX_ASSET_NAME_BYTES = 160;
+const MAX_IMAGE_PIXELS = 16_777_216;
+const MAX_ACTIVE_HANDLES = 16;
+const DEFAULT_WATCHDOG_MS = 5_000;
+const MIN_WATCHDOG_MS = 50;
+const MAX_WATCHDOG_MS = 30_000;
+
+const CSP = [
+  "default-src 'none'",
+  "base-uri 'none'",
+  "connect-src 'none'",
+  "font-src data:",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+  "img-src data:",
+  "media-src data:",
+  "object-src 'none'",
+  "script-src data:",
+  "style-src 'unsafe-inline' data:",
+  "worker-src 'none'"
+].join("; ");
+
+const ALL_URLS_FILTER = "<all_urls>";
+const URL_ATTRIBUTES = new Set(["src", "href", "action", "formaction", "poster", "cite", "background"]);
+const BLOCKED_TAGS = new Set(["base", "embed", "frame", "frameset", "iframe", "object", "portal"]);
+const IMAGE_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp", "image/svg+xml"]);
+const SCRIPT_TYPES = new Set(["application/javascript", "text/javascript"]);
+const STYLE_TYPES = new Set(["text/css"]);
+const FONT_TYPES = new Set(["font/woff", "font/woff2"]);
+const SCHEME_URL = /^[a-z][a-z0-9+.-]*:/iu;
+const EXTERNAL_CSS_SCHEME = /^(?:https?|file|ftp|ws|wss|data|blob|filesystem|about|chrome|devtools):/iu;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+export type PreviewState = "creating" | "ready" | "reloading" | "closed" | "failed";
+
+export type PreviewHandle = Readonly<{
+  projectId: string;
+  handleId: string;
+  generation: number;
+}>;
+
+export type PreviewActor = Readonly<{
+  accountId: string;
+}>;
+
+export type PreviewPrincipal = Readonly<{
+  accountId: string;
+  role: string;
+}>;
+
+export type PreviewAsset = Readonly<{
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}>;
+
+export type PreviewContent = Readonly<{
+  html: string;
+  assets?: readonly PreviewAsset[];
+}>;
+
+export type PreviewOperation = "create" | "reload" | "show" | "close";
+
+export type PreviewAuthorizationRequest = Readonly<{
+  actor: PreviewPrincipal;
+  generation: number;
+  handleId?: string;
+  operation: PreviewOperation;
+  projectId: string;
+}>;
+
+export type PreviewAuthorizer = (request: PreviewAuthorizationRequest) => boolean | Promise<boolean>;
+export type PreviewPrincipalResolver = (actor: PreviewActor, projectId: string) => PreviewPrincipal | null | Promise<PreviewPrincipal | null>;
+
+export type PreviewErrorCode =
+  | "invalid_request"
+  | "content_rejected"
+  | "capacity_exceeded"
+  | "authorization_failed"
+  | "cross_project"
+  | "stale_handle"
+  | "closed_handle"
+  | "adapter_failure"
+  | "lifecycle_failure"
+  | "cleanup_failed";
+
+export type PreviewStateEvent = Readonly<{
+  type: "state";
+  handle: PreviewHandle;
+  state: PreviewState;
+}>;
+
+export type PreviewErrorEvent = Readonly<{
+  type: "error";
+  handle: PreviewHandle;
+  code: PreviewErrorCode;
+}>;
+
+export type PreviewEvent = PreviewStateEvent | PreviewErrorEvent;
+
+export class PreviewHostError extends Error {
+  readonly code: PreviewErrorCode;
+
+  constructor(code: PreviewErrorCode) {
+    super(code);
+    this.name = "PreviewHostError";
+    this.code = code;
+  }
+}
+
+type PreventableEvent = { preventDefault?: () => void };
+type Listener = (...args: any[]) => void;
+
+export type PreviewSession = {
+  readonly partition: string;
+  webRequest: {
+    onBeforeRequest: (filter: { urls: string[] }, listener: (details: { url: string }, callback: (result: { cancel: boolean }) => void) => void) => void;
+  };
+  on: (event: "will-download", listener: (event: PreventableEvent) => void) => void;
+  setPermissionRequestHandler: (listener: (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void) => void;
+  setPermissionCheckHandler: (listener: (webContents: unknown, permission: string, requestingOrigin: string) => boolean) => void;
+  clearStorageData: (options: { storages: string[] }) => Promise<void>;
+  clearCache: () => Promise<void>;
+  flushStorageData?: () => Promise<void>;
+};
+
+export type PreviewWebContents = {
+  readonly id?: number;
+  on: (event: string, listener: Listener) => void;
+  setWindowOpenHandler: (listener: (details: { url: string }) => { action: "deny" }) => void;
+  closeDevTools?: () => void;
+};
+
+export type PreviewWindow = {
+  readonly webContents: PreviewWebContents;
+  loadURL: (url: string) => Promise<void>;
+  show: () => void;
+  destroy: () => void;
+  isDestroyed?: () => boolean;
+};
+
+export type PreviewWindowOptions = Readonly<{
+  show: false;
+  webPreferences: Readonly<{
+    session: PreviewSession;
+    nodeIntegration: false;
+    contextIsolation: true;
+    sandbox: true;
+    webSecurity: true;
+    devTools: false;
+    allowRunningInsecureContent: false;
+    webviewTag: false;
+  }>;
+}>;
+
+export type PreviewHostAdapters = Readonly<{
+  createSession: (partition: string) => PreviewSession;
+  createWindow: (options: PreviewWindowOptions) => PreviewWindow;
+}>;
+
+export type ElectronSessionModule = Readonly<{
+  fromPartition: (partition: string, options?: { cache?: boolean }) => PreviewSession;
+}>;
+
+export type ElectronBrowserWindowConstructor = new (options: PreviewWindowOptions) => PreviewWindow;
+
+export function createElectronPreviewAdapters(electron: Readonly<{
+  BrowserWindow: ElectronBrowserWindowConstructor;
+  session: ElectronSessionModule;
+}>): PreviewHostAdapters {
+  return {
+    createSession: (partition) => electron.session.fromPartition(partition, { cache: false }),
+    createWindow: (options) => new electron.BrowserWindow(options)
+  };
+}
+
+type Edit = Readonly<{ end: number; start: number; value: string }>;
+type ParsedAttribute = Readonly<{ name: string; value: string; valueEnd: number; valueStart: number }>;
+type ParsedTag = Readonly<{ attributes: readonly ParsedAttribute[]; closing: boolean; end: number; name: string; start: number }>;
+
+type PreviewRecord = {
+  allowedUrls: ReadonlySet<string>;
+  cleaned: boolean;
+  dataUrl: string;
+  handle: PreviewHandle;
+  ownerAccountId: string;
+  session: PreviewSession;
+  state: PreviewState;
+  window: PreviewWindow;
+};
+
+function bytesOf(value: string): Uint8Array { return new TextEncoder().encode(value); }
+function byteLength(value: string): number { return bytesOf(value).byteLength; }
+function fixed(code: PreviewErrorCode): PreviewHostError { return new PreviewHostError(code); }
+
+function assertString(value: unknown, maximum: number, code: PreviewErrorCode): asserts value is string {
+  if (typeof value !== "string" || value.length === 0 || byteLength(value) > maximum) throw fixed(code);
+}
+
+function assertProjectId(value: unknown): asserts value is string {
+  assertString(value, MAX_PROJECT_ID_BYTES, "invalid_request");
+  if (!/^[a-z0-9][a-z0-9._-]*$/iu.test(value) || value.includes("..")) throw fixed("invalid_request");
+}
+
+function assertActor(actor: unknown): asserts actor is PreviewActor {
+  if (!actor || typeof actor !== "object") throw fixed("invalid_request");
+  const candidate = actor as Record<string, unknown>;
+  assertString(candidate.accountId, MAX_ACCOUNT_ID_BYTES, "invalid_request");
+  if (!/^[a-z0-9][a-z0-9._:-]*$/iu.test(candidate.accountId)) throw fixed("invalid_request");
+}
+
+function assertPrincipal(principal: unknown, accountId: string): asserts principal is PreviewPrincipal {
+  if (!principal || typeof principal !== "object") throw fixed("authorization_failed");
+  const candidate = principal as Record<string, unknown>;
+  assertString(candidate.accountId, MAX_ACCOUNT_ID_BYTES, "authorization_failed");
+  assertString(candidate.role, MAX_ROLE_BYTES, "authorization_failed");
+  if (candidate.accountId !== accountId || !/^[a-z0-9][a-z0-9._:-]*$/iu.test(candidate.accountId) || !/^[a-z0-9][a-z0-9._:-]*$/iu.test(candidate.role)) throw fixed("authorization_failed");
+}
+
+function normalizeAssetName(value: unknown): string {
+  assertString(value, MAX_ASSET_NAME_BYTES, "content_rejected");
+  const normalized = value.replaceAll("\\", "/").replace(/^\.\//u, "");
+  if (!normalized || normalized.startsWith("/") || normalized.includes("..") || normalized.includes("//") || !/^[a-z0-9][a-z0-9._@/-]*$/iu.test(normalized)) throw fixed("content_rejected");
+  return normalized;
+}
+
+function readU32(bytes: Uint8Array, offset: number): number {
+  return ((bytes[offset] * 0x1000000) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]) >>> 0;
+}
+
+function readU32Le(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] * 0x1000000)) >>> 0;
+}
+
+function assertPixels(width: number, height: number): void {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > MAX_IMAGE_PIXELS) throw fixed("content_rejected");
+}
+
+function hasBytes(bytes: Uint8Array, signature: readonly number[], offset = 0): boolean {
+  return signature.every((value, index) => bytes[offset + index] === value);
+}
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function validatePng(bytes: Uint8Array): void {
+  if (bytes.length < 33 || !hasBytes(bytes, [137, 80, 78, 71, 13, 10, 26, 10])) throw fixed("content_rejected");
+  let index = 8;
+  let sawHeader = false;
+  let sawPalette = false;
+  let sawData = false;
+  let dataClosed = false;
+  let sawEnd = false;
+  while (index < bytes.length) {
+    if (index + 12 > bytes.length) throw fixed("content_rejected");
+    const length = readU32(bytes, index);
+    const end = index + 12 + length;
+    if (end > bytes.length) throw fixed("content_rejected");
+    const type = bytes.slice(index + 4, index + 8);
+    if (!type.every((value) => (value >= 65 && value <= 90) || (value >= 97 && value <= 122))) throw fixed("content_rejected");
+    const crcInput = new Uint8Array(4 + length);
+    crcInput.set(type, 0);
+    crcInput.set(bytes.slice(index + 8, index + 8 + length), 4);
+    if (crc32(crcInput) !== readU32(bytes, index + 8 + length)) throw fixed("content_rejected");
+    const chunkName = String.fromCharCode(...type);
+    if (!sawHeader && chunkName !== "IHDR") throw fixed("content_rejected");
+    if (chunkName === "IHDR") {
+      if (sawHeader || length !== 13) throw fixed("content_rejected");
+      assertPixels(readU32(bytes, index + 8), readU32(bytes, index + 12));
+      const bitDepth = bytes[index + 16];
+      const colorType = bytes[index + 17];
+      if (![0, 2, 3, 4, 6].includes(colorType) || bitDepth === 0) throw fixed("content_rejected");
+      sawHeader = true;
+    } else if (chunkName === "PLTE") {
+      if (sawPalette || dataClosed || length === 0 || length % 3 !== 0) throw fixed("content_rejected");
+      sawPalette = true;
+    } else if (chunkName === "IDAT") {
+      if (dataClosed) throw fixed("content_rejected");
+      sawData = true;
+    } else if (chunkName === "IEND") {
+      if (sawEnd || length !== 0 || !sawData || end !== bytes.length) throw fixed("content_rejected");
+      sawEnd = true;
+    } else if (["acTL", "fcTL", "fdAT"].includes(chunkName)) {
+      throw fixed("content_rejected");
+    } else if (sawData) {
+      dataClosed = true;
+    }
+    if (chunkName !== "IDAT" && sawData && chunkName !== "IEND") dataClosed = true;
+    index = end;
+    if (sawEnd) break;
+  }
+  if (!sawHeader || !sawData || !sawEnd || index !== bytes.length) throw fixed("content_rejected");
+}
+
+function validateGif(bytes: Uint8Array): void {
+  if (bytes.length < 19 || !(hasBytes(bytes, [71, 73, 70, 56, 55, 97]) || hasBytes(bytes, [71, 73, 70, 56, 57, 97]))) throw fixed("content_rejected");
+  assertPixels(bytes[6] | (bytes[7] << 8), bytes[8] | (bytes[9] << 8));
+  let index = 13;
+  const packed = bytes[10];
+  if (packed & 0x80) index += 3 * (1 << ((packed & 7) + 1));
+  if (index > bytes.length) throw fixed("content_rejected");
+  let frames = 0;
+  let sawTrailer = false;
+  while (index < bytes.length) {
+    const marker = bytes[index++];
+    if (marker === 0x3b) { sawTrailer = true; break; }
+    if (marker === 0x2c) {
+      if (index + 9 > bytes.length) throw fixed("content_rejected");
+      const width = bytes[index + 4] | (bytes[index + 5] << 8);
+      const height = bytes[index + 6] | (bytes[index + 7] << 8);
+      assertPixels(width, height);
+      const localPacked = bytes[index + 8];
+      index += 9;
+      if (localPacked & 0x80) index += 3 * (1 << ((localPacked & 7) + 1));
+      if (index >= bytes.length) throw fixed("content_rejected");
+      if (bytes[index++] === 0) throw fixed("content_rejected");
+      index = skipGifSubBlocks(bytes, index);
+      frames += 1;
+      continue;
+    }
+    if (marker !== 0x21 || index >= bytes.length) throw fixed("content_rejected");
+    const label = bytes[index++];
+    if (label === 0xf9) {
+      if (index >= bytes.length || bytes[index++] !== 4 || index + 4 >= bytes.length) throw fixed("content_rejected");
+      index += 4;
+      if (bytes[index++] !== 0) throw fixed("content_rejected");
+    } else if (label === 0x01) {
+      if (index >= bytes.length || bytes[index++] !== 12 || index + 12 > bytes.length) throw fixed("content_rejected");
+      index += 12;
+      index = skipGifSubBlocks(bytes, index);
+    } else if (label === 0xff) {
+      if (index >= bytes.length || bytes[index++] !== 11 || index + 11 > bytes.length) throw fixed("content_rejected");
+      index += 11;
+      index = skipGifSubBlocks(bytes, index);
+    } else {
+      index = skipGifSubBlocks(bytes, index);
+    }
+  }
+  if (!sawTrailer || index !== bytes.length || frames !== 1) throw fixed("content_rejected");
+}
+
+function skipGifSubBlocks(bytes: Uint8Array, start: number): number {
+  let index = start;
+  while (index < bytes.length) {
+    const size = bytes[index++];
+    if (size === 0) return index;
+    if (index + size > bytes.length) throw fixed("content_rejected");
+    index += size;
+  }
+  throw fixed("content_rejected");
+}
+
+function validateJpeg(bytes: Uint8Array): void {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) throw fixed("content_rejected");
+  let index = 2;
+  let sawFrame = false;
+  while (index < bytes.length - 2) {
+    if (bytes[index] !== 0xff) throw fixed("content_rejected");
+    while (bytes[index] === 0xff) index += 1;
+    const marker = bytes[index++];
+    if (marker === 0xd9) break;
+    if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (index + 2 > bytes.length) throw fixed("content_rejected");
+    const length = (bytes[index] << 8) | bytes[index + 1];
+    if (length < 2 || index + length > bytes.length) throw fixed("content_rejected");
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      if (length < 8) throw fixed("content_rejected");
+      assertPixels((bytes[index + 5] << 8) | bytes[index + 6], (bytes[index + 3] << 8) | bytes[index + 4]);
+      sawFrame = true;
+    }
+    index += length;
+    if (marker === 0xda) {
+      while (index < bytes.length - 1) {
+        if (bytes[index] !== 0xff) { index += 1; continue; }
+        if (bytes[index + 1] === 0x00 || (bytes[index + 1] >= 0xd0 && bytes[index + 1] <= 0xd7)) { index += 2; continue; }
+        break;
+      }
+      if (index >= bytes.length - 1 || bytes[index] !== 0xff || bytes[index + 1] !== 0xd9) throw fixed("content_rejected");
+      break;
+    }
+  }
+  if (!sawFrame || index !== bytes.length - 2 || bytes[index] !== 0xff || bytes[index + 1] !== 0xd9) throw fixed("content_rejected");
+}
+
+function validateWebp(bytes: Uint8Array): void {
+  if (bytes.length < 20 || !hasBytes(bytes, [82, 73, 70, 70]) || !hasBytes(bytes, [87, 69, 66, 80], 8) || readU32Le(bytes, 4) + 8 !== bytes.length) throw fixed("content_rejected");
+  let index = 12;
+  let sawExtendedHeader = false;
+  let sawImage = false;
+  let frames = 0;
+  while (index < bytes.length) {
+    if (index + 8 > bytes.length) throw fixed("content_rejected");
+    const chunkName = String.fromCharCode(...bytes.slice(index, index + 4));
+    const length = readU32Le(bytes, index + 4);
+    const end = index + 8 + length;
+    if (end > bytes.length) throw fixed("content_rejected");
+    if (chunkName === "VP8X") {
+      if (sawExtendedHeader || length !== 10) throw fixed("content_rejected");
+      assertPixels(1 + bytes[index + 12] + (bytes[index + 13] << 8) + (bytes[index + 14] << 16), 1 + bytes[index + 15] + (bytes[index + 16] << 8) + (bytes[index + 17] << 16));
+      sawExtendedHeader = true;
+    } else if (chunkName === "VP8 " || chunkName === "VP8L") {
+      if (sawImage) throw fixed("content_rejected");
+      sawImage = true;
+    } else if (chunkName === "ANMF") {
+      frames += 1;
+      sawImage = true;
+    }
+    index = end + (length & 1);
+  }
+  if (!sawExtendedHeader || !sawImage || frames > 1 || index !== bytes.length) throw fixed("content_rejected");
+}
+
+function decodeUtf8(bytes: Uint8Array): string {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw fixed("content_rejected"); }
+}
+
+function validateCssSyntax(source: string): void {
+  let index = 0;
+  let depth = 0;
+  while (index < source.length) {
+    if (source.startsWith("/*", index)) {
+      const end = source.indexOf("*/", index + 2);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 2;
+      continue;
+    }
+    if (source[index] === "\\") throw fixed("content_rejected");
+    if (source[index] === "\"" || source[index] === "'") { index = readCssString(source, index).end; continue; }
+    const urlMatch = source.slice(index).match(/^url\s*\(/iu);
+    if (urlMatch) { index = readCssUrl(source, index + urlMatch[0].length - 1).end; continue; }
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}") { depth -= 1; if (depth < 0) throw fixed("content_rejected"); }
+    if (EXTERNAL_CSS_SCHEME.test(source.slice(index)) || source.startsWith("//", index)) throw fixed("content_rejected");
+    index += 1;
+  }
+  if (depth !== 0) throw fixed("content_rejected");
+}
+
+function validateJsonNoDuplicateKeys(source: string): void {
+  let index = 0;
+  const whitespace = () => { while (/\s/u.test(source[index] ?? "")) index += 1; };
+  const stringValue = (): string => {
+    if (source[index] !== '"') throw fixed("content_rejected");
+    const start = index;
+    index += 1;
+    while (index < source.length) {
+      if (source[index] === "\\") { index += 2; continue; }
+      if (source[index] === '"') { index += 1; try { return JSON.parse(source.slice(start, index)) as string; } catch { throw fixed("content_rejected"); } }
+      if (source.charCodeAt(index) < 0x20) throw fixed("content_rejected");
+      index += 1;
+    }
+    throw fixed("content_rejected");
+  };
+  const value = (depth: number): void => {
+    if (depth > 64) throw fixed("content_rejected");
+    whitespace();
+    if (source[index] === "{") {
+      index += 1; whitespace(); const keys = new Set<string>();
+      if (source[index] === "}") { index += 1; return; }
+      while (true) {
+        const key = stringValue();
+        if (keys.has(key)) throw fixed("content_rejected");
+        keys.add(key); whitespace(); if (source[index++] !== ":") throw fixed("content_rejected");
+        value(depth + 1); whitespace();
+        if (source[index] === "}") { index += 1; return; }
+        if (source[index++] !== ",") throw fixed("content_rejected");
+        whitespace();
+      }
+    }
+    if (source[index] === "[") {
+      index += 1; whitespace();
+      if (source[index] === "]") { index += 1; return; }
+      while (true) {
+        value(depth + 1); whitespace();
+        if (source[index] === "]") { index += 1; return; }
+        if (source[index++] !== ",") throw fixed("content_rejected");
+        whitespace();
+      }
+    }
+    if (source[index] === '"') { stringValue(); return; }
+    if (/^(?:true|false|null)\b/u.test(source.slice(index))) { index += source.slice(index).match(/^(?:true|false|null)\b/u)![0].length; return; }
+    const number = source.slice(index).match(/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u);
+    if (number) { index += number[0].length; return; }
+    throw fixed("content_rejected");
+  };
+  value(0); whitespace(); if (index !== source.length) throw fixed("content_rejected");
+}
+
+function validateSvg(bytes: Uint8Array): void {
+  const text = decodeUtf8(bytes);
+  if (!/<svg(?:\s|>)/iu.test(text) || /<(?:script|foreignObject)(?:\s|>)/iu.test(text) || /<!doctype|<!entity|@import|url\s*\(/iu.test(text)) throw fixed("content_rejected");
+  const withoutNamespaces = text
+    .replaceAll("http://www.w3.org/2000/svg", "")
+    .replaceAll("http://www.w3.org/1999/xlink", "")
+    .replace(/\b(?:xmlns|[a-z][a-z0-9._-]*):[a-z][a-z0-9._-]*/giu, "");
+  if (/[a-z][a-z0-9+.-]*:|\/\//iu.test(withoutNamespaces)) throw fixed("content_rejected");
+  const viewBox = text.match(/\bviewBox\s*=\s*["']\s*0\s+0\s+([0-9.]+)\s+([0-9.]+)\s*["']/iu);
+  const width = text.match(/\bwidth\s*=\s*["']\s*([0-9.]+)(?:px)?\s*["']/iu);
+  const height = text.match(/\bheight\s*=\s*["']\s*([0-9.]+)(?:px)?\s*["']/iu);
+  if (viewBox) assertPixels(Number(viewBox[1]), Number(viewBox[2]));
+  else if (width && height) assertPixels(Number(width[1]), Number(height[1]));
+  else throw fixed("content_rejected");
+  const stack: string[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const open = text.indexOf("<", index);
+    if (open < 0) break;
+    if (text.startsWith("<!--", open)) {
+      const end = text.indexOf("-->", open + 4);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 3;
+      continue;
+    }
+    if (text.startsWith("<?xml", open)) {
+      const end = text.indexOf("?>", open + 5);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 2;
+      continue;
+    }
+    const tag = parseTag(text, open);
+    assertNoDuplicateAttributes(tag.attributes);
+    if (tag.closing) {
+      if (stack.pop() !== tag.name) throw fixed("content_rejected");
+    } else if (!text.slice(tag.start, tag.end).trimEnd().endsWith("/>")) {
+      stack.push(tag.name);
+    }
+    index = tag.end;
+  }
+  if (stack.length || text.match(/<svg(?:\s|>)/giu)?.length !== 1 || !/<\/svg>\s*$/iu.test(text)) throw fixed("content_rejected");
+}
+
+function assertNoDuplicateAttributes(attributes: readonly ParsedAttribute[]): void {
+  const names = new Set<string>();
+  for (const attribute of attributes) {
+    if (names.has(attribute.name)) throw fixed("content_rejected");
+    names.add(attribute.name);
+  }
+}
+
+function validateJavaScript(bytes: Uint8Array): void {
+  const source = decodeUtf8(bytes);
+  if (/\b(?:import|export|require|fetch|XMLHttpRequest|WebSocket|EventSource|importScripts)\s*(?:\(|["'])/iu.test(source)) throw fixed("content_rejected");
+  let quote = "";
+  let comment = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const value = source[index];
+    const next = source[index + 1];
+    if (comment === "line") { if (value === "\n" || value === "\r") comment = ""; continue; }
+    if (comment === "block") { if (value === "*" && next === "/") { comment = ""; index += 1; } continue; }
+    if (quote) { if (value === "\\") { if (index + 1 >= source.length) throw fixed("content_rejected"); index += 1; } else if (value === quote) quote = ""; else if (value === "\n" || value === "\r") throw fixed("content_rejected"); continue; }
+    if (value === "\"" || value === "'") { quote = value; continue; }
+    if (value === "/" && next === "/") { comment = "line"; index += 1; continue; }
+    if (value === "/" && next === "*") { comment = "block"; index += 1; }
+  }
+  if (quote || comment) throw fixed("content_rejected");
+}
+
+function validateAsset(asset: PreviewAsset): PreviewAsset {
+  if (!asset || typeof asset !== "object") throw fixed("content_rejected");
+  const name = normalizeAssetName(asset.name);
+  assertString(asset.mimeType, 96, "content_rejected");
+  const mimeType = asset.mimeType.toLowerCase();
+  if (!(asset.bytes instanceof Uint8Array) || asset.bytes.byteLength === 0 || asset.bytes.byteLength > MAX_ASSET_BYTES) throw fixed("content_rejected");
+  if (!IMAGE_TYPES.has(mimeType) && !SCRIPT_TYPES.has(mimeType) && !STYLE_TYPES.has(mimeType) && !FONT_TYPES.has(mimeType) && mimeType !== "application/json" && mimeType !== "text/plain") throw fixed("content_rejected");
+  const bytes = new Uint8Array(asset.bytes);
+  if (mimeType === "image/png") validatePng(bytes);
+  else if (mimeType === "image/gif") validateGif(bytes);
+  else if (mimeType === "image/jpeg") validateJpeg(bytes);
+  else if (mimeType === "image/webp") validateWebp(bytes);
+  else if (mimeType === "image/svg+xml") validateSvg(bytes);
+  else if (mimeType === "font/woff" && (bytes.length < 44 || !hasBytes(bytes, [119, 79, 70, 70]) || readU32(bytes, 8) > bytes.length)) throw fixed("content_rejected");
+  else if (mimeType === "font/woff2" && (bytes.length < 48 || !hasBytes(bytes, [119, 79, 70, 50]) || readU32(bytes, 8) > bytes.length)) throw fixed("content_rejected");
+  else if (SCRIPT_TYPES.has(mimeType)) validateJavaScript(bytes);
+  else if (STYLE_TYPES.has(mimeType)) validateCssSyntax(decodeUtf8(bytes));
+  else if (mimeType === "application/json" || mimeType === "text/plain") decodeUtf8(bytes);
+  if (mimeType === "application/json") validateJsonNoDuplicateKeys(decodeUtf8(bytes));
+  return Object.freeze({ name, mimeType, bytes });
+}
+
+function assetMap(content: PreviewContent): ReadonlyMap<string, PreviewAsset> {
+  if (!content || typeof content !== "object" || !Array.isArray(content.assets ?? [])) throw fixed("content_rejected");
+  const assets = new Map<string, PreviewAsset>();
+  let total = 0;
+  const sourceAssets = content.assets ?? [];
+  if (sourceAssets.length > MAX_ASSETS) throw fixed("content_rejected");
+  for (const source of sourceAssets) {
+    const asset = validateAsset(source);
+    if (assets.has(asset.name)) throw fixed("content_rejected");
+    total += asset.bytes.byteLength;
+    if (total > MAX_TOTAL_ASSET_BYTES) throw fixed("content_rejected");
+    assets.set(asset.name, asset);
+  }
+  return assets;
+}
+
+function base64(bytes: Uint8Array): string {
+  let text = "";
+  for (const byte of bytes) text += String.fromCharCode(byte);
+  return btoa(text);
+}
+
+function assetDataUrl(asset: PreviewAsset): string {
+  return `data:${asset.mimeType};base64,${base64(asset.bytes)}`;
+}
+
+function localAssetReference(value: string, assets: ReadonlyMap<string, PreviewAsset>): string | undefined {
+  const hashIndex = value.indexOf("#");
+  const queryIndex = value.indexOf("?");
+  if (queryIndex >= 0) throw fixed("content_rejected");
+  const path = hashIndex >= 0 ? value.slice(0, hashIndex) : value;
+  const hash = hashIndex >= 0 ? value.slice(hashIndex) : "";
+  if (path.includes("..")) throw fixed("content_rejected");
+  const candidates = [path, path.replace(/^\.\//u, ""), path.replace(/^\//u, "")];
+  for (const candidate of candidates) {
+    const asset = assets.get(candidate);
+    if (asset) return `${assetDataUrl(asset)}${hash}`;
+  }
+  return undefined;
+}
+
+function validateUrlReference(value: string, assets: ReadonlyMap<string, PreviewAsset>): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("#")) return trimmed;
+  if (SCHEME_URL.test(trimmed) || trimmed.startsWith("//")) throw fixed("content_rejected");
+  const embedded = localAssetReference(trimmed, assets);
+  if (embedded) return embedded;
+  throw fixed("content_rejected");
+}
+
+function replaceEdits(source: string, edits: readonly Edit[]): string {
+  const sorted = [...edits].sort((left, right) => right.start - left.start);
+  let result = source;
+  let previousStart = source.length + 1;
+  for (const edit of sorted) {
+    if (edit.start < 0 || edit.end < edit.start || edit.end > source.length || edit.end > previousStart) throw fixed("content_rejected");
+    result = `${result.slice(0, edit.start)}${edit.value}${result.slice(edit.end)}`;
+    previousStart = edit.start;
+  }
+  return result;
+}
+
+function readCssString(source: string, start: number): { end: number; value: string; valueStart: number; valueEnd: number } {
+  const quote = source[start];
+  let index = start + 1;
+  while (index < source.length) {
+    if (source[index] === "\\") { index += 2; continue; }
+    if (source[index] === quote) return { end: index + 1, value: source.slice(start + 1, index), valueStart: start + 1, valueEnd: index };
+    if (source[index] === "\n" || source[index] === "\r") throw fixed("content_rejected");
+    index += 1;
+  }
+  throw fixed("content_rejected");
+}
+
+function readCssUrl(source: string, openParen: number): { end: number; value: string; valueStart: number; valueEnd: number } {
+  let index = openParen + 1;
+  while (/\s/u.test(source[index] ?? "")) index += 1;
+  if (source[index] === "\"" || source[index] === "'") {
+    const parsed = readCssString(source, index);
+    index = parsed.end;
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+    if (source[index] !== ")") throw fixed("content_rejected");
+    return { ...parsed, end: index + 1 };
+  }
+  const valueStart = index;
+  while (index < source.length && source[index] !== ")") index += 1;
+  if (index >= source.length) throw fixed("content_rejected");
+  const raw = source.slice(valueStart, index);
+  const value = raw.trim();
+  const leading = raw.length - raw.trimStart().length;
+  return { end: index + 1, value, valueStart: valueStart + leading, valueEnd: valueStart + leading + value.length };
+}
+
+function sanitizeCss(source: string, assets: ReadonlyMap<string, PreviewAsset>): string {
+  const edits: Edit[] = [];
+  let index = 0;
+  let depth = 0;
+  while (index < source.length) {
+    if (source.startsWith("/*", index)) {
+      const end = source.indexOf("*/", index + 2);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 2;
+      continue;
+    }
+    if (source[index] === "\"" || source[index] === "'") {
+      const parsed = readCssString(source, index);
+      if (SCHEME_URL.test(parsed.value) || parsed.value.includes("//") || /\burl\s*\(/iu.test(parsed.value)) throw fixed("content_rejected");
+      index = parsed.end;
+      continue;
+    }
+    if (source[index] === "\\") throw fixed("content_rejected");
+    const urlMatch = source.slice(index).match(/^url\s*\(/iu);
+    if (urlMatch) {
+      const parsed = readCssUrl(source, index + urlMatch[0].length - 1);
+      edits.push({ start: parsed.valueStart, end: parsed.valueEnd, value: validateUrlReference(parsed.value, assets) });
+      index = parsed.end;
+      continue;
+    }
+    const importMatch = source.slice(index).match(/^@import\b/iu);
+    if (importMatch) {
+      let next = index + importMatch[0].length;
+      while (/\s/u.test(source[next] ?? "")) next += 1;
+      if (source[next] === "\"" || source[next] === "'") {
+        const parsed = readCssString(source, next);
+        edits.push({ start: parsed.valueStart, end: parsed.valueEnd, value: validateUrlReference(parsed.value, assets) });
+        index = parsed.end;
+        continue;
+      }
+      if (/^url\s*\(/iu.test(source.slice(next))) { index = next; continue; }
+      throw fixed("content_rejected");
+    }
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}") { depth -= 1; if (depth < 0) throw fixed("content_rejected"); }
+    if (EXTERNAL_CSS_SCHEME.test(source.slice(index)) || source.startsWith("//", index)) throw fixed("content_rejected");
+    index += 1;
+  }
+  if (depth !== 0) throw fixed("content_rejected");
+  return replaceEdits(source, edits);
+}
+
+function parseTag(source: string, start: number): ParsedTag {
+  let index = start + 1;
+  const closing = source[index] === "/";
+  if (closing) index += 1;
+  const nameStart = index;
+  while (/[a-z0-9:_-]/iu.test(source[index] ?? "")) index += 1;
+  if (index === nameStart) throw fixed("content_rejected");
+  const name = source.slice(nameStart, index).toLowerCase();
+  const attributes: ParsedAttribute[] = [];
+  if (closing) {
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+    if (source[index] !== ">") throw fixed("content_rejected");
+    return { attributes, closing, end: index + 1, name, start };
+  }
+  while (index < source.length) {
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+    if (source[index] === ">") return { attributes, closing, end: index + 1, name, start };
+    if (source[index] === "/" && source[index + 1] === ">") return { attributes, closing, end: index + 2, name, start };
+    const attrStart = index;
+    while (/[a-z0-9:_.-]/iu.test(source[index] ?? "")) index += 1;
+    if (index === attrStart) throw fixed("content_rejected");
+    const attrName = source.slice(attrStart, index).toLowerCase();
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+    if (source[index] !== "=") { attributes.push({ name: attrName, value: "", valueStart: index, valueEnd: index }); continue; }
+    index += 1;
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+    const rawStart = index;
+    let valueEnd = index;
+    let value: string;
+    if (source[index] === "\"" || source[index] === "'") {
+      const quote = source[index];
+      index += 1;
+      const actualStart = index;
+      while (index < source.length && source[index] !== quote) index += 1;
+      if (index >= source.length) throw fixed("content_rejected");
+      valueEnd = index;
+      value = source.slice(actualStart, index);
+      attributes.push({ name: attrName, value, valueStart: actualStart, valueEnd });
+      index += 1;
+      continue;
+    }
+    while (index < source.length && !/[\s>]/u.test(source[index])) index += 1;
+    valueEnd = index;
+    value = source.slice(rawStart, valueEnd);
+    attributes.push({ name: attrName, value, valueStart: rawStart, valueEnd });
+  }
+  throw fixed("content_rejected");
+}
+
+function findClosingTag(source: string, from: number, name: string): ParsedTag {
+  let index = from;
+  while (index < source.length) {
+    const found = source.indexOf("<", index);
+    if (found < 0) throw fixed("content_rejected");
+    const tag = parseTag(source, found);
+    if (tag.closing && tag.name === name) return tag;
+    index = tag.end;
+  }
+  throw fixed("content_rejected");
+}
+
+function srcset(value: string, assets: ReadonlyMap<string, PreviewAsset>): string {
+  if (value.includes("data:")) throw fixed("content_rejected");
+  const edits: Edit[] = [];
+  let offset = 0;
+  for (const candidate of value.split(",")) {
+    const leading = candidate.search(/\S/u);
+    if (leading < 0) throw fixed("content_rejected");
+    const raw = candidate.slice(leading);
+    const space = raw.search(/\s/u);
+    const reference = space < 0 ? raw : raw.slice(0, space);
+    const replacement = validateUrlReference(reference, assets);
+    const start = offset + leading;
+    edits.push({ start, end: start + reference.length, value: replacement });
+    offset += candidate.length + 1;
+  }
+  return replaceEdits(value, edits);
+}
+
+function sanitizeHtml(source: string, assets: ReadonlyMap<string, PreviewAsset>): string {
+  const edits: Edit[] = [];
+  let index = 0;
+  while (index < source.length) {
+    const open = source.indexOf("<", index);
+    if (open < 0) break;
+    if (source.startsWith("<!--", open)) {
+      const end = source.indexOf("-->", open + 4);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 3;
+      continue;
+    }
+    if (/^<!doctype\b/iu.test(source.slice(open))) {
+      const end = source.indexOf(">", open + 2);
+      if (end < 0) throw fixed("content_rejected");
+      index = end + 1;
+      continue;
+    }
+    const tag = parseTag(source, open);
+    if (!tag.closing) {
+      if (BLOCKED_TAGS.has(tag.name)) throw fixed("content_rejected");
+      assertNoDuplicateAttributes(tag.attributes);
+      const attributes = new Map(tag.attributes.map((attribute) => [attribute.name, attribute]));
+      if ([...attributes.keys()].some((name) => name.startsWith("on"))) throw fixed("content_rejected");
+      if (tag.name === "meta" && attributes.get("http-equiv")?.value.toLowerCase() === "refresh") throw fixed("content_rejected");
+      if (tag.name === "meta" && attributes.get("content") && (SCHEME_URL.test(attributes.get("content")!.value) || /\burl\s*=/iu.test(attributes.get("content")!.value))) throw fixed("content_rejected");
+      if (tag.name === "link" && attributes.get("rel")?.value.toLowerCase().split(/\s+/u).includes("preload")) throw fixed("content_rejected");
+      for (const attribute of tag.attributes) {
+        if (attribute.name === "srcset") edits.push({ start: attribute.valueStart, end: attribute.valueEnd, value: srcset(attribute.value, assets) });
+        else if (URL_ATTRIBUTES.has(attribute.name)) edits.push({ start: attribute.valueStart, end: attribute.valueEnd, value: validateUrlReference(attribute.value, assets) });
+        else if (attribute.name === "style") edits.push({ start: attribute.valueStart, end: attribute.valueEnd, value: sanitizeCss(attribute.value, assets) });
+        else if (SCHEME_URL.test(attribute.value) || attribute.value.includes("//") || /\burl\s*\(/iu.test(attribute.value)) throw fixed("content_rejected");
+      }
+      if (tag.name === "script") {
+        const src = attributes.get("src");
+        if (!src || attributes.get("type")?.value.toLowerCase() === "module") throw fixed("content_rejected");
+        const asset = localAssetReference(src.value, assets);
+        if (!asset || !/^data:(?:application\/javascript|text\/javascript);base64,/iu.test(asset)) throw fixed("content_rejected");
+        const close = findClosingTag(source, tag.end, "script");
+        if (source.slice(tag.end, close.start).trim()) throw fixed("content_rejected");
+        index = close.end;
+        continue;
+      }
+      if (tag.name === "style") {
+        const close = findClosingTag(source, tag.end, "style");
+        edits.push({ start: tag.end, end: close.start, value: sanitizeCss(source.slice(tag.end, close.start), assets) });
+        index = close.end;
+        continue;
+      }
+    }
+    index = tag.end;
+  }
+  const csp = `<meta http-equiv="Content-Security-Policy" content="${CSP}">`;
+  const head = source.match(/<head(?:\s[^>]*)?>/iu);
+  const insertion = head ? head.index! + head[0].length : 0;
+  const withCsp = head ? `${source.slice(0, insertion)}${csp}${source.slice(insertion)}` : `${csp}${source}`;
+  const shifted = edits.map((edit) => (edit.start >= insertion ? { ...edit, start: edit.start + csp.length, end: edit.end + csp.length } : edit));
+  return replaceEdits(withCsp, shifted);
+}
+
+type CompiledPreview = Readonly<{ assetUrls: ReadonlySet<string>; dataUrl: string }>;
+
+function compilePreview(content: PreviewContent): CompiledPreview {
+  if (!content || typeof content !== "object" || typeof content.html !== "string" || content.html.length === 0 || byteLength(content.html) > MAX_HTML_BYTES) throw fixed("content_rejected");
+  if (/<base(?:\s|>)/iu.test(content.html)) throw fixed("content_rejected");
+  const assets = assetMap(content);
+  const html = sanitizeHtml(content.html, assets);
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+  return Object.freeze({ assetUrls: new Set([...assets.values()].map((asset) => assetDataUrl(asset))), dataUrl });
+}
+
+export function previewDataUrl(content: PreviewContent): string {
+  return compilePreview(content).dataUrl;
+}
+
+function publicHandle(projectId: string, handleId: string, generation: number): PreviewHandle {
+  return Object.freeze({ projectId, handleId, generation });
+}
+
+function partitionFor(projectId: string, handleId: string): string { return `preview-${projectId}-${handleId}`; }
+
+function fixedFromUnknown(error: unknown, fallback: PreviewErrorCode): PreviewHostError { return error instanceof PreviewHostError ? error : fixed(fallback); }
+
+function withWatchdog<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) reject(fixed("lifecycle_failure")); }, timeoutMs);
+    operation().then((value) => { settled = true; clearTimeout(timer); resolve(value); }, (error) => { settled = true; clearTimeout(timer); reject(error); });
+  });
+}
+
+export class PreviewHostController {
+  private readonly records = new Map<string, PreviewRecord>();
+  private readonly listeners = new Set<(event: PreviewEvent) => void>();
+  private readonly adapters: PreviewHostAdapters;
+  private readonly authorize: PreviewAuthorizer;
+  private readonly resolvePrincipal: PreviewPrincipalResolver;
+  private readonly maxActiveHandles: number;
+  private readonly watchdogMs: number;
+
+  constructor(adapters: PreviewHostAdapters, options: Readonly<{ authorize: PreviewAuthorizer; resolvePrincipal: PreviewPrincipalResolver; maxActiveHandles?: number; watchdogMs?: number }>) {
+    this.adapters = adapters;
+    this.authorize = options.authorize;
+    this.resolvePrincipal = options.resolvePrincipal;
+    this.maxActiveHandles = options.maxActiveHandles ?? MAX_ACTIVE_HANDLES;
+    this.watchdogMs = options.watchdogMs ?? DEFAULT_WATCHDOG_MS;
+    if (typeof this.authorize !== "function" || typeof this.resolvePrincipal !== "function" || !Number.isInteger(this.maxActiveHandles) || this.maxActiveHandles < 1 || this.maxActiveHandles > MAX_ACTIVE_HANDLES || !Number.isInteger(this.watchdogMs) || this.watchdogMs < MIN_WATCHDOG_MS || this.watchdogMs > MAX_WATCHDOG_MS) throw fixed("invalid_request");
+  }
+
+  onEvent(listener: (event: PreviewEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async create(actor: PreviewActor, projectId: string, content: PreviewContent): Promise<PreviewHandle> {
+    assertActor(actor);
+    assertProjectId(projectId);
+    const principal = await this.ensureAuthorized(actor, "create", projectId, 1);
+    if (this.records.size >= this.maxActiveHandles) throw fixed("capacity_exceeded");
+    const handle = publicHandle(projectId, randomUUID(), 1);
+    let session: PreviewSession | undefined;
+    let record: PreviewRecord | undefined;
+    try {
+      const compiled = compilePreview(content);
+      const dataUrl = compiled.dataUrl;
+      const partition = partitionFor(projectId, handle.handleId);
+      session = this.adapters.createSession(partition);
+      if (!session || session.partition !== partition) throw fixed("adapter_failure");
+      const window = this.adapters.createWindow({ show: false, webPreferences: { session, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, devTools: false, allowRunningInsecureContent: false, webviewTag: false } });
+      if (!window) throw fixed("adapter_failure");
+      record = { allowedUrls: new Set([dataUrl, ...compiled.assetUrls]), cleaned: false, dataUrl, handle, ownerAccountId: principal.accountId, session, state: "creating", window };
+      this.records.set(this.key(handle), record);
+      this.configurePolicies(record);
+      this.emitState(record);
+      await withWatchdog(() => window.loadURL(dataUrl), this.watchdogMs);
+      record.state = "ready";
+      this.emitState(record);
+      return record.handle;
+    } catch (error) {
+      const normalized = fixedFromUnknown(error, error instanceof PreviewHostError && error.code === "content_rejected" ? "content_rejected" : "adapter_failure");
+      if (record) {
+        record.state = "failed";
+        this.emitError(record, normalized.code);
+        try { await this.cleanupRecord(record); } catch { /* record removal below is mandatory */ }
+        this.records.delete(this.key(record.handle));
+      } else if (session) await this.cleanupSession(session);
+      throw normalized;
+    }
+  }
+
+  async reload(actor: PreviewActor, projectId: string, handle: PreviewHandle, content: PreviewContent): Promise<PreviewHandle> {
+    assertActor(actor);
+    const record = this.assertCurrent(projectId, handle);
+    const principal = await this.ensureAuthorized(actor, "reload", projectId, handle.generation, handle.handleId);
+    if (record.ownerAccountId !== principal.accountId) throw fixed("authorization_failed");
+    const compiled = compilePreview(content);
+    const dataUrl = compiled.dataUrl;
+    const nextHandle = publicHandle(projectId, handle.handleId, handle.generation + 1);
+    this.records.delete(this.key(handle));
+    record.handle = nextHandle;
+    record.dataUrl = dataUrl;
+    record.allowedUrls = new Set([dataUrl, ...compiled.assetUrls]);
+    record.state = "reloading";
+    this.records.set(this.key(nextHandle), record);
+    this.emitState(record);
+    try {
+      await withWatchdog(() => record.window.loadURL(dataUrl), this.watchdogMs);
+      record.state = "ready";
+      this.emitState(record);
+      return record.handle;
+    } catch (error) {
+      const normalized = fixedFromUnknown(error, "lifecycle_failure");
+      record.state = "failed";
+      this.emitError(record, normalized.code);
+      try { await this.cleanupRecord(record); } catch { /* removal is still required */ }
+      this.records.delete(this.key(record.handle));
+      throw normalized;
+    }
+  }
+
+  async show(actor: PreviewActor, projectId: string, handle: PreviewHandle): Promise<void> {
+    assertActor(actor);
+    const record = this.assertCurrent(projectId, handle);
+    const principal = await this.ensureAuthorized(actor, "show", projectId, handle.generation, handle.handleId);
+    if (record.ownerAccountId !== principal.accountId || record.state !== "ready") throw fixed("authorization_failed");
+    try { record.window.show(); } catch { throw fixed("adapter_failure"); }
+  }
+
+  async close(actor: PreviewActor, projectId: string, handle: PreviewHandle): Promise<void> {
+    assertActor(actor);
+    const record = this.assertCurrent(projectId, handle);
+    const principal = await this.ensureAuthorized(actor, "close", projectId, handle.generation, handle.handleId);
+    if (record.ownerAccountId !== principal.accountId) throw fixed("authorization_failed");
+    record.state = "closed";
+    this.emitState(record);
+    let failure: PreviewHostError | undefined;
+    try { await this.cleanupRecord(record); } catch { failure = fixed("cleanup_failed"); }
+    finally { this.records.delete(this.key(record.handle)); }
+    if (failure) { this.emitError(record, failure.code); throw failure; }
+  }
+
+  private key(handle: Pick<PreviewHandle, "projectId" | "handleId" | "generation">): string { return `${handle.projectId}\u0000${handle.handleId}\u0000${handle.generation}`; }
+
+  private assertCurrent(projectId: string, handle: PreviewHandle): PreviewRecord {
+    assertProjectId(projectId);
+    if (!handle || typeof handle !== "object" || Object.keys(handle).sort().join(",") !== "generation,handleId,projectId" || handle.projectId !== projectId || !UUID.test(handle.handleId) || !Number.isSafeInteger(handle.generation) || handle.generation < 1) {
+      if (handle && typeof handle === "object" && "projectId" in handle && (handle as PreviewHandle).projectId !== projectId) throw fixed("cross_project");
+      throw fixed("invalid_request");
+    }
+    const record = this.records.get(this.key(handle));
+    if (record) {
+      if (record.state === "closed") throw fixed("closed_handle");
+      return record;
+    }
+    const same = [...this.records.values()].some((candidate) => candidate.handle.projectId === projectId && candidate.handle.handleId === handle.handleId);
+    throw fixed(same ? "stale_handle" : "closed_handle");
+  }
+
+  private async ensureAuthorized(actor: PreviewActor, operation: PreviewOperation, projectId: string, generation: number, handleId?: string): Promise<PreviewPrincipal> {
+    let principal: PreviewPrincipal | null = null;
+    try { principal = await this.resolvePrincipal(Object.freeze({ accountId: actor.accountId }), projectId); } catch { throw fixed("authorization_failed"); }
+    assertPrincipal(principal, actor.accountId);
+    let allowed = false;
+    try { allowed = await this.authorize({ actor: Object.freeze({ accountId: principal.accountId, role: principal.role }), generation, ...(handleId ? { handleId } : {}), operation, projectId }); } catch { throw fixed("authorization_failed"); }
+    if (!allowed) throw fixed("authorization_failed");
+    return principal;
+  }
+
+  private configurePolicies(record: PreviewRecord): void {
+    record.session.webRequest.onBeforeRequest({ urls: [ALL_URLS_FILTER] }, (details, callback) => callback({ cancel: !record.allowedUrls.has(details.url) }));
+    record.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    record.session.setPermissionCheckHandler(() => false);
+    record.session.on("will-download", (event) => event.preventDefault?.());
+    record.window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    record.window.webContents.on("will-navigate", (event: PreventableEvent) => event.preventDefault?.());
+    record.window.webContents.on("will-redirect", (event: PreventableEvent) => event.preventDefault?.());
+    record.window.webContents.on("ipc-message", (event: PreventableEvent) => event.preventDefault?.());
+    record.window.webContents.on("devtools-opened", () => record.window.webContents.closeDevTools?.());
+    record.window.webContents.on("destroyed", () => { void this.destroyed(record); });
+  }
+
+  private async destroyed(record: PreviewRecord): Promise<void> {
+    if (record.cleaned) return;
+    record.state = "closed";
+    this.emitState(record);
+    try { await this.cleanupRecord(record); } catch { this.emitError(record, "cleanup_failed"); }
+    finally { this.records.delete(this.key(record.handle)); }
+  }
+
+  private async cleanupSession(session: PreviewSession): Promise<void> {
+    try { await session.clearStorageData({ storages: ["serviceworkers", "caches", "localstorage", "indexdb", "websql", "cookies"] }); } catch { /* continue cleanup phases */ }
+    try { await session.clearCache(); } catch { /* continue cleanup phases */ }
+    try { await session.flushStorageData?.(); } catch { /* continue cleanup phases */ }
+  }
+
+  private async cleanupRecord(record: PreviewRecord): Promise<void> {
+    if (record.cleaned) return;
+    record.cleaned = true;
+    let failed = false;
+    try { await record.session.clearStorageData({ storages: ["serviceworkers", "caches", "localstorage", "indexdb", "websql", "cookies"] }); } catch { failed = true; }
+    try { await record.session.clearCache(); } catch { failed = true; }
+    try { await record.session.flushStorageData?.(); } catch { failed = true; }
+    try { if (!(record.window.isDestroyed?.() ?? false)) record.window.destroy(); } catch { failed = true; }
+    if (failed) throw fixed("cleanup_failed");
+  }
+
+  private emitState(record: PreviewRecord): void {
+    const event: PreviewStateEvent = Object.freeze({ type: "state", handle: record.handle, state: record.state });
+    for (const listener of this.listeners) { try { listener(event); } catch { /* listeners cannot affect lifecycle */ } }
+  }
+
+  private emitError(record: PreviewRecord, code: PreviewErrorCode): void {
+    const event: PreviewErrorEvent = Object.freeze({ type: "error", handle: record.handle, code });
+    for (const listener of this.listeners) { try { listener(event); } catch { /* listeners cannot affect lifecycle */ } }
+  }
+}
