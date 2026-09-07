@@ -43,7 +43,7 @@ This checklist describes the standalone product extraction. A checked item is im
 - [ ] Resolve the two high-severity dependency audit findings in the exact `electron@42.3.3` pin before stable release.
 - [ ] Add the real built-artifact capture harness and screen recording route.
 - [ ] Capture the front screen, settings, error and empty states, narrow layout, light theme, and dark theme from the built artifact.
-- [ ] Publish a unique non-draft release with a verified installer and release provenance.
+- [x] Publish a unique non-draft release with a verified installer and release provenance. (`preview-9-050b38a613f3`, published by GitHub Actions run 34166427935 with its own verify step green; unsigned Squirrel.Windows assets and SHA-256 hashes on the release record.)
 - [ ] Publish the documentation site and verify its served metadata and download links.
 
 ## Preview progression and stable 1.0.0 release gates

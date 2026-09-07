@@ -2,6 +2,10 @@ name: Build and publish release
 
 on:
   push:
+    # Branch pushes only. Publishing a release creates a tag, and a bare push trigger
+    # fires on tag pushes too, so every release would spawn another run and another release.
+    branches:
+      - '**'
   workflow_dispatch:
 
 permissions:
