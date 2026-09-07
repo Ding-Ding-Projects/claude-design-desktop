@@ -95,7 +95,7 @@ function shell(content, title, intro = '') {
 }
 
 function renderHome() {
-  return shell(`<div class="card hero-card"><span class="eyebrow">Local-first design workspace</span><h2>Build, inspect, and document design work.</h2><p>${funny('This public landing site explains the product. The installed app remains the runtime.', '呢個公開頁面用嚟介紹產品，真正運行要用已安裝嘅應用程式。')}</p><div class="button-row"><button class="filled-button" data-route="features" type="button">Explore features</button><button class="outlined-button" data-route="documentation" type="button">Read documentation</button></div></div><div class="card"><h2>Provenance at a glance</h2><dl class="metadata"><div><dt>Running version</dt><dd id="version-value">Loading…</dd></div><div><dt>Updated at</dt><dd id="updated-value">Loading…</dd></div><div><dt>Source baseline</dt><dd><code>4a3c267e</code></dd></div><div><dt>Release state</dt><dd>Preview, not verified</dd></div></dl><p id="provenance-note" class="inline-status">The release timestamp is unavailable until build provenance is recorded. No launch time is substituted.</p></div><div class="card-grid"><div class="card status-card"><span class="status-dot pending"></span><div><h3>Current status</h3><p>Documentation surface in progress. Feature implementation and release evidence remain unverified until integration.</p></div></div><div class="card"><h3>Start with a real empty state</h3><p>No sample projects or fake account data are seeded here. Read the contracts, then use the installed application when a verified build is available.</p></div></div>`, 'A calmer home for design work', 'Documentation, status, and download evidence stay in one responsive surface.');
+  return shell(`<div class="card hero-card"><span class="eyebrow">Local-first design workspace</span><h2>Build, inspect, and document design work.</h2><p>${funny('This public landing site explains the product. The installed app remains the runtime.', '呢個公開頁面用嚟介紹產品，真正運行要用已安裝嘅應用程式。')}</p><div class="button-row"><button class="filled-button" data-route="features" type="button">Explore features</button><button class="outlined-button" data-route="documentation" type="button">Read documentation</button></div></div><div class="card"><h2>Provenance at a glance</h2><dl class="metadata"><div><dt>Running version</dt><dd id="version-value">Loading…</dd></div><div><dt>Updated at</dt><dd id="updated-value">Loading…</dd></div><div><dt>Source baseline</dt><dd><code>4a3c267e</code></dd></div><div><dt>Release state</dt><dd id="release-state-value">Checking the release manifest…</dd></div></dl><p id="provenance-note" class="inline-status">The release timestamp is unavailable until build provenance is recorded. No launch time is substituted.</p></div><div class="card-grid"><div class="card status-card"><span class="status-dot pending"></span><div><h3>Current status</h3><p>Documentation surface in progress. Feature implementation and release evidence remain unverified until integration.</p></div></div><div class="card"><h3>Start with a real empty state</h3><p>No sample projects or fake account data are seeded here. Read the contracts, then use the installed application when a verified build is available.</p></div></div>`, 'A calmer home for design work', 'Documentation, status, and download evidence stay in one responsive surface.');
 }
 
 function renderFeatures() {
@@ -117,7 +117,7 @@ function renderArticle(id) {
 }
 
 function renderStatus() {
-  return shell(`<div class="card"><h2>Live delivery status</h2>${searchControl('status-search', 'Search status', 'Search lanes and evidence')}<div class="card-grid"><div class="card status-card"><span class="status-dot pending"></span><div><h3>Site/docs lane</h3><p>Running in a task-owned lane. Static source is being assembled; integration has not happened.</p><small>Evidence: current source commit, no release URL asserted.</small></div></div><div class="card status-card"><span class="status-dot pending"></span><div><h3>Desktop runtime</h3><p>Pending other lanes. No installed artifact or account seam is claimed here.</p><small>Evidence: not available in this lane.</small></div></div><div class="card status-card"><span class="status-dot pending"></span><div><h3>Public release</h3><p>No verified installer is published, so the download control stays intentionally unavailable.</p><small>Evidence: release manifest not present.</small></div></div></div></div><div class="card"><h2>Evidence boundary</h2><p>This page is an interactive local status view. It does not claim a remote Status Hub delivery until integration supplies a verified endpoint. A pending item remains pending, even when the card looks tidy.</p></div>`, 'Status', 'A factual view of what is known, what is running, and what still needs proof.');
+  return shell(`<div class="card"><h2>Live delivery status</h2>${searchControl('status-search', 'Search status', 'Search lanes and evidence')}<div class="card-grid"><div class="card status-card"><span class="status-dot pending"></span><div><h3>Site/docs lane</h3><p>Running in a task-owned lane. Static source is being assembled; integration has not happened.</p><small>Evidence: current source commit, no release URL asserted.</small></div></div><div class="card status-card"><span class="status-dot pending"></span><div><h3>Desktop runtime</h3><p>Pending other lanes. No installed artifact or account seam is claimed here.</p><small>Evidence: not available in this lane.</small></div></div><div id="public-release-card" class="card status-card"><span class="status-dot pending"></span><div><h3>Public release</h3><p>No verified installer is published, so the download control stays intentionally unavailable.</p><small>Evidence: release manifest not present.</small></div></div></div></div><div class="card"><h2>Evidence boundary</h2><p>This page is an interactive local status view. It does not claim a remote Status Hub delivery until integration supplies a verified endpoint. A pending item remains pending, even when the card looks tidy.</p></div>`, 'Status', 'A factual view of what is known, what is running, and what still needs proof.');
 }
 
 function renderSettings() {
@@ -125,7 +125,7 @@ function renderSettings() {
 }
 
 function renderDownloads() {
-  return shell(`<div class="card"><h2>Downloads</h2>${searchControl('downloads-search', 'Search downloads', 'Search available releases')}<div class="empty-state"><h3>No verified installer is available yet</h3><p>The direct download button will appear only after a published release manifest proves the immutable asset URL, version, platform, and hash. This page will not guess a candidate URL.</p><button class="outlined-button" type="button" disabled title="A verified public release is required">Download Windows installer</button></div></div><div class="card"><h2>Browser companion</h2><p>The extension flow will be documented here with separate start, downloading, and completion surfaces. CRX signing is not part of this project policy; the supported path is an unpacked extension or ZIP.</p></div>`, 'Downloads', 'Verified release assets appear here only after publication evidence exists.');
+  return shell(`<div class="card"><h2>Downloads</h2>${searchControl('downloads-search', 'Search downloads', 'Search available releases')}<div id="downloads-release" class="empty-state"><h3>No verified installer is available yet</h3><p>The direct download button will appear only after a published release manifest proves the immutable asset URL, version, platform, and hash. This page will not guess a candidate URL.</p><button class="outlined-button" type="button" disabled title="A verified public release is required">Download Windows installer</button></div></div><div class="card"><h2>Browser companion</h2><p>The extension flow will be documented here with separate start, downloading, and completion surfaces. CRX signing is not part of this project policy; the supported path is an unpacked extension or ZIP.</p></div>`, 'Downloads', 'Verified release assets appear here only after publication evidence exists.');
 }
 
 function renderChangelog() {
@@ -141,6 +141,7 @@ function renderRoute() {
   hydrateSettings();
   syncDomLocks();
   loadProvenance();
+  loadReleaseManifest();
 }
 
 function renderTabs() {
@@ -226,6 +227,42 @@ async function loadProvenance() {
     const note = document.querySelector('#provenance-note');
     if (data.updatedAt) { updated.textContent = `${data.updatedAt} (${data.timezone || 'UTC'})`; note.textContent = 'Updated-at is bound to build provenance from version.json.'; note.classList.add('verified'); } else { updated.textContent = 'Unavailable'; }
   } catch { version.textContent = 'Unavailable'; const updated = document.querySelector('#updated-value'); if (updated) updated.textContent = 'Unavailable'; }
+}
+
+const RELEASE_MANIFEST_PREFIX = 'https://github.com/Ding-Ding-Projects/claude-design-desktop/releases/download/';
+function validReleaseManifest(data) {
+  if (!data || data.schemaVersion !== 1 || typeof data.tag !== 'string' || !/^[0-9a-f]{40}$/.test(String(data.commit || ''))) return false;
+  if (!Array.isArray(data.assets) || data.assets.length < 3) return false;
+  const prefix = RELEASE_MANIFEST_PREFIX + data.tag + '/';
+  if (!data.assets.every((asset) => typeof asset.url === 'string' && asset.url.startsWith(prefix) && /^[0-9a-f]{64}$/.test(String(asset.sha256 || '')) && Number.isInteger(asset.size))) return false;
+  return ['Setup.exe', 'RELEASES'].every((name) => data.assets.some((asset) => asset.name === name));
+}
+const formatBytes = (bytes) => bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : bytes + ' B';
+async function loadReleaseManifest() {
+  let data = null;
+  try { const response = await fetch('./release-manifest.json', { cache: 'no-store' }); if (response.ok) data = await response.json(); } catch { data = null; }
+  if (!validReleaseManifest(data)) return;
+  const setup = data.assets.find((asset) => asset.name === 'Setup.exe');
+  const tag = escapeHtml(data.tag);
+  const commit = escapeHtml(data.commit);
+  const releaseUrl = escapeHtml(data.releaseUrl || RELEASE_MANIFEST_PREFIX.replace('/download/', '/tag/') + data.tag);
+  const codeName = data.codeName && data.codeName.en ? escapeHtml(data.codeName.en + ' · ' + (data.codeName.zhHant || '')) : 'Not recorded';
+  const kind = data.prerelease ? 'pre-release' : 'release';
+  const stateValue = document.querySelector('#release-state-value');
+  if (stateValue) stateValue.innerHTML = 'Published ' + kind + ' <a href="' + releaseUrl + '">' + tag + '</a>';
+  const card = document.querySelector('#public-release-card');
+  if (card) card.innerHTML = '<span class="status-dot verified"></span><div><h3>Public release</h3><p>Unsigned Windows x64 Squirrel.Windows ' + kind + ' <a href="' + releaseUrl + '">' + tag + '</a> is published from commit <code>' + commit.slice(0, 12) + '</code>.</p><small>Evidence: release manifest bound to immutable asset URLs and SHA-256 hashes, published ' + escapeHtml(data.publishedAt) + ' (UTC).</small></div>';
+  const downloads = document.querySelector('#downloads-release');
+  if (downloads && setup) {
+    downloads.className = 'release-download';
+    downloads.innerHTML = '<h3>Windows x64 installer ' + escapeHtml(data.version) + ' (' + kind + ' ' + tag + ')</h3>'
+      + '<p>Unsigned Squirrel.Windows installer built by GitHub Actions from commit <a href="https://github.com/Ding-Ding-Projects/claude-design-desktop/commit/' + commit + '"><code>' + commit.slice(0, 12) + '</code></a>, published ' + escapeHtml(data.publishedAt) + ' (UTC). Dim-sum code name: ' + codeName + '.</p>'
+      + '<p><a class="filled-button download-link" href="' + escapeHtml(setup.url) + '" download>Download Windows installer (Setup.exe, ' + formatBytes(setup.size) + ')</a></p>'
+      + '<p class="inline-status">Code signing is prohibited for this project, so Windows may show an unknown-publisher or SmartScreen warning. Compare the SHA-256 below before trusting the file.</p>'
+      + '<div class="table-wrap"><table class="asset-table"><thead><tr><th>Asset</th><th>Bytes</th><th>SHA-256</th></tr></thead><tbody>'
+      + data.assets.map((asset) => '<tr><td><a href="' + escapeHtml(asset.url) + '">' + escapeHtml(asset.name) + '</a></td><td>' + asset.size.toLocaleString('en-US') + '</td><td><code>' + escapeHtml(asset.sha256) + '</code></td></tr>').join('')
+      + '</tbody></table></div><p><a href="' + releaseUrl + '">Open the release record</a></p>';
+  }
 }
 
 function notify(title, body) {

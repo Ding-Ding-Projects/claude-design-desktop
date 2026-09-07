@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "repository": "Ding-Ding-Projects/claude-design-desktop",
+  "tag": "preview-12-410c2bc8aaaa",
+  "releaseUrl": "https://github.com/Ding-Ding-Projects/claude-design-desktop/releases/tag/preview-12-410c2bc8aaaa",
+  "commit": "410c2bc8aaaac369eb391aad3ca7b8513905badf",
+  "publishedAt": "2026-09-07T22:40:15Z",
+  "timezone": "UTC",
+  "version": "0.1.0",
+  "platform": "win32-x64",
+  "installer": "squirrel-windows",
+  "signing": "unsigned",
+  "prerelease": true,
+  "codeName": {
+    "en": "Crab Roe Har Gow",
+    "zhHant": "蟹籽蝦餃"
+  },
+  "assets": [
+    {
+      "name": "com.dingdingprojects.claudedesigndesktop-0.1.0-full.nupkg",
+      "size": 411541557,
+      "url": "https://github.com/Ding-Ding-Projects/claude-design-desktop/releases/download/preview-12-410c2bc8aaaa/com.dingdingprojects.claudedesigndesktop-0.1.0-full.nupkg",
+      "sha256": "0ab2c8bb30f66509649fede000b8c962cdfbb2a9c1722d48f15eee29491a14cf"
+    },
+    {
+      "name": "RELEASES",
+      "size": 111,
+      "url": "https://github.com/Ding-Ding-Projects/claude-design-desktop/releases/download/preview-12-410c2bc8aaaa/RELEASES",
+      "sha256": "632cc313955b86d74ed35225c3cabf7d805cff00092eb8d97c40528a1cb97458"
+    },
+    {
+      "name": "Setup.exe",
+      "size": 411045376,
+      "url": "https://github.com/Ding-Ding-Projects/claude-design-desktop/releases/download/preview-12-410c2bc8aaaa/Setup.exe",
+      "sha256": "ba4f002dc2017d47a853a4b0c0e00f5c6a039fe8dbaaf3074cafda8f930114ae"
+    }
+  ]
+}

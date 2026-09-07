@@ -39,7 +39,7 @@ The integrated tree contains the reviewed runtime shell, public preview, univers
 - `site/storage.js` provides versioned IndexedDB visitor state, while `site/controllers.mjs` owns tab, group, lock, and scoped-search behavior.
 - `site/regex-worker.js` provides bounded off-main-thread regex evaluation. Multi-factor choices without a verifier remain visible only as disabled options with exact pending reasons.
 - `docs/README.md` indexes thirty feature articles under `docs/features/`. Every feature row remains pending full implementation and built evidence.
-- `site/test-static.mjs`, `site/test-behavior.mjs`, `site/test-app-integration.mjs`, and `site/test-regex-dispatch.mjs` pass on the integrated source. They are source and controller checks, not deployed-site or capture proof.
+- `site/test-static.mjs`, `site/test-behavior.mjs`, `site/test-app-integration.mjs`, and `site/test-regex-dispatch.mjs` pass on the integrated source. They are source and controller checks, not deployed-site or capture proof. `site/test-release-manifest.mjs` and `scripts/build-site-release-manifest.mjs --check` prove the site's release binding against the release record. Deployment runs through `.github/workflows/pages.yml`; served-site verification is recorded in `ROADMAP.md` once the deployed URL has been read back.
 
 ## Verified records
 

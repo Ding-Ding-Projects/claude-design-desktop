@@ -1,8 +1,9 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.0-preview",
-  "updatedAt": null,
+  "version": "0.1.0",
+  "updatedAt": "2026-09-07T22:40:15Z",
   "timezone": "UTC",
-  "sourceCommit": "4a3c267e7e22f6636a02542554309cd49cd41e9d",
-  "provenanceStatus": "pending-built-release"
+  "sourceCommit": "410c2bc8aaaac369eb391aad3ca7b8513905badf",
+  "releaseTag": "preview-12-410c2bc8aaaa",
+  "provenanceStatus": "published-prerelease"
 }

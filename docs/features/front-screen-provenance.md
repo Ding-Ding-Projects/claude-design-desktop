@@ -14,7 +14,7 @@ The UI never invents a timestamp. A preview without release provenance says it i
 
 ## Verification
 
-Verify valid and missing provenance, timezone labels, localization, unclipped display at narrow and high-scale layouts, and the negative case that removes each boundary. The current preview intentionally reports updated-at as unavailable.
+Verify valid and missing provenance, timezone labels, localization, unclipped display at narrow and high-scale layouts, and the negative case that removes each boundary. `site/version.json` is bound to the published release recorded in `site/release-manifest.json`; `scripts/build-site-release-manifest.mjs --check` fails when the two drift from the release record.
 
 ## Suggested articles
 

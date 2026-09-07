@@ -149,3 +149,11 @@ h3 { font-size: 1.1rem; }
   .regex-output { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+
+.release-download { padding: 20px; border: 1px solid var(--outline-variant); border-radius: var(--radius-lg); background: var(--surface); }
+.release-download .download-link { display: inline-block; text-decoration: none; }
+.table-wrap { overflow-x: auto; }
+.asset-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.asset-table th, .asset-table td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--outline-variant); vertical-align: top; }
+.asset-table td:nth-child(2) { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.asset-table code { overflow-wrap: anywhere; }
