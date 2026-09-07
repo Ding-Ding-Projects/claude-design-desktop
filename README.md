@@ -57,6 +57,10 @@ The root package manifest and focused shell test route now exist. The supported 
 
 ## Public preview source
 
+![Deployed documentation site showing the Downloads page with the verified Windows x64 installer, its size, the unsigned-publisher warning, and the SHA-256 asset table](docs/captures/site-downloads-preview-12.png)
+
+*Real capture of the deployed site at `effa02c`, Downloads route bound to release `preview-12-410c2bc8aaaa`, taken from an isolated Microsoft Edge window on an off-screen desktop at 1280×900.*
+
 The `site/` folder is a dependency-free static preview with local CSS and JavaScript. It includes responsive navigation, versioned local visitor state, a command palette on <kbd>Ctrl+Shift+F</kbd>, controller-backed tab and lock foundations, bounded worker-based regex filtering, feature and documentation catalogs, status cards, provenance handling, and a download control that appears only when a release manifest bound to immutable asset URLs and hashes is present.
 
 The focused source checks are:
