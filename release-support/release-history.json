@@ -29,6 +29,13 @@
       "en": "Bamboo Shoot Har Gow",
       "zhHant": "筍尖蝦餃",
       "source": "GitHub Actions run 34166427935"
+    },
+    {
+      "tag": "preview-12-410c2bc8aaaa",
+      "commit": "410c2bc8aaaac369eb391aad3ca7b8513905badf",
+      "en": "Crab Roe Har Gow",
+      "zhHant": "蟹籽蝦餃",
+      "source": "GitHub Actions run 34166972960; first release after the trigger fix, no follow-on run spawned"
     }
   ]
 }
