@@ -44,12 +44,12 @@ This checklist describes the standalone product extraction. A checked item is im
 - [ ] Add the real built-artifact capture harness and screen recording route.
 - [ ] Capture the front screen, settings, error and empty states, narrow layout, light theme, and dark theme from the built artifact.
 - [x] Publish a unique non-draft release with a verified installer and release provenance. (`preview-9-050b38a613f3`, published by GitHub Actions run 34166427935 with its own verify step green; unsigned Squirrel.Windows assets and SHA-256 hashes on the release record.)
-- [ ] Publish the documentation site and verify its served metadata and download links.
+- [x] Publish the documentation site and verify its served metadata and download links. (GitHub Pages workflow run 34171243885 at `effa02c`; served `index.html`, absolute `og:image`, `twitter:card`, `release-manifest.json`, and `version.json` read back over HTTPS; the rendered installer link answers HTTP 200 at 411,045,376 bytes for `preview-12-410c2bc8aaaa`.)
 
 ## Preview progression and stable 1.0.0 release gates
 
 - [ ] Preview: bind the running version and updated-at provenance to the exact built product, with unavailable states when provenance is missing.
-- [ ] Preview: verify the public URL serves the documentation surface and does not advertise a candidate installer or unverified image.
+- [x] Preview: verify the public URL serves the documentation surface and does not advertise a candidate installer or unverified image. (Download control renders only from the validated manifest bound to a published release; verified served on 2026-09-07.)
 - [ ] Release candidate: verify Windows x64 packaging, Squirrel.Windows output, unsigned status, stable identity, two-profile proof, migration parity, and historical-module exclusion.
 - [ ] Release candidate: capture the real built application, error and empty states, narrow layout, light theme, and dark theme, plus one real screen recording.
 - [ ] Stable 1.0.0: publish one unique non-draft release with immutable installer assets, exact hashes, third-party notices, release timing, and a verified public URL.
