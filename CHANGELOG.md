@@ -10,5 +10,6 @@
 - Added the disabled local converter foundation. Native adapters remain unavailable until the Windows restricted-launch implementation is complete.
 - Fixed the release workflow so GitHub Actions accepts it: the `runner` and `job` contexts moved out of job-level `env`, the release tag now carries the twelve-character commit prefix, and the used dim-sum code name is recorded in `release-support/release-history.json` so no code name is reused.
 - Stopped electron-builder from publishing on its own inside GitHub Actions (`--publish never` and `"publish": null`); the workflow publishes the release with `gh`.
+- Fixed the workflow timing step, which subtracted a `DateTime` from a `DateTimeOffset` and failed after the release was already published. First Actions-published release: `preview-7-5b6dcaf66365`.
 
 The completing commit and release date will be added from the verified integrated release history. No release is claimed by this preview lane.

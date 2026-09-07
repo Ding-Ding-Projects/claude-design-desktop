@@ -139,8 +139,8 @@ jobs:
         if: ${{ success() }}
         shell: pwsh
         run: |
-          $completed = (Get-Date).ToUniversalTime()
-          $started = [DateTimeOffset]::Parse($env:WORKFLOW_STARTED)
+          $completed = [DateTimeOffset]::UtcNow
+          $started = [DateTimeOffset]::Parse($env:WORKFLOW_STARTED, [Globalization.CultureInfo]::InvariantCulture)
           $duration = $completed - $started
           $timing = @(
             '',
