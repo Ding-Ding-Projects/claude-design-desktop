@@ -26,8 +26,10 @@ if (-not $Silent) { Write-Host '[installer] Building the current source before p
 if ($LASTEXITCODE -ne 0) { throw "npm run build exited with code $LASTEXITCODE." }
 
 if (-not $Silent) { Write-Host '[installer] Building unsigned Squirrel.Windows output through npm run dist' }
-& $npm run dist -- '--win' 'squirrel'
-if ($LASTEXITCODE -ne 0) { throw "npm run dist -- --win squirrel exited with code $LASTEXITCODE." }
+# --publish never: electron-builder otherwise publishes implicitly when it detects CI and a GitHub token.
+# The release workflow publishes with gh itself, so the packager must only package.
+& $npm run dist -- '--win' 'squirrel' '--publish' 'never'
+if ($LASTEXITCODE -ne 0) { throw "npm run dist -- --win squirrel --publish never exited with code $LASTEXITCODE." }
 
 $validator = Join-Path $root 'scripts/validate-squirrel-package.ps1'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $validator $(if ($Silent) { '-Silent' })
