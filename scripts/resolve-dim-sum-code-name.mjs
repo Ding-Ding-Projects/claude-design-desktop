@@ -38,8 +38,11 @@ try {
     if (projectReleasesResponse?.ok) {
       const projectReleases = await projectReleasesResponse.json();
       for (const release of projectReleases) {
-        const match = String(release.body || "").match(/Dim-sum code name:\s*([^\n]+?)\s*·\s*(\S[^\n]*)/i);
-        if (match) names.add(`${match[1].trim()}\u0000${match[2].trim()}`);
+        const body = String(release.body || "");
+        const inline = body.match(/Dim-sum code name:\s*([^\n]+?)\s*·\s*(\S[^\n]*)/i);
+        if (inline) names.add(`${inline[1].trim()}\u0000${inline[2].trim()}`);
+        const heading = body.match(/##\s*Dim-sum code name\s*\n+\s*\*\*\[([^\]·]+?)\s*·\s*([^\]]+?)\]/i);
+        if (heading) names.add(`${heading[1].trim()}\u0000${heading[2].trim()}`);
       }
     }
     return names;

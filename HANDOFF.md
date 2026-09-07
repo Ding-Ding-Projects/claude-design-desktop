@@ -58,7 +58,7 @@ The integrated tree contains the reviewed runtime shell, public preview, univers
 
 ## Open blockers
 
-1. The target repository's remote has no published refs yet. Verify the first intended default-branch push and prerelease transaction before cleanup.
+1. The remote now carries `main` and the manual `preview-2-f6cfbc5faadd` pre-release. The release workflow previously failed validation on every push (five runs, zero jobs) because job-level `env` used the `runner` and `job` contexts; that is fixed. The first Actions-published release is recorded in `ROADMAP.md` once verified.
 2. The local package is a construction preview only. Authentication, project-domain integration, migration, compatibility, and most canonical feature surfaces remain unmerged or incomplete.
 3. The repository has no verified capture or recording in this baseline.
 4. The exact `@openai/codex@0.152.1` runtime is packaged and schema-checked, but real two-profile authentication and OS-vault isolation remain unverified.

@@ -1,4 +1,13 @@
 {
   "schemaVersion": 1,
-  "releases": []
+  "releases": [
+    {
+      "tag": "preview-2-f6cfbc5faadd",
+      "commit": "f6cfbc5faadd308b0f6d94536f4d81c7bbd836a1",
+      "en": "Classic Har Gow",
+      "zhHant": "蝦餃",
+      "photoAsset": "hk-dish-0001-classic-har-gow.png",
+      "source": "manual local publication, recorded so the code name is never reused"
+    }
+  ]
 }

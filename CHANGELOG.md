@@ -8,5 +8,6 @@
 - Added the standalone custom-title-bar shell, deterministic design-reference application, owned product branding, and byte-identical social preview assets.
 - Added one-click dependency and unsigned Squirrel.Windows packaging paths with bundled Codex app-server validation and executable-icon verification.
 - Added the disabled local converter foundation. Native adapters remain unavailable until the Windows restricted-launch implementation is complete.
+- Fixed the release workflow so GitHub Actions accepts it: the `runner` and `job` contexts moved out of job-level `env`, the release tag now carries the twelve-character commit prefix, and the used dim-sum code name is recorded in `release-support/release-history.json` so no code name is reused.
 
 The completing commit and release date will be added from the verified integrated release history. No release is claimed by this preview lane.

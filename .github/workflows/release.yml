@@ -12,8 +12,6 @@ jobs:
     runs-on: windows-2025
     env:
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.ORG_TOKEN || secrets.GITHUB_TOKEN }}
-      RELEASE_ROOT: ${{ runner.temp }}\claude-design-desktop-release
-      JOB_STATUS: ${{ job.status }}
     steps:
       - name: Check out the requested commit
         uses: actions/checkout@v4
@@ -26,7 +24,9 @@ jobs:
           $started = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" --jq .run_started_at
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($started)) { throw 'The GitHub Actions run start timestamp could not be read from the run record.' }
           "WORKFLOW_STARTED=$started" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          New-Item -ItemType Directory -Force -Path $env:RELEASE_ROOT | Out-Null
+          $releaseRoot = Join-Path $env:RUNNER_TEMP 'claude-design-desktop-release'
+          "RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
 
       - name: Bootstrap locked build dependencies
         shell: pwsh
@@ -83,7 +83,7 @@ jobs:
             Copy-Item -LiteralPath (Join-Path $target 'RELEASES') -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
             Get-ChildItem -LiteralPath $target -Filter '*.nupkg' -File | Copy-Item -Destination $env:RELEASE_ROOT -Force -ErrorAction SilentlyContinue
           }
-          $status = "run=$env:GITHUB_RUN_ID`ncommit=$env:GITHUB_SHA`njob_status=$env:JOB_STATUS`n"
+          $status = "run=$env:GITHUB_RUN_ID`ncommit=$env:GITHUB_SHA`njob_status=${{ job.status }}`n"
           $status | Out-File -FilePath (Join-Path $env:RELEASE_ROOT 'run-context.txt') -Encoding utf8
 
       - name: Upload safe failure and build outputs
@@ -92,7 +92,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-output-${{ github.run_id }}
-          path: ${{ runner.temp }}\claude-design-desktop-release
+          path: ${{ env.RELEASE_ROOT }}
           if-no-files-found: warn
           retention-days: 7
 
@@ -100,7 +100,8 @@ jobs:
         id: publish
         shell: pwsh
         run: |
-          $tag = "preview-${env:GITHUB_RUN_NUMBER}-${env:GITHUB_SHA.Substring(0,12)}"
+          $shortSha = $env:GITHUB_SHA.Substring(0, 12)
+          $tag = "preview-$($env:GITHUB_RUN_NUMBER)-$shortSha"
           $codeNamePath = Join-Path $env:RELEASE_ROOT 'dim-sum-code-name.json'
           $codeName = if (Test-Path -LiteralPath $codeNamePath) { Get-Content -Raw $codeNamePath | ConvertFrom-Json } else { $null }
           $label = if ($codeName -and $codeName.available) { "$($codeName.name.en) · $($codeName.name.zhHant)" } else { 'No public code name resolved' }
