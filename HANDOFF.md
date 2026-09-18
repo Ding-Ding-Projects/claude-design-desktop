@@ -2,7 +2,7 @@
 
 ## Current state
 
-This primary checkout carries the integrated construction checkpoint for the standalone Claude Design Desktop extraction. It is based on source commit `4a3c267e7e22f6636a02542554309cd49cd41e9d` from `Ding-Ding-Projects/claude-code-router` and is checked out on `main` at `a6ecd9336d861b3930b249cca5c3e49700ff6243`, which matches `origin/main`.
+This primary checkout carries the integrated construction checkpoint for the standalone Claude Design Desktop extraction. It is based on source commit `4a3c267e7e22f6636a02542554309cd49cd41e9d` from `Ding-Ding-Projects/claude-code-router` and is checked out on `main` at `7a34c9f873234b9068bf6f6dcc36af6649e4eb3f`, which matches `origin/main`.
 
 ## Current closeout inventory
 
@@ -11,7 +11,7 @@ Recorded on 2026-09-18 after fetching `origin`:
 | Item | Evidence | Result |
 | --- | --- | --- |
 | Primary checkout | `C:\Users\cntow\Documents\GitHub\claude-design-desktop` | Present and clean |
-| Current branch | `main` | Matches `origin/main` at `a6ecd9336d861b3930b249cca5c3e49700ff6243` |
+| Current branch | `main` | Matches `origin/main` at `7a34c9f873234b9068bf6f6dcc36af6649e4eb3f` |
 | Linked worktrees | `git worktree list --porcelain` | None |
 | Local stashes | `git stash list` | None |
 | Submodules | `git submodule status` | None |
