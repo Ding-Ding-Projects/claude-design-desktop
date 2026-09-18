@@ -2,7 +2,25 @@
 
 ## Current state
 
-This working tree carries the integrated construction checkpoint for the standalone Claude Design Desktop extraction. It is based on source commit `4a3c267e7e22f6636a02542554309cd49cd41e9d` from `Ding-Ding-Projects/claude-code-router` and is checked out on `codex/standalone-foundation` pending default-branch integration.
+This primary checkout carries the integrated construction checkpoint for the standalone Claude Design Desktop extraction. It is based on source commit `4a3c267e7e22f6636a02542554309cd49cd41e9d` from `Ding-Ding-Projects/claude-code-router` and is checked out on `main` at `a6ecd9336d861b3930b249cca5c3e49700ff6243`, which matches `origin/main`.
+
+## Current closeout inventory
+
+Recorded on 2026-09-18 after fetching `origin`:
+
+| Item | Evidence | Result |
+| --- | --- | --- |
+| Primary checkout | `C:\Users\cntow\Documents\GitHub\claude-design-desktop` | Present and clean |
+| Current branch | `main` | Matches `origin/main` at `a6ecd9336d861b3930b249cca5c3e49700ff6243` |
+| Linked worktrees | `git worktree list --porcelain` | None |
+| Local stashes | `git stash list` | None |
+| Submodules | `git submodule status` | None |
+| Unmerged index entries | `git ls-files -u` | None |
+| Conflict markers | tracked-file scan | None found |
+| Preservation commits | local status and history | None required; no recoverable uncommitted work was present |
+| External archive | deletion inventory | Not created because there were no removal candidates |
+
+No conflict resolution was required in this closeout. No branch, worktree, or stash met the conditions for removal. The only retained work is the active `main` checkout and its `main` branch, both load-bearing and already pushed to `origin`.
 
 The shipping product contract is local-only. It never contacts the hosted shell at `https://claude-design.ccrdesk.top/design` and never contacts the legacy router. The source files that implement those historical compatibility paths are extraction material and must be removed from the shipping tip.
 
@@ -39,7 +57,7 @@ The integrated tree contains the reviewed runtime shell, public preview, univers
 - `site/storage.js` provides versioned IndexedDB visitor state, while `site/controllers.mjs` owns tab, group, lock, and scoped-search behavior.
 - `site/regex-worker.js` provides bounded off-main-thread regex evaluation. Multi-factor choices without a verifier remain visible only as disabled options with exact pending reasons.
 - `docs/README.md` indexes thirty feature articles under `docs/features/`. Every feature row remains pending full implementation and built evidence.
-- `site/test-static.mjs`, `site/test-behavior.mjs`, `site/test-app-integration.mjs`, and `site/test-regex-dispatch.mjs` pass on the integrated source. They are source and controller checks, not deployed-site or capture proof. `site/test-release-manifest.mjs` and `scripts/build-site-release-manifest.mjs --check` prove the site's release binding against the release record. Deployment runs through `.github/workflows/pages.yml`; served-site verification is recorded in `ROADMAP.md` once the deployed URL has been read back.
+- `site/test-static.mjs`, `site/test-behavior.mjs`, `site/test-app-integration.mjs`, and `site/test-regex-dispatch.mjs` pass on the integrated source. They are source and controller checks, not deployed-site or capture proof. `site/test-release-manifest.mjs` and `scripts/build-site-release-manifest.mjs --check` prove the site's release binding against the release record. Deployment runs through `.github/workflows/pages.yml`; served-site verification is recorded in `ROADMAP.md`.
 
 ## Verified records
 

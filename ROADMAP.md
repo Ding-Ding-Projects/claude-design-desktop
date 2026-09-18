@@ -19,7 +19,7 @@ This checklist describes the standalone product extraction. A checked item is im
 - [x] Add the hand-written thirty-feature preview inventory and one current contract article per feature.
 - [x] Add controller-backed local tab, group, lock, and scoped-search foundations.
 - [x] Add bounded worker-based regex matching with asynchronous stale-result refusal.
-- [ ] Bind the preview to integrated release provenance and the immutable release manifest.
+- [x] Bind the preview to integrated release provenance and the immutable release manifest. (`site/release-manifest.json`, `site/version.json`, `scripts/build-site-release-manifest.mjs --check`, and the served `preview-12-410c2bc8aaaa` record.)
 
 ## Desktop product
 
@@ -63,3 +63,4 @@ This checklist describes the standalone product extraction. A checked item is im
 - [ ] Validate the packaged runtime and capture real evidence before ticking any user-facing feature.
 - [ ] Keep the 16,728-line historical extraction module out of the shipping tip and retain its exclusion evidence.
 - [x] Make one deliberate integration commit for the nine root-record add/add conflicts after site-docs tip `c2224116ce65a59fd82e1a7332edbf0cb4a2f5d9` settled.
+- [x] Refresh the closeout inventory on `main`: no uncommitted files, linked worktrees, stashes, submodules, unmerged index entries, or conflict markers were present after fetching `origin` on 2026-09-18. No external archive or deletion cleanup was required because no safe redundant candidates existed.
